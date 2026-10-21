@@ -61,6 +61,23 @@ describe("image storage", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("uploadImage refuses SVG, which is active content", async () => {
+    const { storage, send } = setup();
+    await expect(
+      storage.uploadImage("r/abc/x.svg", new Uint8Array(), "image/svg+xml"),
+    ).rejects.toThrow(/image/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it.each(["image/webp", "image/jpeg", "image/png", "image/avif"])(
+    "uploadImage accepts %s",
+    async (type) => {
+      const { storage, send } = setup();
+      await storage.uploadImage("r/abc/x", new Uint8Array(), type);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("deleteImage deletes the object from the bucket", async () => {
     const { storage, send } = setup();
 

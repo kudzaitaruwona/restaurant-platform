@@ -15,7 +15,7 @@ services:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: restaurant_dev
     ports:
-      - "${POSTGRES_PORT:-5499}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5499}:5432"
     volumes:
       - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
       - pgdata:/var/lib/postgresql/data
@@ -34,7 +34,7 @@ services:
       ALLOW_ADDR_REGEX: ".*"
       LOG_TRAFFIC: "false"
     ports:
-      - "${WSPROXY_PORT:-5498}:80"
+      - "127.0.0.1:${WSPROXY_PORT:-5498}:80"
     depends_on:
       - postgres
 
