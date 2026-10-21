@@ -19,7 +19,7 @@
 | S-13 | Tables are modelled as a label plus capacity. A QR code is auto-generated when a table is added, and printable. | |
 | S-14 | Per-table QR tokens are random and permanent, and staff can regenerate them. A generic QR code is menu-view only. | |
 | S-15 | Customers are anonymous (no account). Staff log in. Protected actions require staff login. | |
-| S-16 | Multiple staff logins per restaurant with equal access, soft-limited to one on the standard plan. A `role` column exists now. | |
+| S-16 | ~~Multiple staff logins per restaurant with equal access, soft-limited to one on the standard plan. A `role` column exists now.~~ | **Superseded by S-26** |
 | S-17 | Table sessions: one open session per table, latecomers join it, and it closes on any of several triggers | Spec 06 |
 | S-18 | Undelivered items block session close. Staff can force-close by voiding items with a reason. | |
 | S-19 | Idle expiry happens after 90 minutes of no activity | |
@@ -28,6 +28,8 @@
 | S-22 | Order status is tracked per item: placed → cooking → done → delivered (plus voided) | |
 | S-23 | Ordering asks for the customer's name only | |
 | S-24 | Kitchen view shows the order, its table, and per-item notes | |
+| S-25 | **Auth is deferred.** Build every feature behind a tenant seam: `getTenantContext()` is the only source of tenant identity, and `withTenant()` sets `app.restaurant_id` per transaction with RLS on. In development, `DEV_AUTH_BYPASS` returns a seeded staff member, and a dev-only switcher swaps between seeded identities. The app refuses to start if the bypass is set in production. Real login (Better Auth) is the last chain-1 ticket and must ship before the first real venue is onboarded. | Decided 2026-10-22. Spec 01 |
+| S-26 | **Two roles: owner and staff.** `staff.role` is `(owner, staff)`. A restaurant's first staff record is its owner, and the database guarantees every restaurant always has at least one active owner. Owner only: menu, categories, prices, specials, exchange rate, staff management, tables and QR regeneration, booking settings and closures, restaurant settings. Owner and staff: sold-out toggle, every booking day-view action, kitchen statuses, mark delivered, clear table, and void or force-close with a required, audited reason. Role checks live in the app layer, and RLS stays tenant-only. The soft limit counts owner logins only; staff logins are unlimited. The platform admin's shadow staff row (`kind = platform_admin`) gets `role = owner` for permission checks but is excluded from both the soft-limit count and the last-owner rule. | Decided 2026-10-22. Supersedes S-16. Specs 00, 01 |
 
 ## Open
 
@@ -56,8 +58,11 @@ Proposed: the database rejects a second active special that overlaps on the same
 ### D-06: Guest phone number retention
 A booking needs a WhatsApp number. Proposed: null the number 30 days after the booking date, keeping only the name and the booking outcome for no-show stats.
 
-### D-07: Stack choices not yet locked
-Proposed: Neon Postgres, Drizzle ORM, Better Auth for staff sessions, and Vercel Blob for photos. See spec 01.
+### D-07: Stack choices — **resolved 2026-10-22**
+- **Neon Postgres with Drizzle ORM, using Neon's WebSocket `Pool` driver, not the HTTP driver.** RLS needs `set_config('app.restaurant_id', …, true)` inside an interactive transaction, and booking confirm needs `SAVEPOINT`s. The HTTP driver supports neither.
+- **Cloudflare R2 for photos**, served from a custom domain (never `r2.dev`). App code only touches storage through an `uploadImage` / `deleteImage` / `getUrl` interface.
+- **Better Auth for staff and platform-admin sessions**, implemented last (see S-25).
+- Vercel Blob is no longer used.
 
 ### D-08: Product name and plan pricing
-The repo is named `restaurant-platform` as a working name. Pricing is undefined: the "standard plan" soft limit in S-16 needs a plan to attach to.
+The repo is named `restaurant-platform` as a working name. Pricing is undefined: the "standard plan" soft limit needs a plan to attach to. Per S-26, the soft limit counts **owner** logins only; staff logins are unlimited.

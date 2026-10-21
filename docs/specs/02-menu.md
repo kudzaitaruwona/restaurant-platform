@@ -27,7 +27,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 
 ### Photos
 - Upload from a phone camera. Resize and convert to WebP on the server, at 800px for the item view and 320px for the thumbnail, aiming for under 60KB each.
-- Storage: Vercel Blob *(proposed, D-07)*.
+- Storage: Cloudflare R2 on a custom domain, behind an `uploadImage` / `deleteImage` / `getUrl` interface (decided, D-07).
 
 ### Exchange rate
 - One field, "1 USD = ___ ZiG", with "last updated N days ago" shown on the dashboard.

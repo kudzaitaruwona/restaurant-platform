@@ -33,9 +33,12 @@ staff
   email                 text unique null     -- global, used for login; null for platform_admin rows
   password_hash         null                 -- null for platform_admin rows
   CHECK (kind = 'platform_admin' OR (email IS NOT NULL AND password_hash IS NOT NULL))
-  -- platform_admin rows never count toward the staff-login soft limit
+  -- platform_admin rows never count toward the soft limit, which counts owner logins only (S-26)
   display_name          text                 -- appears in the audit log
-  role                  enum(admin) default 'admin'   -- one value today; the column exists for later
+  role                  enum(owner, staff) default 'staff'   -- S-26; the first staff record of a restaurant is 'owner'
+  -- S-26: a trigger rejects any change (deactivate, demote, delete) that would leave the
+  -- restaurant with no active owner. platform_admin shadow rows have role = 'owner' for
+  -- permission checks but never count as owners for this rule or the soft limit.
   active                bool default true
   created_at
 
