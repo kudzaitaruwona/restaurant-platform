@@ -10,9 +10,9 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 | Who | Auth | Can do |
 |-----|------|--------|
 | Customer | None (anonymous) | View the menu, book, and (phase 6) order |
-| Owner | Email + password | Everything for their own restaurant (S-26) |
-| Staff | Email + password | Day-to-day service for their own restaurant: sold-out toggle, booking day-view actions, kitchen statuses, mark delivered, clear table, void and force-close (S-26) |
-| Platform admin | Email + password, separate table | Create restaurants and staff accounts, and act inside any restaurant ("impersonate") with every action audited |
+| Owner | Magic link, email code, or Google (S-27) | Everything for their own restaurant (S-26) |
+| Staff | Magic link, email code, or Google (S-27) | Day-to-day service for their own restaurant: sold-out toggle, booking day-view actions, kitchen statuses, mark delivered, clear table, void and force-close (S-26) |
+| Platform admin | Magic link, email code, or Google (S-27), separate table | Create restaurants and staff accounts, and act inside any restaurant ("impersonate") with every action audited |
 
 ## Decided
 - Customers never have accounts. Orders attach to a table session, and bookings attach to a name and phone number.
@@ -42,9 +42,9 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - **Test:** every owner-only route returns 403 for a staff context. This lives in the same harness as the cross-tenant test.
 
 ### Staff auth (implemented last, per S-25)
-- Email and password login. Passwords are hashed with argon2id or bcrypt (whichever the auth library supports).
+- Passwordless sign-in (S-27): a magic link, an email one-time code, or Sign in with Google. No passwords are stored, so there is no password reset.
+- Sign-in only succeeds for an email that already belongs to an active staff record (or a platform admin). There is no self sign-up, including through Google.
 - Session cookie: httpOnly, secure, SameSite=Lax. Sessions expire after 30 days idle *(proposed)*, because restaurant tablets stay logged in.
-- Password reset by email link.
 - Deactivating a staff member (`active = false`) kills their sessions immediately.
 
 ### Platform admin and onboarding

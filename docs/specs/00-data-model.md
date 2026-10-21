@@ -5,7 +5,7 @@ This is a reference schema written as Postgres-style pseudocode. It is not a mig
 ## Ground rules (decided)
 
 - **Every table carries `restaurant_id`.** Every foreign key between tenant tables is composite, for example `(restaurant_id, session_id)`, so a bug in the app can't link rows across restaurants. **Notation:** in the pseudocode below, `x_id → parent` is shorthand for the composite FK `(restaurant_id, x_id) → parent(restaurant_id, id)`, and every tenant parent table has `UNIQUE (restaurant_id, id)` to support it.
-- **Every "who did this" column points to `staff`.** When the platform admin enters a restaurant, the system creates (once) a shadow staff row in that tenant with `kind = platform_admin`. That row has no email and no password, and can't log in. Admin actions then satisfy the same FKs as staff actions, and the audit log still records `actor_type = platform_admin`.
+- **Every "who did this" column points to `staff`.** When the platform admin enters a restaurant, the system creates (once) a shadow staff row in that tenant with `kind = platform_admin`. That row has no email and can't log in. Admin actions then satisfy the same FKs as staff actions, and the audit log still records `actor_type = platform_admin`.
 - **Row-level security on `restaurant_id`** sits on top of the composite keys as a second layer.
 - **Nothing customer-facing is hard-deleted.** Menu items and tables use `archived_at`.
 - **All timestamps are `timestamptz`.** Each restaurant has a `timezone`, which defaults to `Africa/Harare` (CAT, UTC+2, no daylight saving). Opening hours are local `time` values and are interpreted in that zone.
@@ -30,9 +30,9 @@ restaurants
 staff
   id, restaurant_id → restaurants
   kind                  enum(staff, platform_admin) default 'staff'
-  email                 text unique null     -- global, used for login; null for platform_admin rows
-  password_hash         null                 -- null for platform_admin rows
-  CHECK (kind = 'platform_admin' OR (email IS NOT NULL AND password_hash IS NOT NULL))
+  email                 text unique null     -- global, used for sign-in; null for platform_admin rows
+  -- S-27: passwordless sign-in (magic link, email code, Google). No password column.
+  CHECK (kind = 'platform_admin' OR email IS NOT NULL)
   -- platform_admin rows never count toward the soft limit, which counts owner logins only (S-26)
   display_name          text                 -- appears in the audit log
   role                  enum(owner, staff) default 'staff'   -- S-26; the first staff record of a restaurant is 'owner'
@@ -43,7 +43,7 @@ staff
   created_at
 
 platform_admins                               -- Kudzai, for hand-onboarding
-  id, email unique, password_hash, created_at
+  id, email unique, created_at                -- passwordless sign-in (S-27)
 
 audit_log
   id, restaurant_id
