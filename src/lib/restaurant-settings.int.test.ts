@@ -95,8 +95,10 @@ describe("the timezone on save", () => {
     expect(await timezoneOf(id)).toBe("Africa/Johannesburg");
   });
 
-  // A name Postgres knows that Intl.supportedValuesOf omits: the case isTimeZone
-  // exists for. Asserted, so the test can't pass on a runtime whose list has it.
+  // A name Postgres knows that Intl.supportedValuesOf may omit: the case isTimeZone
+  // exists for. This only bites on a runtime whose list omits the name; on one that
+  // lists it the test still passes. What it asserts is that Postgres knows the name
+  // and isTimeZone accepts it.
   it("saves a change to Asia/Kolkata, which Postgres knows and the list may omit", async () => {
     const { rows } = await owner.db.execute(
       sql`select 1 from pg_timezone_names where name = 'Asia/Kolkata'`,
