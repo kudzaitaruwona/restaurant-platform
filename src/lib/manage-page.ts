@@ -4,8 +4,10 @@ import type { CancelOutcome, ManagedBooking } from "@/lib/bookings";
 /**
  * The guest's manage page (spec 04), written by hand like the menu (S-32): no
  * React, no script, one inline stylesheet. Its URL is a bearer secret, so the
- * response says never to cache it and never to pass it on in a Referer, and the
- * page carries no link off the site except the restaurant's own `tel:` number.
+ * response says never to cache it and never to pass it to another site in a
+ * Referer, and the page carries no link off the site except the restaurant's own
+ * `tel:` number. The policy is same-origin, not no-referrer: under no-referrer
+ * Chrome posts the cancel form with Origin: null, and the proxy refuses that.
  */
 
 export const tooLateMessage = "Too late to cancel online — please call.";
@@ -30,7 +32,7 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
 <title>${title}</title>
 <style>${trusted(styles)}</style>
 </head>
@@ -103,7 +105,7 @@ const notFound = page(
 const headers = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "private, no-store",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
   "x-robots-tag": "noindex, nofollow",
 };
 

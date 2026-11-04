@@ -4,8 +4,8 @@ import { resolvePublicToken } from "@/lib/tenant/public";
 
 /**
  * A guest's manage link (spec 04). The token is the only tenant input, and a
- * bearer secret, so the responses are never cached and never leave in a Referer
- * (src/lib/manage-page.ts).
+ * bearer secret, so the responses are never cached and never reach another site
+ * in a Referer (src/lib/manage-page.ts).
  *
  * A Route Handler, not an App Router page, for the reasons S-32 gives the menu,
  * and one more: a page answers an unknown token with a 200 on this build, and this

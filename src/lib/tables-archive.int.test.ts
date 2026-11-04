@@ -1,8 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { diningTables } from "@/db/schema";
+import { bookings, diningTables } from "@/db/schema";
 import { addDays, localToday } from "@/lib/booking-engine";
-import { bookableRestaurant, bookingsOf } from "../../test/integration/bookings";
+import { aBooking, bookableRestaurant, bookingsOf } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { confirmBooking, type GuestRequest } from "./bookings";
 import { archiveTable } from "./tables";
@@ -65,6 +65,28 @@ describe("a confirm and an archive started together", () => {
       expect(bad).toEqual([]);
     },
   );
+});
+
+describe("the bookings an archive lists", () => {
+  // The list reads back only as far as bookings_hold_capped allows, like the guard.
+  it("reaches back to the longest hold there can be", async () => {
+    const { restaurantId, tableIds: [tableId] } = await bookableRestaurant(owner.db);
+    const holdEnds = Date.now() + 2 * 60_000;
+    await owner.db.insert(bookings).values({
+      ...aBooking(
+        restaurantId,
+        tableId,
+        new Date(holdEnds - 960 * 60_000).toISOString(),
+        new Date(holdEnds).toISOString(),
+      ),
+      status: "seated",
+    });
+    const tenant = { restaurantId, staffId: crypto.randomUUID(), platformAdminId: undefined };
+
+    expect(await archiveTable(tenant as never, tableId)).toMatchObject({
+      blocked: { bookings: [{ status: "seated" }] },
+    });
+  });
 });
 
 describe("a confirm that loses to an archive already in flight", () => {

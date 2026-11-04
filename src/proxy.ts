@@ -36,7 +36,8 @@ const readMethods = new Set(["GET", "HEAD", "OPTIONS"]);
  * SameSite=Lax already keeps the session cookie off cross-site posts. This also
  * covers what it doesn't: sibling subdomains count as same-site (S-30). A browser
  * always sends Origin on these requests, so a missing one is a server-to-server
- * caller with no cookie to abuse, like the Meta webhook.
+ * caller with no cookie to abuse, like the Meta webhook. Origin: null names no
+ * site, so it is refused like another site's.
  */
 function isCrossSiteWrite(request: NextRequest) {
   if (readMethods.has(request.method)) return false;

@@ -18,6 +18,7 @@ const app = openTestDatabase();
 const owner = openOwnerDatabase();
 afterAll(() => Promise.all([app.pool.end(), owner.pool.end()]));
 
+const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const at = (hours: number) => new Date(Date.now() + hours * HOUR).toISOString();
 
@@ -69,6 +70,24 @@ describe("archiving a table", () => {
 
     await expect(archive(restaurantId, tableA)).rejects.toMatchObject(GUARD);
     await expect(archive(restaurantId, tableB)).rejects.toMatchObject(GUARD);
+  });
+
+  // The guard reads back only as far as bookings_hold_capped allows, so this is the
+  // oldest booking that can still hold a table: lowering the bound would miss it.
+  it("reaches back to the longest hold there can be", async () => {
+    const { restaurantId, tableIds: [tableId] } = await bookableRestaurant(owner.db);
+    const holdEnds = Date.now() + 2 * MINUTE;
+    await insert({
+      ...aBooking(
+        restaurantId,
+        tableId,
+        new Date(holdEnds - 960 * MINUTE).toISOString(),
+        new Date(holdEnds).toISOString(),
+      ),
+      status: "seated",
+    });
+
+    await expect(archive(restaurantId, tableId)).rejects.toMatchObject(GUARD);
   });
 
   it.each(["completed", "cancelled", "no_show"] as const)(

@@ -294,14 +294,15 @@ const failed = (what: string) => (error: unknown): never => {
  * news: each of two inserts landing together sees the other's unfinished row and
  * waits for it, so Postgres ends that deadlock by failing one of them, and the
  * one it fails has lost that table just the same. So has a confirm that finds the
- * table archived (bookings_table_live, migration 0016): an owner archived it
- * between the list and the insert.
+ * table archived or walk-ins only (bookings_table_live and bookings_table_bookable,
+ * migration 0016): an owner changed it between the list and the insert.
  */
 function tableWasTaken(error: unknown) {
   const cause = dbErrorOf(error);
   return (
     (cause?.code === "23P01" && cause.constraint === "bookings_no_overlap") ||
-    (cause?.code === "23514" && cause.constraint === "bookings_table_live") ||
+    (cause?.code === "23514" &&
+      (cause.constraint === "bookings_table_live" || cause.constraint === "bookings_table_bookable")) ||
     cause?.code === "40P01"
   );
 }

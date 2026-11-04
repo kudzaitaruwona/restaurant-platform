@@ -23,6 +23,23 @@ export type Verdict = "valid" | "invalid" | "unavailable" | "misconfigured";
 /** The seam: the only code that talks to Cloudflare. Tests put a fake here. */
 export type SiteVerify = (input: { secret: string; token: string; ip?: string }) => Promise<Verdict>;
 
+type Answer = { success?: unknown; "error-codes"?: unknown };
+
+/** A body that isn't JSON says nothing, which is no pass. */
+function answerIn(body: string): Answer {
+  try {
+    return JSON.parse(body) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The error codes come before the status, because Cloudflare can send them with
+ * either. Only no answer at all, a 5xx and `internal-error` are "unavailable", the
+ * verdict that lets a booking through. Anything else that isn't a clear success,
+ * any other 4xx included, says something about this request, so it isn't.
+ */
 export const verifyWithCloudflare: SiteVerify = async ({ secret, token, ip }) => {
   try {
     const body = new URLSearchParams({ secret, response: token });
@@ -32,17 +49,15 @@ export const verifyWithCloudflare: SiteVerify = async ({ secret, token, ip }) =>
       body,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!response.ok) return "unavailable";
-    const answer: { success?: unknown; "error-codes"?: unknown } = await response.json();
-    if (answer.success === true) return "valid";
+    const answer = answerIn(await response.text());
     const codes = Array.isArray(answer["error-codes"]) ? answer["error-codes"] : [];
     if (codes.includes("missing-input-secret") || codes.includes("invalid-input-secret")) {
       return "misconfigured";
     }
-    if (codes.includes("internal-error")) return "unavailable";
-    return "invalid";
+    if (codes.includes("internal-error") || response.status >= 500) return "unavailable";
+    return response.ok && answer.success === true ? "valid" : "invalid";
   } catch {
-    // Timeout, no network, not JSON. Not logged with the error: it could quote the request.
+    // Timeout, or no network. Not logged with the error: it could quote the request.
     return "unavailable";
   }
 };
@@ -57,10 +72,12 @@ export const verifyWithCloudflare: SiteVerify = async ({ secret, token, ip }) =>
  *   booking with the check silently off is the thing it is there to prevent. The
  *   cost is that a production deploy without the key takes no bookings until it is
  *   set, which is loud, and previews need Cloudflare's published test key.
- * - Cloudflare can't be reached, or errors: go on (fail open), in every
- *   environment. An outage shouldn't stop a restaurant taking bookings, nobody
- *   can make Cloudflare fail for another guest, and the rate limit and the
- *   per-phone limit still stand in front of the seats.
+ * - The guest has a token but siteverify can't be reached, or errors: go on (fail
+ *   open), in every environment. Nobody can make Cloudflare fail for another
+ *   guest, and the rate limit and the per-phone limit still stand in front of the
+ *   seats. That is all this covers. The widget loads from the same host, so in a
+ *   full Cloudflare outage the browser gets no token, and the "no token" answer
+ *   above refuses the guest with a 403: such an outage stops bookings.
  */
 export async function passesBotCheck(
   input: { token: string | undefined; ip: string | undefined },

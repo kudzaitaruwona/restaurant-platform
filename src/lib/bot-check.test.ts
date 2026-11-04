@@ -100,10 +100,35 @@ describe("the call to Cloudflare, with fetch stubbed", () => {
     expect(await ask()).toBe(verdict);
   });
 
+  /** A 4xx is an answer about the request, so it mustn't read as an outage (which lets it through). */
+  it.each([
+    ["a 400 for a bad token", 400, { success: false, "error-codes": ["invalid-input-response"] }, "invalid"],
+    ["a 400 with no reason", 400, { success: false }, "invalid"],
+    ["a 400 for our bad secret", 400, { success: false, "error-codes": ["invalid-input-secret"] }, "misconfigured"],
+    ["a 401 for a missing secret", 401, { success: false, "error-codes": ["missing-input-secret"] }, "misconfigured"],
+    ["a 429", 429, { success: false, "error-codes": [] }, "invalid"],
+    ["a 400 claiming success", 400, { success: true }, "invalid"],
+    ["a 400 for Cloudflare's own error", 400, { success: false, "error-codes": ["internal-error"] }, "unavailable"],
+    ["a 500 still naming our bad secret", 500, { success: false, "error-codes": ["invalid-input-secret"] }, "misconfigured"],
+  ])("reads the codes before the status: %s", async (_name, status, answer, verdict) => {
+    stub(() => Response.json(answer, { status }));
+    expect(await ask()).toBe(verdict);
+  });
+
+  it.each([
+    ["a 429 page", 429],
+    ["a 403 page", 403],
+    ["a 200 page", 200],
+  ])("takes %s that isn't JSON as no good answer, not as an outage", async (_name, status) => {
+    stub(() => new Response("<html>", { status }));
+    expect(await ask()).toBe("invalid");
+  });
+
   it.each([
     ["a 500", () => new Response("no", { status: 500 })],
-    ["not JSON", () => new Response("<html>", { status: 200 })],
+    ["a 503 with JSON and no reason", () => Response.json({ success: false }, { status: 503 })],
     ["the network failing", () => Promise.reject(new TypeError("fetch failed"))],
+    ["the body failing partway", () => new Response(new ReadableStream({ start: (c) => c.error(new TypeError("terminated")) }))],
   ])("is unavailable on %s", async (_name, respond) => {
     stub(respond);
     expect(await ask()).toBe("unavailable");

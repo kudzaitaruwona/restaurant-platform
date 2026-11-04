@@ -73,7 +73,7 @@ Write an entry for: exchange rate changes, staff created, deactivated or role-ch
 - Neon Postgres with Drizzle ORM, over Neon's WebSocket `Pool` driver (interactive transactions for `set_config` and `SAVEPOINT`s). Drizzle supports partial indexes and raw SQL for the exclusion constraint and triggers.
 - Cloudflare R2 for photos, on a custom domain, behind an `uploadImage` / `deleteImage` / `getUrl` interface
 - Better Auth for staff sessions, with two separate session types for staff and platform admin. Implemented last (S-25).
-- One exception: the public menu page is a Route Handler with no React, Tailwind or shadcn/ui (S-32).
+- One exception: the public menu page is a Route Handler with no React, Tailwind or shadcn/ui (S-32). *(Proposed, for Kudzai to confirm: S-32 in detail.)* A guest's manage page `/b/{manage_token}` is a second one, built the same way.
 
 The audit log has no viewer in v1. It is database-only.
 

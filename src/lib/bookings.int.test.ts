@@ -847,10 +847,11 @@ describe("a refusal inside an attempt's savepoint", () => {
     return { tried, result };
   }
 
-  it("is the next table's turn when the table was taken or archived", async () => {
+  it("is the next table's turn when the table was taken, archived or made walk-ins only", async () => {
     for (const failure of [
       { code: "23P01", constraint: "bookings_no_overlap" },
       { code: "23514", constraint: "bookings_table_live" },
+      { code: "23514", constraint: "bookings_table_bookable" },
       { code: "40P01" },
     ]) {
       expect(await attempts(failure)).toEqual({ tried: ["first", "second"], result: "second" });
@@ -905,6 +906,47 @@ describe("a confirm whose first table is archived under it", () => {
       ]);
     } finally {
       archiver.release(true);
+    }
+  });
+});
+
+describe("a confirm whose first table is made walk-ins only under it", () => {
+  it("takes the next table, on the real trigger", async () => {
+    const live = new Date();
+    const day = addDays(localToday(live, "Africa/Harare"), 2);
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2, sortOrder: 1 }, { capacity: 2, sortOrder: 2 }],
+      rules: { minLeadMinutes: 0 },
+    });
+    // The bookable check takes no lock of its own, so the table's advisory lock is
+    // what stops the confirm between its list and the trigger's read.
+    const editor = await owner.pool.connect();
+    try {
+      await editor.query("begin");
+      await editor.query("select pg_advisory_xact_lock(hashtextextended('table_seat:' || $1, 0))", [tableIds[0]]);
+      await editor.query("update tables set bookable = false where restaurant_id = $1 and id = $2", [
+        restaurantId,
+        tableIds[0],
+      ]);
+      const { rows } = await editor.query("select pg_backend_pid() as pid");
+      const confirming = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
+      await vi.waitFor(
+        async () => {
+          const blocked = await owner.db.execute<{ pid: number }>(sql`
+            select pid from pg_stat_activity
+            where ${rows[0].pid as number} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+          expect(blocked.rows).toHaveLength(1);
+        },
+        { timeout: 5_000, interval: 20 },
+      );
+      await editor.query("commit");
+
+      expect((await confirming).outcome).toBe("confirmed");
+      expect((await bookingsOf(owner.db, restaurantId)).map(({ tableId }) => tableId)).toEqual([
+        tableIds[1],
+      ]);
+    } finally {
+      editor.release(true);
     }
   });
 });

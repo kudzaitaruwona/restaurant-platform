@@ -60,6 +60,9 @@ describe("GET /b/{manage_token}", () => {
     expect(page).not.toContain("<script");
     expect(page).not.toMatch(/(href|src|action)="(https?:)?\/\//);
     expect(page).toContain('name="robots" content="noindex"');
+    // Not no-referrer: Chrome would post the cancel form with Origin: null, and the
+    // proxy refuses that.
+    expect(page).toContain('name="referrer" content="same-origin"');
   });
 
   it.each(["found", "missing", "nul"])(
@@ -70,7 +73,7 @@ describe("GET /b/{manage_token}", () => {
         which === "found" ? token : which === "missing" ? "no-such-token" : "a\0b",
       );
 
-      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("referrer-policy")).toBe("same-origin");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-robots-tag")).toContain("noindex");
     },
@@ -146,7 +149,7 @@ describe("POST /b/{manage_token}", () => {
     const response = await cancel(token);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("referrer-policy")).toBe("same-origin");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     const page = await response.text();
     expect(page).toContain("Your booking is cancelled.");

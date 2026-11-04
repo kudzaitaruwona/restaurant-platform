@@ -67,9 +67,11 @@
 ### S-32 in detail
 `/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page. Ticket #19.
 
-**Why.** An App Router page can't leave out the framework: a `page.tsx` with no client components still shipped 8 scripts, over 170KB gzipped, on this build. That breaks spec 02's budget (under 100KB, no client JS without a reason) before the menu is added. A Route Handler ships no JavaScript. A Pages Router page might not have this problem, but it wasn't tried, and it would be a second router for one page. That attempt also answered an unknown token with a 200, but that came from how it was written: `notFound()` before anything streams gives a real 404, so it's no reason to avoid a page. *(Proposed, ticket #32.)* That doesn't hold for a page with a dynamic param under this build's Cache Components: `/r/{slug}/book` serves an empty shell with its 200 before the page runs, so `notFound()` gives the not-found page with `noindex` and a 200. There is no per-route way out. The booking page accepts that rather than become a second exception to the stack.
+**Why.** An App Router page can't leave out the framework: a `page.tsx` with no client components still shipped 8 scripts, over 170KB gzipped, on this build. That breaks spec 02's budget (under 100KB, no client JS without a reason) before the menu is added. A Route Handler ships no JavaScript. A Pages Router page might not have this problem, but it wasn't tried, and it would be a second router for one page. That attempt also answered an unknown token with a 200, but that came from how it was written: `notFound()` before anything streams gives a real 404, so it's no reason to avoid a page. *(Proposed, ticket #32.)* That doesn't hold for a page with a dynamic param under this build's Cache Components: `/r/{slug}/book` serves an empty shell with its 200 before the page runs, so `notFound()` gives the not-found page with `noindex` and a 200. There is no per-route way out. The booking page accepts that rather than become another exception to the stack.
 
 **What this decides.** Spec 01 and D-07 decide on Next.js App Router, Tailwind and shadcn/ui. This page uses none of React, Tailwind or shadcn/ui, so its markup and styles are separate from the staff side's. A public page that really needs client-side behaviour would have to bring its own small script, which is the budget's point.
+
+**A second Route Handler — proposed, not yet confirmed by Kudzai.** `/b/{manage_token}` (ticket #34) also writes its own HTML with no React, Tailwind or shadcn/ui, so the menu is no longer "the one exception" the decision names. It has the menu's reasons, and it needs a real 404 and headers of its own, which a page can't give it on this build. Spec 01 says so too. Safe to build on, and to be confirmed before going live.
 
 **What it rests on, and what's still open:**
 - **The budget.** Spec 02 calls 100KB a proposed number. A much higher one would take away the main reason for this.
@@ -90,7 +92,7 @@ Spec 04's abuse controls (ticket #33), with the calls the spec left open. Detail
 - **Rate-limit storage:** Postgres (`booking_rate_limit`), not memory or a new service. Hashed key, 5 per 10 minutes, per visitor.
 - **Which address:** `x-vercel-forwarded-for` on Vercel only. Missing in production: one shared count (fails closed). Missing in development: no limit.
 - **Per-phone limit:** a trigger with an advisory lock, because counting then inserting is a race.
-- **Bot check:** fails closed in production with no secret; fails open in every environment when Cloudflare is down.
+- **Bot check:** fails closed in production and preview deployments with no secret; fails open in every environment only when the guest has a token and siteverify can't answer. A full Cloudflare outage still stops online bookings: the widget loads from the same host, so there is no token and the guest gets a 403.
 
 ## Open
 

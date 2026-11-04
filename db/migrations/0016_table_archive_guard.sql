@@ -8,6 +8,12 @@
 -- table that is occupied now (seated, or a guest running late whose booking is
 -- still confirmed) counts, and so does the reset buffer after a seating.
 -- completed, cancelled and no_show never hold a table for this purpose.
+--
+-- The guard below and the app's list (src/lib/tables.ts) read back only 960 minutes
+-- from now, so an archive doesn't walk the table's whole booking history.
+-- bookings_hold_capped (migration 0015) makes that safe: a hold ends within 960
+-- minutes of its start, so a booking that started earlier can't still hold a table.
+-- Raising the cap means raising these two bounds with it.
 CREATE FUNCTION booking_holds_table(p_status booking_status, p_hold_ends_at timestamptz) RETURNS boolean
 LANGUAGE sql STABLE
 SET search_path = pg_catalog, pg_temp
@@ -44,6 +50,7 @@ BEGIN
     SELECT FROM public.bookings b
     WHERE b.restaurant_id = NEW.restaurant_id
       AND b.table_id = NEW.id
+      AND b.starts_at > now() - interval '960 minutes'
       AND public.booking_holds_table(b.status, b.hold_ends_at)
   ) THEN
     RAISE EXCEPTION 'a table with upcoming bookings can''t be archived'
@@ -67,8 +74,8 @@ CREATE TRIGGER booking_archive_guard
 -- The insert side: a booking that holds its table needs a table that is live. An
 -- online booking also needs it bookable, which spec 03 defines as "in online
 -- booking"; staff bookings and walk-ins may use a walk-in-only table. That check
--- takes no lock of its own: a booking racing a bookable=false edit is out of
--- scope, the availability engine being what keeps the UI honest there.
+-- takes no lock of its own: a booking racing a bookable=false edit can land either
+-- side of it. When this refuses, the app takes the table as gone and tries the next.
 CREATE FUNCTION bookings_table_live() RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER

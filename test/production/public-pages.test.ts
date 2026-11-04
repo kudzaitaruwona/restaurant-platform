@@ -377,13 +377,13 @@ describe("the manage page", () => {
   const statusIn = async (restaurantId: string) =>
     (await bookingsOf(owner.db, restaurantId))[0].status;
 
-  it("is never stored by a cache, and never leaves in a Referer", async () => {
+  it("is never stored by a cache, and never reaches another site in a Referer", async () => {
     const { token } = await booked();
 
     for (const response of [await visit(`/b/${token}`), await visit(`/b/${token}`)]) {
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("referrer-policy")).toBe("same-origin");
       expect(response.headers.get("x-nextjs-cache")).not.toBe("HIT");
       expect(response.headers.get("x-robots-tag")).toContain("noindex");
     }
@@ -408,7 +408,7 @@ describe("the manage page", () => {
       const response = await visit(`/b/${token}`);
       expect(response.status).toBe(404);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("referrer-policy")).toBe("same-origin");
     }
   });
 
@@ -437,17 +437,26 @@ describe("the manage page", () => {
     expect(await (await visit(`/b/${token}`)).text()).toContain("cancelled");
   });
 
-  it("refuses a cancel from another site", async () => {
+  it("takes the cancel a browser sends from the page, naming its own origin", async () => {
     const { restaurantId, token } = await booked();
 
-    const response = await visit(`/b/${token}`, {
-      method: "POST",
-      headers: { origin: "https://elsewhere.example" },
-    });
+    const response = await visit(`/b/${token}`, { method: "POST", headers: { origin } });
 
-    expect(response.status).toBe(403);
-    expect(await statusIn(restaurantId)).toBe("confirmed");
+    expect(response.status).toBe(200);
+    expect(await statusIn(restaurantId)).toBe("cancelled");
   });
+
+  it.each(["https://elsewhere.example", "null"])(
+    "refuses a cancel from Origin %s",
+    async (from) => {
+      const { restaurantId, token } = await booked();
+
+      const response = await visit(`/b/${token}`, { method: "POST", headers: { origin: from } });
+
+      expect(response.status).toBe(403);
+      expect(await statusIn(restaurantId)).toBe("confirmed");
+    },
+  );
 
   it("refuses a cancel inside the cutoff, on the server's own clock", async () => {
     const { restaurantId, token } = await booked(60);

@@ -262,6 +262,9 @@ async function blockingBookings(
       and(
         eq(bookings.restaurantId, restaurantId),
         eq(bookings.tableId, tableId),
+        // Keeps this off the table's whole history. Safe by bookings_hold_capped: no
+        // hold outlasts its start by more, so nothing older can still hold the table.
+        sql`${bookings.startsAt} > now() - interval '960 minutes'`,
         sql`public.booking_holds_table(${bookings.status}, ${bookings.holdEndsAt})`,
       ),
     )
