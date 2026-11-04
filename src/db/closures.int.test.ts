@@ -11,7 +11,7 @@ import { openOwnerDatabase, openTestDatabase } from "../../test/integration/data
 import { bookings, closures } from "./schema";
 
 /**
- * Closures (spec 04, migration 0019): written straight at Postgres, as app_tenant
+ * Closures (spec 04, migration 0026): written straight at Postgres, as app_tenant
  * where the app would be, with none of the app's own checks in the way. The
  * guards: a closure can't be saved over a confirmed booking, and a confirmed
  * booking can't be made inside a closure, whichever commits first.

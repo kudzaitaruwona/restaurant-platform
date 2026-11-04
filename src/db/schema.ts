@@ -450,7 +450,7 @@ export const diningTables = pgTable(
  * because every tenant table needs UNIQUE (restaurant_id, id) for composite
  * keys; the primary key is `restaurant_id`, as the spec has it *(proposed)*.
  *
- * Postgres rules that live only in the migration (0014), because Drizzle can't
+ * Postgres rules that live only in the migration (0021), because Drizzle can't
  * model them:
  * - the enable gate: `enabled` can't be true unless the restaurant has a service
  *   period, a bookable live table and a contact phone
@@ -519,7 +519,7 @@ export const bookingSettings = pgTable(
  * touch.
  *
  * The no-overlap rule is an exclusion constraint that lives only in the
- * migration (0014), because Drizzle can't model it:
+ * migration (0021), because Drizzle can't model it:
  *   service_periods_no_overlap EXCLUDE USING gist (restaurant_id WITH =,
  *     weekday WITH =, int4range(opens_at secs, closes_at secs) WITH &&)
  * It leads with restaurant_id, as spec 00 has it.
@@ -561,7 +561,7 @@ export const servicePeriods = pgTable(
  * what availability is made of.
  *
  * THE double-booking guard is an exclusion constraint that lives only in the
- * migration (0015), because Drizzle can't model it:
+ * migration (0022), because Drizzle can't model it:
  *   bookings_no_overlap EXCLUDE USING gist (table_id WITH =,
  *     tstzrange(starts_at, hold_ends_at) WITH &&)
  *     WHERE (status IN ('confirmed', 'seated', 'completed'))
@@ -630,9 +630,9 @@ export const bookings = pgTable(
  * A time the restaurant is shut: a holiday, a private event (spec 00, 4). The
  * availability engine drops any sitting that runs into one, and Postgres refuses a
  * confirmed booking inside one, and a closure over a confirmed booking, whichever
- * commits first. Those two guards live only in the migration (0019), because
+ * commits first. Those two guards live only in the migration (0026), because
  * Drizzle can't model triggers: bookings_within_closure and closures_cover_bookings
- * (see migration 0019 for the lock they meet on).
+ * (see migration 0026 for the lock they meet on).
  *
  * A date-only closure is local midnight to the next local midnight, converted with
  * restaurants.timezone in Postgres (src/lib/booking-closures.ts). Reads start from

@@ -6,8 +6,8 @@ import { openOwnerDatabase, openTestDatabase } from "../../test/integration/data
 
 /**
  * Three rules take advisory locks on one booking insert: the per-phone limit
- * (migration 0017), the archive guard's shared table lock (migration 0016) and the
- * closure guard's shared restaurant lock (migration 0019). An archive takes the
+ * (migration 0024), the archive guard's shared table lock (migration 0023) and the
+ * closure guard's shared restaurant lock (migration 0026). An archive takes the
  * table lock exclusively, and a closure save the restaurant lock exclusively and
  * nothing else. AFTER triggers fire in name order, so
  * an insert always goes foreign keys, then phone, then table, then closure, and the exclusion

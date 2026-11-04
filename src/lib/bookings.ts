@@ -48,7 +48,7 @@ const choices = (times: readonly AvailableTime[]): TimeChoice[] =>
  * and a slot's hold into the next date's bookings, so a date's holds are read by
  * overlap with this wider window, never by the date they start on. The read also
  * stops looking back at MAX_HOLD_MS before the date, so it doesn't scan a
- * restaurant's whole history; bookings_hold_capped (migration 0015) is what makes
+ * restaurant's whole history; bookings_hold_capped (migration 0022) is what makes
  * that safe: no hold can be longer, however a booking is made.
  */
 export const MAX_HOLD_MS = (720 + 240) * 60_000;
@@ -125,7 +125,7 @@ const contactOf = (phone: string | null) => ({
  * The closures that touch [from, to), soonest end first. The lower bound is the
  * read's own: a closure that ended before `from` is never read, so past years'
  * closures cost nothing (the index is on restaurant_id and ends_at, migration
- * 0019). Closures are never changed behind a read, and what Postgres refuses at
+ * 0026). Closures are never changed behind a read, and what Postgres refuses at
  * the insert is bookings_within_closure, whatever this saw.
  */
 export async function readClosures(
@@ -371,7 +371,7 @@ const failed = (what: string) => (error: unknown): never => {
  * waits for it, so Postgres ends that deadlock by failing one of them, and the
  * one it fails has lost that table just the same. So has a confirm that finds the
  * table archived or walk-ins only (bookings_table_live and bookings_table_bookable,
- * migration 0016): an owner changed it between the list and the insert.
+ * migration 0023): an owner changed it between the list and the insert.
  */
 function tableWasTaken(error: unknown) {
   const cause = dbErrorOf(error);
@@ -441,13 +441,13 @@ export type ConfirmOutcome =
     }
   | { outcome: "closed" };
 
-/** The trigger in migration 0019 saying a closure now covers the time. */
+/** The trigger in migration 0026 saying a closure now covers the time. */
 export const isInsideClosure = (error: unknown) => {
   const cause = dbErrorOf(error);
   return cause?.code === "23514" && cause.constraint === "bookings_within_closure";
 };
 
-/** The trigger in migration 0017 saying this phone is at its limit. */
+/** The trigger in migration 0024 saying this phone is at its limit. */
 const isPhoneLimit = (error: unknown) => {
   const cause = dbErrorOf(error);
   return cause?.code === "23514" && cause.constraint === "bookings_max_active_per_phone";
@@ -482,7 +482,7 @@ async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phon
  * the rate limit and the bot check before any of this.
  *
  * The per-phone count here is for the guest's message. The rule is the trigger in
- * migration 0017, which serialises per phone: two confirms for one phone can't
+ * migration 0024, which serialises per phone: two confirms for one phone can't
  * both pass, and the one that loses is answered below as if the count had caught it.
  */
 export async function confirmBooking(
@@ -546,7 +546,7 @@ export async function confirmBooking(
           ));
       } catch (error) {
         // A closure saved between the list and the insert (bookings_within_closure,
-        // migration 0019) has taken the time away, for every table alike: the time is
+        // migration 0026) has taken the time away, for every table alike: the time is
         // gone, which is the race-lost answer. The attempt's savepoint is rolled back.
         if (isInsideClosure(error)) booked = undefined;
         else if (isPhoneLimit(error)) {

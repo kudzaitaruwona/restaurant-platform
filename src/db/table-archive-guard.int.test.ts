@@ -11,7 +11,7 @@ import { openOwnerDatabase, openTestDatabase } from "../../test/integration/data
 import { bookings, bookingSettings, diningTables } from "./schema";
 
 /**
- * The archive guard (spec 03, migration 0016): written straight at Postgres, as
+ * The archive guard (spec 03, migration 0023): written straight at Postgres, as
  * app_tenant where the app would be, with nothing of the app's own checks in the way.
  */
 const app = openTestDatabase();

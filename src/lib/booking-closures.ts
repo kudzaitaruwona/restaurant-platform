@@ -12,7 +12,7 @@ import { recordAdminAction } from "@/lib/tenant/audit";
  * Closures (spec 04 › Settings): owner only (S-26), callers check requireOwner(ctx).
  * The rule that matters is Postgres's: closures_cover_bookings refuses a closure
  * over a confirmed booking and bookings_within_closure refuses a booking inside
- * one, whichever commits first (migration 0019). The list read first here is for
+ * one, whichever commits first (migration 0026). The list read first here is for
  * the screen: it is what staff are shown, so they can move or cancel each booking.
  * Spec 01's audit list has no closures, so only a platform admin's are audited.
  *
@@ -129,7 +129,7 @@ export async function closureIdFrom(params: Promise<{ closureId: string }>) {
 /** The most bookings the refusal lists: a closure over more is a closure over a lot of days. */
 const BLOCKING_LIST_LIMIT = 100;
 
-/** The guard trigger's constraint name (migration 0019). */
+/** The guard trigger's constraint name (migration 0026). */
 const COVER_GUARD = "closures_cover_bookings";
 
 export type BlockingBooking = {
@@ -146,7 +146,7 @@ export type BlockingBooking = {
  * first: judged by booking_stops_closure and the same bounds as the trigger, so the
  * list and the refusal can't disagree. The read stops looking back 960 minutes
  * before the later of the closure's start and now (bookings_hold_capped, migration
- * 0015: no sitting outlasts its start by more) and uses the index on
+ * 0022: no sitting outlasts its start by more) and uses the index on
  * (restaurant_id, starts_at), so it doesn't walk the restaurant's history. Guest
  * name and party only: no phone.
  */

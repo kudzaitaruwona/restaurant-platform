@@ -14,7 +14,7 @@ import { recordAdminAction } from "@/lib/tenant/audit";
  * audited, as for restaurant settings.
  *
  * The rules that matter are Postgres's: the times check, the no-overlap
- * constraint and the enable gate (migration 0014). The checks here only give an
+ * constraint and the enable gate (migration 0021). The checks here only give an
  * owner the sentence the constraint would otherwise refuse with.
  */
 
@@ -143,7 +143,7 @@ const dbErrorOf = (error: unknown) =>
  * Turns online booking on or off. The gate is Postgres's, not a check here:
  * a trigger refuses to enable while a service period, a bookable table or the
  * contact phone is missing, and it runs under the settings row's lock, so a table
- * archived at the same moment can't slip past it (see migration 0014). The
+ * archived at the same moment can't slip past it (see migration 0021). The
  * refusal names what's missing.
  */
 export async function setBookingEnabled(

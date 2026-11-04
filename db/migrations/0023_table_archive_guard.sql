@@ -11,7 +11,7 @@
 --
 -- The guard below and the app's list (src/lib/tables.ts) read back only 960 minutes
 -- from now, so an archive doesn't walk the table's whole booking history.
--- bookings_hold_capped (migration 0015) makes that safe: a hold ends within 960
+-- bookings_hold_capped (migration 0022) makes that safe: a hold ends within 960
 -- minutes of its start, so a booking that started earlier can't still hold a table.
 -- Raising the cap means raising these two bounds with it.
 CREATE FUNCTION booking_holds_table(p_status booking_status, p_hold_ends_at timestamptz) RETURNS boolean
@@ -62,7 +62,7 @@ $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION tables_archive_guard() FROM PUBLIC;
 --> statement-breakpoint
--- Named to sort before booking_gate_table_changed (migration 0014): triggers fire
+-- Named to sort before booking_gate_table_changed (migration 0021): triggers fire
 -- in name order, so a refused archive stops before the gate's recheck has taken the
 -- settings row's lock. The two compose either way, since the refusal aborts the
 -- statement and the recheck's switch-off with it.

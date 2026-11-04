@@ -36,7 +36,7 @@ AS $$
   SELECT p_status = 'confirmed' AND p_ends_at > now()
 $$;
 --> statement-breakpoint
--- THE RACE, as for the archive guard (migration 0016): a closure insert and a
+-- THE RACE, as for the archive guard (migration 0023): a closure insert and a
 -- booking insert don't conflict on any row, so each could pass its check without
 -- seeing the other's uncommitted row. They meet on an advisory lock of their own,
 -- keyed by the restaurant: a booking holds it shared (confirms never queue behind
@@ -53,14 +53,14 @@ $$;
 -- was written and quote nothing of it in the error.
 --
 -- LOCK ORDER. A booking insert takes, in trigger-name order, the phone's lock
--- (0017), the table's lock shared (0016) and then this one shared. The closure
+-- (0024), the table's lock shared (0023) and then this one shared. The closure
 -- save takes this one and no other advisory lock, and never waits on a row the
 -- other side holds, so no wait can close a cycle: a table archive holds the
 -- table's lock and nothing else, and the gate's recheck takes the settings row.
 -- src/db/booking-lock-order.int.test.ts holds that to the real connections.
 --
 -- Reads are bounded. The booking read below stops looking back at 960 minutes
--- before the later of the closure's start and now: bookings_hold_capped (0015)
+-- before the later of the closure's start and now: bookings_hold_capped (0022)
 -- means no sitting outlasts its start by more, so nothing older can still be in the
 -- way, and bookings are never deleted. The closure read starts at the booking's
 -- start, through the index on (restaurant_id, ends_at).
@@ -117,7 +117,7 @@ $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION bookings_within_closure() FROM PUBLIC;
 --> statement-breakpoint
--- Named to sort after bookings_table_live_insert (0016), so an insert goes phone,
+-- Named to sort after bookings_table_live_insert (0023), so an insert goes phone,
 -- table, closure. A new confirmed booking, online or staff.
 CREATE TRIGGER bookings_within_closure_insert
   AFTER INSERT ON bookings

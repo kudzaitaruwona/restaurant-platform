@@ -29,7 +29,7 @@ type Actor = Pick<TenantContext, "restaurantId" | "staffId" | "platformAdminId">
 const MINUTE = 60_000;
 /** How long after its start a confirmed booking shows as Late (spec 04). */
 export const LATE_AFTER_MINUTES = 30;
-/** bookings_hold_capped's limit (migration 0015), in minutes. */
+/** bookings_hold_capped's limit (migration 0022), in minutes. */
 export const HOLD_CAP_MINUTES = 960;
 
 // --- reading a day ----------------------------------------------------------

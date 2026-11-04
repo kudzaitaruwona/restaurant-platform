@@ -222,7 +222,7 @@ export function moveTable(
 /** The most bookings the refusal lists: a table is rarely booked this far ahead. */
 const BLOCKING_LIST_LIMIT = 100;
 
-/** The guard trigger's constraint name (migration 0016). */
+/** The guard trigger's constraint name (migration 0023). */
 const ARCHIVE_GUARD = "tables_archive_guard";
 
 export type BlockingBooking = {
@@ -303,7 +303,7 @@ const blockedBy = (label: string, list: BlockingBooking[]) => ({
  *
  * A table with future bookings isn't archived (spec 03): they're listed instead.
  * The list read first is for the screen. What holds when a guest confirms at the
- * moment of the archive is the database's guard (migration 0016), whose refusal is
+ * moment of the archive is the database's guard (migration 0023), whose refusal is
  * answered with the list as it stands then.
  */
 export async function archiveTable(ctx: Writer, tableId: string): Promise<ArchiveOutcome> {

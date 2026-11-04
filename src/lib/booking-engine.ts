@@ -11,7 +11,7 @@
  *
  * This says what the list should show. Postgres's bookings_no_overlap is what
  * actually prevents a double booking, and closures are the same: a sitting that
- * runs into one is dropped here, and bookings_within_closure (migration 0019) is
+ * runs into one is dropped here, and bookings_within_closure (migration 0026) is
  * what refuses it.
  */
 
