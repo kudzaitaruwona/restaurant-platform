@@ -218,6 +218,21 @@ describe("POST /api/admin/restaurants/[restaurantId]/owner", () => {
     expect(await staffOf(restaurantId)).toHaveLength(1);
   });
 
+  it("is a 409 when the email belongs to someone else in another case", async () => {
+    const taken = `${crypto.randomUUID()}@example.test`;
+    await owner.db.insert(staff).values({
+      restaurantId: devRestaurants[0].id,
+      email: taken.toUpperCase(),
+      displayName: "Entered by hand",
+    });
+    const restaurantId = await newRestaurant();
+
+    const response = await createOwner(restaurantId, { email: taken, displayName: "Owner" });
+
+    expect(response.status).toBe(409);
+    await owner.db.delete(staff).where(eq(staff.email, taken.toUpperCase()));
+  });
+
   it("is a 409 when the email belongs to someone else", async () => {
     const fields = validOwner();
     await created(await createOwner(await newRestaurant(), fields));

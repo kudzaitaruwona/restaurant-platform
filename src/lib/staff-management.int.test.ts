@@ -132,6 +132,18 @@ describe("adding staff", () => {
     expect(JSON.stringify(entry.details)).not.toContain(details.email);
   });
 
+  it("refuses an email that differs only in case from someone already there", async () => {
+    const ctx = await newRestaurant();
+    const details = person();
+    await owner.db.insert(staff).values({
+      restaurantId: ctx.restaurantId,
+      email: details.email.toUpperCase(),
+      displayName: "Entered by hand",
+    });
+
+    expect(await addStaff(ctx, details)).toBe("email_taken");
+  });
+
   it("refuses an email already in use, in any restaurant, and writes nothing", async () => {
     const [mine, theirs] = [await newRestaurant(), await newRestaurant()];
     const details = person();

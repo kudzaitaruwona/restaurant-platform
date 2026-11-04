@@ -117,7 +117,11 @@ export async function addStaff(
     });
     return "added";
   } catch (error) {
-    if (constraintOf(error) === "staff_email_unique") return "email_taken";
+    const constraint = constraintOf(error);
+    // An exact match can trip the first, a match in another case only the second.
+    if (constraint === "staff_email_unique" || constraint === "staff_email_lower_unique") {
+      return "email_taken";
+    }
     throw error;
   }
 }
