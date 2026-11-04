@@ -30,12 +30,22 @@ export async function TablesScreen() {
       ) : (
         <ul className="flex flex-col divide-y">
           {tables.map((table) => (
-            <li key={table.id} className="flex justify-between gap-4 py-2">
+            <li key={table.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
               <span className="font-medium">{table.label}</span>
               <span className="text-sm text-muted-foreground">
                 Seats {table.capacity}
                 {!table.bookable && ", walk-ins only"}
               </span>
+              <ActionForm
+                action={`/api/tables/${table.id}/regenerate`}
+                confirmation={`The printed code on Table ${table.label} will stop working. Make a new one?`}
+                savedMessage={`New code made for Table ${table.label}. The old one has stopped working: reprint it from the print sheet.`}
+                className="flex flex-col gap-1"
+              >
+                <Button type="submit" variant="outline" size="sm">
+                  Regenerate QR
+                </Button>
+              </ActionForm>
             </li>
           ))}
         </ul>

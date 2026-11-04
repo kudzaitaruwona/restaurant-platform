@@ -1,8 +1,16 @@
+import { eq } from "drizzle-orm";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { categories, diningTables, menuItems, restaurants, staff } from "../../src/db/schema";
+import {
+  categories,
+  diningTables,
+  menuItems,
+  restaurants,
+  staff,
+  staffAuthRateLimit,
+} from "../../src/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -114,10 +122,11 @@ async function newRestaurant(dish: string) {
     .values({ restaurantId: id, categoryId, name: dish, priceUsd: "8" });
   // 22 base62 characters, and unique to this restaurant.
   const qrToken = id.replaceAll("-", "").slice(0, 22).padEnd(22, "0");
+  const tableId = crypto.randomUUID();
   await owner.db
     .insert(diningTables)
-    .values({ restaurantId: id, label: "7", capacity: 4, qrToken });
-  return { id, menuToken, qrToken, categoryId };
+    .values({ id: tableId, restaurantId: id, label: "7", capacity: 4, qrToken });
+  return { id, menuToken, qrToken, categoryId, tableId };
 }
 
 const visit = (path: string, init?: RequestInit) =>
@@ -134,6 +143,9 @@ async function signInAsOwnerOf(restaurantId: string) {
     displayName: "Owner",
     role: "owner",
   });
+  // Rate limited per address, and kept in the database: back to back runs and
+  // sign-ins in this file would otherwise trip it.
+  await owner.db.delete(staffAuthRateLimit);
   await fetch(`${origin}/api/auth/staff/sign-in/magic-link`, {
     method: "POST",
     headers: { origin, "content-type": "application/json" },
@@ -235,5 +247,53 @@ describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
     expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
+  });
+});
+
+describe("regenerating a table's token", () => {
+  const regenerate = (restaurant: { tableId: string }, cookie: string) =>
+    visit(`/api/tables/${restaurant.tableId}/regenerate`, {
+      method: "POST",
+      headers: { origin, cookie },
+    });
+
+  const tokenNow = async (tableId: string) =>
+    (await owner.db.select().from(diningTables).where(eq(diningTables.id, tableId)))[0].qrToken;
+
+  it("stops the old code at once, though its page was cached, and the new one works", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    const oldToken = mine.qrToken;
+    // Cached, so only the tag can take it down: five minutes is the ceiling.
+    expect(cacheStatus(await visit(`/t/${oldToken}`))).toBe("MISS");
+    expect(cacheStatus(await visit(`/t/${oldToken}`))).toBe("HIT");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+
+    const response = await regenerate(mine, cookie);
+
+    expect(response.status).toBe(303);
+    const old = await visit(`/t/${oldToken}`);
+    expect(old.status).toBe(404);
+    expect(await old.text()).toContain("This code is out of date");
+    const fresh = await visit(`/t/${await tokenNow(mine.tableId)}`);
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toContain("Stew");
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
+  });
+
+  it("refuses another restaurant's table, and its code keeps working", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    const cookie = await signInAsOwnerOf(mine.id);
+
+    const response = await regenerate(theirs, cookie);
+
+    expect(response.status).toBe(404);
+    expect((await visit(`/t/${theirs.qrToken}`)).status).toBe(200);
+  });
+
+  it("holds neither token in the server's output", () => {
+    expect(serverOutput).not.toMatch(/\/t\/[0-9A-Za-z]{22}\b/);
   });
 });

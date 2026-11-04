@@ -5,7 +5,11 @@ import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../test/integration/database";
-import { addTable, getPrintHeader, listTables } from "./tables";
+import { menuTag } from "./menu-cache";
+import { addTable, getPrintHeader, listTables, regenerateQrToken } from "./tables";
+
+const cache = vi.hoisted(() => ({ revalidateTag: vi.fn() }));
+vi.mock("next/cache", () => cache);
 
 /** Runs as app_tenant, so everything here also holds under RLS. */
 const owner = openOwnerDatabase();
@@ -126,5 +130,109 @@ describe("getPrintHeader", () => {
       wifiName: "Guest",
       wifiPassword: "sadza",
     });
+  });
+});
+
+describe("regenerateQrToken", () => {
+  const ownerOf = (tenant: { restaurantId: string }) => ({
+    ...tenant,
+    staffId: crypto.randomUUID(),
+  });
+
+  async function oneTable(tenant: { restaurantId: string }, label = "7") {
+    await addTable(tenant, { label, capacity: 4 });
+    const [table] = (await owner.db
+      .select()
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, tenant.restaurantId))).filter((t) => t.label === label);
+    return table;
+  }
+
+  it("mints a new token, sets token_rotated_at, and keeps the rest of the table", async () => {
+    const tenant = await newRestaurant();
+    const before = await oneTable(tenant);
+    expect(before.tokenRotatedAt).toBeNull();
+
+    expect(await regenerateQrToken(ownerOf(tenant), before.id)).toBe("done");
+
+    const [after] = await owner.db.select().from(diningTables).where(eq(diningTables.id, before.id));
+    expect(after.qrToken).toMatch(/^[0-9A-Za-z]{22}$/);
+    expect(after.qrToken).not.toBe(before.qrToken);
+    expect(after.tokenRotatedAt).toBeInstanceOf(Date);
+    expect(after).toMatchObject({ label: "7", capacity: 4, sortOrder: before.sortOrder });
+  });
+
+  it("writes an audit entry for an owner, naming the table and never the token", async () => {
+    const tenant = await newRestaurant();
+    const ctx = ownerOf(tenant);
+    const before = await oneTable(tenant);
+
+    await regenerateQrToken(ctx, before.id);
+
+    const [after] = await owner.db.select().from(diningTables).where(eq(diningTables.id, before.id));
+    const entries = await owner.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.restaurantId, tenant.restaurantId));
+    expect(entries).toMatchObject([
+      {
+        action: "table.regenerate_qr",
+        entityType: "table",
+        entityId: before.id,
+        actorType: "staff",
+        actorId: ctx.staffId,
+      },
+    ]);
+    const logged = JSON.stringify(entries);
+    expect(logged).not.toContain(before.qrToken);
+    expect(logged).not.toContain(after.qrToken);
+  });
+
+  it("audits a platform admin by platform_admins.id", async () => {
+    const tenant = await newRestaurant();
+    const platformAdminId = crypto.randomUUID();
+    const table = await oneTable(tenant);
+
+    await regenerateQrToken({ ...ownerOf(tenant), platformAdminId }, table.id);
+
+    const [entry] = await owner.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.restaurantId, tenant.restaurantId));
+    expect(entry).toMatchObject({ actorType: "platform_admin", actorId: platformAdminId });
+  });
+
+  it("expires the restaurant's cached menu once it has committed", async () => {
+    const tenant = await newRestaurant();
+    const table = await oneTable(tenant);
+    cache.revalidateTag.mockClear();
+
+    await regenerateQrToken(ownerOf(tenant), table.id);
+
+    expect(cache.revalidateTag).toHaveBeenCalledWith(menuTag(tenant.restaurantId), { expire: 0 });
+  });
+
+  it("is not_found for another restaurant's table, an archived one or an unknown id, and changes nothing", async () => {
+    const [mine, theirs] = [await newRestaurant(), await newRestaurant()];
+    const other = await oneTable(theirs);
+    const archived = await oneTable(mine, "old");
+    await owner.db
+      .update(diningTables)
+      .set({ archivedAt: new Date() })
+      .where(eq(diningTables.id, archived.id));
+    cache.revalidateTag.mockClear();
+
+    for (const id of [other.id, archived.id, crypto.randomUUID()]) {
+      expect(await regenerateQrToken(ownerOf(mine), id)).toBe("not_found");
+    }
+
+    const rows = await owner.db
+      .select()
+      .from(diningTables)
+      .where(inArray(diningTables.id, [other.id, archived.id]));
+    expect(rows.map((row) => row.qrToken).sort()).toEqual([other.qrToken, archived.qrToken].sort());
+    expect(rows.every((row) => row.tokenRotatedAt === null)).toBe(true);
+    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, mine.restaurantId))).toEqual([]);
+    expect(cache.revalidateTag).not.toHaveBeenCalled();
   });
 });
