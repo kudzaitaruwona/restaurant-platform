@@ -53,6 +53,18 @@ export default defineConfig({
           hookTimeout: 60_000,
         },
       },
+      {
+        // Not part of `npm test`: it needs `npm run build` first.
+        extends: true,
+        test: {
+          name: "production",
+          environment: "node",
+          include: ["test/production/**/*.test.ts"],
+          globalSetup: ["./test/integration/global-setup.ts"],
+          testTimeout: 30_000,
+          hookTimeout: 90_000,
+        },
+      },
     ],
   },
 });

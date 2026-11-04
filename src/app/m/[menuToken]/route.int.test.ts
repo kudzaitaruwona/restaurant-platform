@@ -29,8 +29,9 @@ vi.mock("next/cache", () => cache);
  * tenant rows at all until a tenant is set, so a page with items on it is itself
  * proof the query ran under RLS.
  *
- * `use cache` is inert here: what's checked is what it would store and how it's
- * tagged. The real cache is proved against a production build.
+ * `use cache` is inert here, and the proxy doesn't run: what's checked is what
+ * it would store and how it's tagged. test/production/public-pages.test.ts runs
+ * the real cache, on a production build.
  */
 const owner = openOwnerDatabase();
 const created: string[] = [];
@@ -184,7 +185,7 @@ describe("/m/{menu_token}", () => {
     expect(body).toContain("&lt;b&gt;Bold&lt;/b&gt;");
   });
 
-  it("shows only what's meant for customers: no Wi-Fi password, no ids", async () => {
+  it("doesn't show the Wi-Fi password yet, or any ids", async () => {
     const { id, menuToken } = await newRestaurant("Private");
     const categoryId = await addCategory(id, "Mains");
     await addItem(id, categoryId, { name: "Stew", priceUsd: "8" });
@@ -229,12 +230,12 @@ describe("caching", () => {
     expect(cache.cacheTag.mock.calls).toEqual([[menuTag(id)]]);
   });
 
-  it("keeps a page until a save replaces it", async () => {
+  it("keeps a page for five minutes at most, with or without a save", async () => {
     const { menuToken } = await newRestaurant("Kept");
 
     await visit(menuToken);
 
-    expect(cache.cacheLife.mock.calls).toEqual([["max"]]);
+    expect(cache.cacheLife.mock.calls).toEqual([[{ revalidate: 300, expire: 300 }]]);
   });
 
   it("forgets an unknown token soon: it has no restaurant to be revalidated by", async () => {

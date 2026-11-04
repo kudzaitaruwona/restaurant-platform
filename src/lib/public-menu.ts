@@ -7,13 +7,16 @@ import { type PublicTokenKind, resolvePublicToken } from "@/lib/tenant/public";
 
 /**
  * The customer's menu page (spec 02), shared by every public URL that shows it.
- * Written as a string because a Next.js page can't leave out the framework's
+ * Written as a string because an App Router page can't leave out the framework's
  * scripts, which alone break the budget (S-32). The whole of it is below: no
  * JavaScript, no web fonts, one inline stylesheet, so one request draws the page.
  */
 
 /** Cache Components needs one sample per route at build, which has no database. */
 export const BUILD_SAMPLE_TOKEN = "build-sample";
+
+/** Issue 24: a special starts or ends within this long of its window. */
+const FRESH_FOR_SECONDS = 5 * 60;
 
 const styles = `
 :root{color-scheme:light dark;--muted:#5f5f5f;--line:#e2e2e2}
@@ -95,7 +98,11 @@ async function cachedPage(kind: PublicTokenKind, token: string) {
     return null;
   }
 
-  cacheLife("max");
+  // Prices only change on a save, but a special's window opens and closes without
+  // one, and a render overlapping a save can store the old page after the tag has
+  // expired. expire is the same as revalidate so that this is a ceiling: otherwise
+  // the first visit after a quiet spell would still get the old page.
+  cacheLife({ revalidate: FRESH_FOR_SECONDS, expire: FRESH_FOR_SECONDS });
   cacheTag(menuTag(tenant.restaurantId));
   return menuPage(await getMenu(tenant)).toString();
 }

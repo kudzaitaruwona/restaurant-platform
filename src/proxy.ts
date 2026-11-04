@@ -6,15 +6,29 @@ import {
 } from "@/lib/auth/cookies";
 
 /**
- * Two things every staff request needs, kept off the public pages (spec 02's
- * budget) by the matcher, and holding no database work.
+ * Two things every staff request needs, and one every public page needs. The
+ * matcher is what keeps this off everything else, and nothing here touches the
+ * database.
  *
  * Any new staff page outside these paths needs adding here, or its visits stop
  * counting towards keeping a session alive.
  */
 export const config = {
-  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+"],
 };
+
+/**
+ * Pages cached by URL. Next.js fills that cache whatever the method, so one
+ * anonymous POST to a page nobody has visited lately would be stored as the page
+ * for every customer after it (S-32). The matcher can't filter on method, so
+ * this runs ahead of the cache on each visit, which is why a public page does
+ * nothing else here: no cookies, no session. Each one also needs its matcher.
+ */
+const publicPagePrefixes = ["/m/"];
+const cacheableMethods = new Set(["GET", "HEAD"]);
+
+const isPublicPage = (request: NextRequest) =>
+  publicPagePrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix));
 
 const readMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -55,6 +69,12 @@ function keepSessionCookiesAlive(request: NextRequest, response: NextResponse) {
 }
 
 export function proxy(request: NextRequest) {
+  if (isPublicPage(request)) {
+    return cacheableMethods.has(request.method)
+      ? NextResponse.next()
+      : new NextResponse(null, { status: 405, headers: { Allow: "GET, HEAD" } });
+  }
+
   if (isCrossSiteWrite(request)) {
     return new NextResponse(null, { status: 403 });
   }
