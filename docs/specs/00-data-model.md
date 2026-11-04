@@ -11,6 +11,8 @@ This is a reference schema written as Postgres-style pseudocode. It is not a mig
 - **All timestamps are `timestamptz`.** Each restaurant has a `timezone`, which defaults to `Africa/Harare` (CAT, UTC+2, no daylight saving). Opening hours are local `time` values and are interpreted in that zone.
 - **Rules that protect money or seats live in the database**, as constraints and triggers, not only in app code.
 
+**Tables that don't carry `restaurant_id`.** The rules above govern tenant tables. Better Auth's sign-in tables (`staff_auth_*` and `admin_auth_*`, including `staff_auth_code_limit` and `admin_auth_code_limit`) belong to no restaurant: they exist before anyone has a tenant, and a credential must be unreachable from inside one. They have RLS, with the reverse of the tenant policy, so rows are visible only when no tenant is set. They are not listed in this spec's schema. S-30 in `docs/decisions.md` records them, their policy and how retention works.
+
 ## 1. Tenant, staff, platform
 
 ```sql
@@ -30,7 +32,7 @@ restaurants
 staff
   id, restaurant_id → restaurants
   kind                  enum(staff, platform_admin) default 'staff'
-  email                 text unique null     -- global, used for sign-in; null for platform_admin rows
+  email                 text unique null     -- global and case-insensitive (S-30), used for sign-in; null for platform_admin rows
   -- S-27: passwordless sign-in (magic link, email code, Google). No password column.
   CHECK (kind = 'platform_admin' OR email IS NOT NULL)
   -- platform_admin rows never count toward the soft limit, which counts owner logins only (S-26)
@@ -43,12 +45,12 @@ staff
   created_at
 
 platform_admins                               -- Kudzai, for hand-onboarding
-  id, email unique, created_at                -- passwordless sign-in (S-27)
+  id, email unique, created_at                -- case-insensitive; passwordless sign-in (S-27)
 
 audit_log
   id, restaurant_id
   actor_type            enum(staff, platform_admin, system)
-  actor_id              uuid null
+  actor_id              uuid null            -- S-29: platform_admins.id when actor_type = platform_admin
   action                text                 -- 'session.force_close', 'booking.cancel', ...
   entity_type, entity_id
   details               jsonb

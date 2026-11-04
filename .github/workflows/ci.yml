@@ -29,6 +29,30 @@ jobs:
       # Build runs without runtime secrets: env validation happens at server
       # start (src/instrumentation.ts), not during `next build`.
       - run: npm run build
+      # S-25: a rejected register() would leave `next start` serving 500s, so
+      # prove the process really exits. Everything else is valid, so the refusal
+      # can only be DEV_AUTH_BYPASS. `timeout` reports 124 if it stays up.
+      - name: next start exits with DEV_AUTH_BYPASS set
+        env:
+          DEV_AUTH_BYPASS: "1"
+          DATABASE_URL: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          R2_ACCOUNT_ID: ci
+          R2_ACCESS_KEY_ID: ci
+          R2_SECRET_ACCESS_KEY: ci
+          R2_BUCKET: ci
+          R2_PUBLIC_BASE_URL: https://images.example.test
+          AUTH_SECRET: ci-stand-in-of-at-least-32-characters
+          GOOGLE_CLIENT_ID: ci
+          GOOGLE_CLIENT_SECRET: ci
+          RESEND_API_KEY: ci
+          EMAIL_FROM: ci@example.test
+        run: |
+          status=0
+          timeout 30 npx next start > start.log 2>&1 || status=$?
+          cat start.log
+          test "$status" -eq 1
+          grep -q "DEV_AUTH_BYPASS must not be set in production" start.log
 
   integration:
     name: Integration tests (Postgres 17 via Neon wsproxy)
@@ -57,11 +81,15 @@ jobs:
         ports:
           - 5498:80
     env:
+      # `app` is a superuser that owns the tables: migrations and fixtures only,
+      # because RLS skips it. Global setup creates app_tenant by migration and
+      # gives it this password. The tenant isolation tests connect as it.
       TEST_DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      TEST_DATABASE_URL_APP: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
       NEON_WS_PROXY: localhost:5498/v1
       # Stand-ins so code paths that read the validated env can load. No real
       # credentials exist in CI; nothing here reaches R2.
-      DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      DATABASE_URL: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       R2_ACCOUNT_ID: ci
       R2_ACCESS_KEY_ID: ci
@@ -75,4 +103,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Includes the cross-tenant and role harnesses
+      # (src/lib/tenant/access.int.test.ts) and the RLS coverage test.
       - run: npm run test:integration

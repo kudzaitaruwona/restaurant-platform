@@ -4,7 +4,7 @@ describe("@/lib/storage (R2-backed)", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it("getUrl serves images from R2_PUBLIC_BASE_URL", async () => {
-    vi.stubEnv("DATABASE_URL", "postgres://app:app@localhost:5499/x");
+    vi.stubEnv("DATABASE_URL", "postgres://app_tenant:app_tenant@localhost:5499/x");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://localhost:3000");
     vi.stubEnv("R2_ACCOUNT_ID", "account");
     vi.stubEnv("R2_ACCESS_KEY_ID", "key");
