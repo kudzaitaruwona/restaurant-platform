@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,9 @@ import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
+import { POST as archive } from "@/app/api/tables/[tableId]/archive/route";
+import { POST as move } from "@/app/api/tables/[tableId]/move/route";
+import { POST as editTable } from "@/app/api/tables/[tableId]/route";
 import { POST as addTable } from "@/app/api/tables/route";
 import { categories, diningTables, restaurants, staff } from "@/db/schema";
 import { getEnv } from "@/lib/env";
@@ -146,6 +149,12 @@ describe("how a saved form is answered", () => {
     return id;
   };
 
+  const newTableId = async () => {
+    const label = crypto.randomUUID().slice(0, 8);
+    await addTable(post("/api/tables", { label, capacity: "4" }));
+    return tableId(label);
+  };
+
   const routes: [string, string, (headers: Record<string, string>) => Promise<Response>][] = [
     [
       "POST /api/restaurant",
@@ -194,6 +203,33 @@ describe("how a saved form is answered", () => {
       "POST /api/tables",
       "/dashboard/tables",
       (headers) => addTable(post("/api/tables", { label: "7", capacity: "4" }, headers)),
+    ],
+    [
+      "POST /api/tables/[tableId]",
+      "/dashboard/tables",
+      async (headers) => {
+        const id = await newTableId();
+        return editTable(
+          post(`/api/tables/${id}`, { label: "Edited", capacity: "2", bookable: "true" }, headers),
+          tableParams(id),
+        );
+      },
+    ],
+    [
+      "POST /api/tables/[tableId]/move",
+      "/dashboard/tables",
+      async (headers) => {
+        const id = await newTableId();
+        return move(post(`/api/tables/${id}/move`, { direction: "down" }, headers), tableParams(id));
+      },
+    ],
+    [
+      "POST /api/tables/[tableId]/archive",
+      "/dashboard/tables",
+      async (headers) => {
+        const id = await newTableId();
+        return archive(post(`/api/tables/${id}/archive`, {}, headers), tableParams(id));
+      },
     ],
   ];
 
@@ -286,9 +322,9 @@ describe("/dashboard/tables", () => {
 
     const html = await screen(TablesScreen);
 
-    expect(html).toContain("Patio 1");
-    expect(html).toContain("Seats 6");
-    expect(html.indexOf(">7<")).toBeLessThan(html.indexOf("Patio 1"));
+    expect(html).toContain('value="Patio 1"');
+    expect(html).toContain('value="6"');
+    expect(html.indexOf('value="7"')).toBeLessThan(html.indexOf('value="Patio 1"'));
     expect(html).toContain('href="/dashboard/tables/print"');
   });
 
@@ -305,6 +341,144 @@ describe("/dashboard/tables", () => {
   it("refuses staff with forbidden(), before any data renders", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => TablesScreen())).toBe(403);
+  });
+});
+
+const tableId = async (label: string) => {
+  const [{ id }] = await owner.db
+    .select({ id: diningTables.id })
+    .from(diningTables)
+    .where(and(eq(diningTables.restaurantId, tenant.restaurantId), eq(diningTables.label, label)));
+  return id;
+};
+const tableParams = (id: string) => ({ params: Promise.resolve({ tableId: id }) });
+const edit = async (label: string, fields: Record<string, string>) => {
+  const id = await tableId(label);
+  return editTable(post(`/api/tables/${id}`, fields), tableParams(id));
+};
+
+describe("/dashboard/tables, managing", () => {
+  it("shows each table's position, label, seats and bookable toggle, with its actions", async () => {
+    await newTable("7", "4");
+    await newTable("Bar", "2");
+    const id = await tableId("Bar");
+    await edit("Bar", { label: "Bar", capacity: "2", bookable: "false" });
+
+    const html = await screen(TablesScreen);
+
+    expect(html).toContain(`action="/api/tables/${id}"`);
+    expect(html).toContain(`action="/api/tables/${id}/move"`);
+    expect(html).toContain(`action="/api/tables/${id}/archive"`);
+    expect(html).toContain("Bookable online");
+    // The second table's box is not ticked, the first's is.
+    const [first, second] = html.split("<li").slice(1);
+    expect(first).toContain('checked=""');
+    expect(second).not.toContain('checked=""');
+    expect(first).toContain(">1</span>");
+    expect(second).toContain(">2</span>");
+  });
+
+  it("can't move the first table up or the last down", async () => {
+    await newTable("A");
+    await newTable("B");
+
+    const [first, second] = (await screen(TablesScreen)).split("<li").slice(1);
+
+    expect(first.match(/<button[^>]*disabled=""[^>]*>Move up/)).not.toBeNull();
+    expect(first.match(/<button[^>]*disabled=""[^>]*>Move down/)).toBeNull();
+    expect(second.match(/<button[^>]*disabled=""[^>]*>Move down/)).not.toBeNull();
+  });
+
+  it("edits a table, and the list shows it", async () => {
+    await newTable("7", "4");
+
+    const response = await edit("7", { label: "Window 7", capacity: "6", bookable: "false" });
+
+    expect(response.status).toBe(303);
+    const html = await screen(TablesScreen);
+    expect(html).toContain('value="Window 7"');
+    expect(html).toContain('value="6"');
+  });
+
+  it("refuses a taken label with a reason the form can show", async () => {
+    await newTable("7");
+    await newTable("8");
+
+    const response = await edit("8", { label: "7", capacity: "4", bookable: "true" });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Another table already has that label." });
+  });
+
+  it.each([
+    { label: "", capacity: "4", bookable: "true" },
+    { label: "7", capacity: "101", bookable: "true" },
+    { label: "7", capacity: "4", bookable: "maybe" },
+  ])("refuses %j with a reason, and changes nothing", async (fields) => {
+    await newTable("7");
+
+    const response = await edit("7", fields);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(await screen(TablesScreen)).toContain('value="7"');
+  });
+
+  it("is a 404 for a malformed id, and for one that isn't a table", async () => {
+    for (const id of ["not-a-uuid", crypto.randomUUID()]) {
+      expect(
+        await statusOf(() =>
+          editTable(post(`/api/tables/${id}`, { label: "1", capacity: "1", bookable: "true" }), tableParams(id)),
+        ),
+      ).toBe(404);
+    }
+  });
+
+  it("moves a table down, and refuses another direction", async () => {
+    await newTable("A");
+    await newTable("B");
+    const id = await tableId("A");
+
+    expect((await move(post(`/api/tables/${id}/move`, { direction: "down" }), tableParams(id))).status).toBe(303);
+    expect((await move(post(`/api/tables/${id}/move`, { direction: "left" }), tableParams(id))).status).toBe(400);
+
+    const html = await screen(TablesScreen);
+    expect(html.indexOf('value="B"')).toBeLessThan(html.indexOf('value="A"'));
+  });
+
+  it("archives a table: off the list and the print sheet", async () => {
+    await newTable("Gone");
+    await newTable("Kept");
+    const id = await tableId("Gone");
+
+    const response = await archive(post(`/api/tables/${id}/archive`), tableParams(id));
+
+    expect(response.status).toBe(303);
+    const list = await screen(TablesScreen);
+    const sheet = await screen(PrintSheet);
+    expect(list).not.toContain('value="Gone"');
+    expect(sheet).not.toContain("Gone");
+    expect(sheet).toContain("Kept");
+  });
+
+  it("a second archive is a 404", async () => {
+    await newTable("7");
+    const id = await tableId("7");
+    await archive(post(`/api/tables/${id}/archive`), tableParams(id));
+
+    expect(await statusOf(() => archive(post(`/api/tables/${id}/archive`), tableParams(id)))).toBe(404);
+  });
+
+  it("refuses staff on all three routes", async () => {
+    await newTable("7");
+    const id = await tableId("7");
+    session.tenant = { ...tenant, role: "staff" };
+
+    expect(await statusOf(() => editTable(post(`/api/tables/${id}`, { label: "x", capacity: "1", bookable: "true" }), tableParams(id)))).toBe(403);
+    expect(await statusOf(() => move(post(`/api/tables/${id}/move`, { direction: "down" }), tableParams(id)))).toBe(403);
+    expect(await statusOf(() => archive(post(`/api/tables/${id}/archive`), tableParams(id)))).toBe(403);
+    session.tenant = tenant;
+    expect(await screen(TablesScreen)).toContain('value="7"');
   });
 });
 

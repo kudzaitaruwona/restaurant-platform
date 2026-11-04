@@ -73,7 +73,7 @@ vi.mock("next/cache", () => ({
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string; categoryId: string };
+type Target = { staffId: string; categoryId: string; tableId: string; restaurantId: string };
 
 type TenantRoute = {
   name: string;
@@ -84,6 +84,8 @@ type TenantRoute = {
 const harnessItem = "Harness item";
 const harnessCategory = "Harness category";
 const harnessTablePrefix = "Harness table ";
+/** Tables the archive route is aimed at: not the ones a new-table test counts. */
+const plantedPrefix = "Harness planted ";
 /** A table's QR token, one for each restaurant's table the harness plants. */
 const fixtureTableToken = (restaurant: "a" | "b") =>
   `Harness${restaurant.toUpperCase()}`.padEnd(22, "0");
@@ -92,6 +94,21 @@ const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
   params: Promise.resolve({ staffId }),
 });
+const tableParams = (tableId: string) => ({ params: Promise.resolve({ tableId }) });
+/** The tables the archive route was aimed at, by restaurant. */
+const planted: { id: string; restaurantId: string }[] = [];
+const plantTable = async (restaurantId: string) => {
+  const id = crypto.randomUUID();
+  await owner.db.insert(diningTables).values({
+    id,
+    restaurantId,
+    label: `${plantedPrefix}${id}`,
+    capacity: 2,
+    qrToken: id.replaceAll("-", "").padEnd(22, "0"),
+  });
+  planted.push({ id, restaurantId });
+  return id;
+};
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -159,6 +176,47 @@ const routes: TenantRoute[] = [
           }),
         }),
       ),
+  },
+  {
+    // Idempotent, so it can run against the fixture table as often as asked.
+    name: "POST /api/tables/[tableId]",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/tables/[tableId]/route")).POST(
+        request(`/api/tables/${target.tableId}`, {
+          method: "POST",
+          body: form({ label: fixtureName, capacity: "2", bookable: "true" }),
+        }),
+        tableParams(target.tableId),
+      ),
+  },
+  {
+    name: "POST /api/tables/[tableId]/move",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/tables/[tableId]/move/route")).POST(
+        request(`/api/tables/${target.tableId}/move`, {
+          method: "POST",
+          body: form({ direction: "down" }),
+        }),
+        tableParams(target.tableId),
+      ),
+  },
+  {
+    // Archiving can't be undone, so it takes a table planted in the target's
+    // restaurant for the purpose: the fixture table stays live for the rest.
+    name: "POST /api/tables/[tableId]/archive",
+    ownerOnly: true,
+    call: async (target) => {
+      // A made-up id, like the malformed ones tried below, is aimed at as it is.
+      const tableId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantTable(target.restaurantId)
+        : target.tableId;
+      return (await import("@/app/api/tables/[tableId]/archive/route")).POST(
+        request(`/api/tables/${tableId}/archive`, { method: "POST" }),
+        tableParams(tableId),
+      );
+    },
   },
 ];
 
@@ -347,11 +405,13 @@ const fixtures = {
   a: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    tableId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    tableId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -386,6 +446,7 @@ beforeAll(async () => {
   );
   await owner.db.insert(diningTables).values(
     (["a", "b"] as const).map((key) => ({
+      id: fixtures[key].tableId,
       restaurantId: fixtures[key].restaurantId,
       label: fixtureName,
       capacity: 2,
@@ -412,6 +473,7 @@ afterAll(async () => {
       or(
         eq(diningTables.label, fixtureName),
         like(diningTables.label, `${harnessTablePrefix}%`),
+        like(diningTables.label, `${plantedPrefix}%`),
       ),
     );
   await owner.db
@@ -506,6 +568,31 @@ const harnessCategories = (restaurantId: string) =>
       ),
     );
 
+/** What the table routes would change in a restaurant, apart from the table they're aimed at. */
+const tableStanding = async (tableId: string) => {
+  const [row] = await owner.db
+    .select({
+      label: diningTables.label,
+      capacity: diningTables.capacity,
+      bookable: diningTables.bookable,
+      sortOrder: diningTables.sortOrder,
+      archivedAt: diningTables.archivedAt,
+    })
+    .from(diningTables)
+    .where(eq(diningTables.id, tableId));
+  return row;
+};
+/** Whether the tables planted since `mark` in a restaurant are all still live. */
+const unarchived = async (restaurantId: string, mark: number) =>
+  (
+    await Promise.all(
+      planted
+        .slice(mark)
+        .filter((table) => table.restaurantId === restaurantId)
+        .map(({ id }) => tableStanding(id)),
+    )
+  ).every((row) => row.archivedAt === null);
+
 const harnessTables = (restaurantId: string) =>
   owner.db
     .select({ id: diningTables.id })
@@ -534,6 +621,8 @@ describe("cross-tenant access", () => {
     async (_name, key, route) => {
       session.identity = key;
       const itemsInA = (await harnessItems(fixtures.a.restaurantId)).length;
+      const bTable = await tableStanding(fixtures.b.tableId);
+      const mark = planted.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -542,6 +631,8 @@ describe("cross-tenant access", () => {
       expect(await standing(fixtures.b.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.b.restaurantId)).toEqual([]);
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(itemsInA);
+      expect(await tableStanding(fixtures.b.tableId)).toEqual(bTable);
+      expect(await unarchived(fixtures.b.restaurantId, mark)).toBe(true);
     },
   );
 
@@ -619,11 +710,15 @@ describe("owner-only routes", () => {
     async (_name, route) => {
       session.identity = aStaff.key;
       const items = (await harnessItems(fixtures.a.restaurantId)).length;
+      const aTable = await tableStanding(fixtures.a.tableId);
+      const mark = planted.length;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.a.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(items);
+      expect(await tableStanding(fixtures.a.tableId)).toEqual(aTable);
+      expect(await unarchived(fixtures.a.restaurantId, mark)).toBe(true);
     },
   );
 
@@ -811,6 +906,26 @@ describe("the tables route", () => {
     expect(table.qrToken).toMatch(/^[0-9A-Za-z]{22}$/);
   });
 
+  it("an edit with restaurant B's id in the request still can't reach B's table", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.b.restaurantId;
+    const before = await tableStanding(fixtures.b.tableId);
+
+    const response = await statusOf(async () =>
+      (await import("@/app/api/tables/[tableId]/route")).POST(
+        request(`/api/tables/${fixtures.b.tableId}?restaurantId=${id}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": id },
+          body: form({ label: "Hijacked", capacity: "9", bookable: "false", restaurantId: id }),
+        }),
+        tableParams(fixtures.b.tableId),
+      ),
+    );
+
+    expect(response).toBe(404);
+    expect(await tableStanding(fixtures.b.tableId)).toEqual(before);
+  });
+
   it("a label a live table has is a 409 and adds nothing", async () => {
     session.identity = aOwner.key;
     const label = `${harnessTablePrefix}${crypto.randomUUID()}`;
@@ -896,7 +1011,7 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        expect(await statusOf(() => route.call({ staffId, categoryId }))).toBe(404);
+        expect(await statusOf(() => route.call({ ...fixtures.a, staffId, categoryId, tableId: staffId }))).toBe(404);
       }
     },
   );

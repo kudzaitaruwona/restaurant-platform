@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { categories, diningTables, menuItems, restaurants, staff } from "../../src/db/schema";
 import {
   openOwnerDatabase,
@@ -235,5 +236,44 @@ describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
     expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
+  });
+});
+
+describe("archiving a table", () => {
+  it("stops its printed code working at once, not when the cached page expires", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const cookie = await signInAsOwnerOf(restaurant.id);
+    const [{ id: tableId }] = await owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, restaurant.id));
+    const scan = () => visit(`/t/${restaurant.qrToken}`);
+    await scan();
+    expect([(await scan()).status, cacheStatus(await scan())]).toEqual([200, "HIT"]);
+
+    const archived = await visit(`/api/tables/${tableId}/archive`, {
+      method: "POST",
+      headers: { origin, cookie },
+    });
+
+    expect(archived.status).toBe(303);
+    const after = await scan();
+    expect(after.status).toBe(404);
+    expect(await after.text()).toContain("This code is out of date");
+  });
+
+  it("leaves another restaurant's cached page where it was", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+    const [{ id: tableId }] = await owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, mine.id));
+
+    await visit(`/api/tables/${tableId}/archive`, { method: "POST", headers: { origin, cookie } });
+
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
   });
 });
