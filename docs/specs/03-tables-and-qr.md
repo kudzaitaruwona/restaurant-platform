@@ -24,6 +24,10 @@ The token identifies the table on the server. The URL never contains the table l
 - Add a table (label and capacity). The token is generated on save.
 - Edit the label, capacity, or bookable flag. Capacity changes apply to future booking assignments only, and existing bookings keep their table.
 - **Archive** a table. If it has future confirmed bookings, the system blocks archiving and lists them so staff can move or cancel them first.
+  - *(Proposed)* "Future" means a booking that is `confirmed` or `seated` and whose `hold_ends_at` hasn't passed. It is judged by the hold, not the start time, so a table occupied right now (a seated booking, or a late guest still `confirmed`) can't be archived either, and neither can one inside the reset buffer of a seating. `completed`, `cancelled` and `no_show` bookings never block.
+  - *(Proposed)* The guard is Postgres's, not just the screen's (migration 0016): a trigger refuses to archive such a table, and a booking that holds a table can't be made, moved onto it or reopened on it once the table is archived. A guest confirming at the instant of an archive therefore ends one way or the other, never with a future booking on an archived table: the confirm gets the usual "that time was just booked" answer, or the archive is refused. The two meet on a per-table advisory lock, not a stronger row lock, so reordering tables and confirms don't wait on each other.
+  - *(Proposed)* The archive route answers `409` with the blocking bookings, soonest first (date, time on the restaurant's clock, guest name, party size; never a phone), and the table manager shows them under the Archive button. Owner only, as archive is.
+  - *(Proposed)* An online booking can't be made on a table with `bookable = false` (the same trigger). Staff bookings and walk-ins can. A booking already on a table that is then made walk-in-only is left alone.
 - **Regenerate QR**: confirmation dialog ("The printed code on Table 7 will stop working"), then an audit log entry and a prompt to reprint.
 - `bookable = false` keeps a table out of online booking, for walk-in-only or bar tables.
 

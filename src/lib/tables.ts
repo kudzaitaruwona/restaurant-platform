@@ -2,11 +2,12 @@ import "server-only";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
-import { diningTables, restaurants } from "@/db/schema";
+import { bookings, diningTables, restaurants } from "@/db/schema";
+import { dateLabel, localTime, localToday } from "@/lib/booking-engine";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { mintQrToken } from "@/lib/qr-token";
 import { recordAdminAction, recordAudit } from "@/lib/tenant/audit";
-import { type TenantContext, withTenant } from "@/lib/tenant/scope";
+import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
 /**
  * Tables and their QR codes (spec 03). Writes are owner only (S-26): callers
@@ -218,26 +219,129 @@ export function moveTable(
   });
 }
 
+/** The most bookings the refusal lists: a table is rarely booked this far ahead. */
+const BLOCKING_LIST_LIMIT = 100;
+
+/** The guard trigger's constraint name (migration 0016). */
+const ARCHIVE_GUARD = "tables_archive_guard";
+
+export type BlockingBooking = {
+  id: string;
+  startsAt: string;
+  status: "confirmed" | "seated";
+  guestName: string;
+  partySize: number;
+  /** "Fri 6 Nov, 19:00 · Tendai · 4 guests", on the restaurant's clock. Never a phone. */
+  summary: string;
+};
+
+/**
+ * The bookings that stop a table being archived, soonest first: confirmed or
+ * seated, hold not yet ended (the same booking_holds_table the trigger judges by,
+ * so the list and the refusal can't disagree). Guest name and party only: no phone.
+ */
+async function blockingBookings(
+  tx: TenantTransaction,
+  restaurantId: string,
+  tableId: string,
+): Promise<BlockingBooking[]> {
+  const [{ timezone }] = await tx
+    .select({ timezone: restaurants.timezone })
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId));
+  const rows = await tx
+    .select({
+      id: bookings.id,
+      startsAt: bookings.startsAt,
+      status: bookings.status,
+      guestName: bookings.guestName,
+      partySize: bookings.partySize,
+    })
+    .from(bookings)
+    .where(
+      and(
+        eq(bookings.restaurantId, restaurantId),
+        eq(bookings.tableId, tableId),
+        sql`public.booking_holds_table(${bookings.status}, ${bookings.holdEndsAt})`,
+      ),
+    )
+    .orderBy(asc(bookings.startsAt), asc(bookings.id))
+    .limit(BLOCKING_LIST_LIMIT);
+  return rows.map((row) => ({
+    id: row.id,
+    startsAt: row.startsAt.toISOString(),
+    status: row.status as "confirmed" | "seated",
+    guestName: row.guestName,
+    partySize: row.partySize,
+    summary:
+      `${dateLabel(localToday(row.startsAt, timezone))}, ${localTime(row.startsAt, timezone)}` +
+      ` · ${row.guestName} · ${row.partySize} ${row.partySize === 1 ? "guest" : "guests"}` +
+      (row.status === "seated" ? " (seated now)" : ""),
+  }));
+}
+
+export type ArchiveOutcome =
+  | TableChange
+  | { blocked: { message: string; bookings: BlockingBooking[] } };
+
+const blockedBy = (label: string, list: BlockingBooking[]) => ({
+  blocked: {
+    message: list.length
+      ? `Table ${label} still has upcoming bookings. Move or cancel them, then archive it.`
+      : `Table ${label} just got a booking. Try again.`,
+    bookings: list,
+  },
+});
+
 /**
  * Archives a table: off the list and the print sheet, and its printed code
  * stops working. The label is free to use again. A found /t/ page is cached, so
  * the menu's cache is refreshed once this has committed.
+ *
+ * A table with future bookings isn't archived (spec 03): they're listed instead.
+ * The list read first is for the screen. What holds when a guest confirms at the
+ * moment of the archive is the database's guard (migration 0016), whose refusal is
+ * answered with the list as it stands then.
  */
-export async function archiveTable(ctx: Writer, tableId: string): Promise<TableChange> {
-  const outcome = await withTenant(ctx, async (tx) => {
-    const archived = await tx
-      .update(diningTables)
-      .set({ archivedAt: sql`now()` })
-      .where(live(ctx.restaurantId, tableId))
-      .returning({ id: diningTables.id });
-    if (archived.length === 0) return "not_found";
-    await recordAdminAction(tx, ctx, {
-      action: "table.archive",
-      entityType: "table",
-      entityId: tableId,
+export async function archiveTable(ctx: Writer, tableId: string): Promise<ArchiveOutcome> {
+  const { restaurantId } = ctx;
+  let outcome: ArchiveOutcome;
+  try {
+    outcome = await withTenant(ctx, async (tx): Promise<ArchiveOutcome> => {
+      const [table] = await tx
+        .select({ label: diningTables.label })
+        .from(diningTables)
+        .where(live(restaurantId, tableId));
+      if (!table) return "not_found";
+      const blocking = await blockingBookings(tx, restaurantId, tableId);
+      if (blocking.length > 0) return blockedBy(table.label, blocking);
+
+      const archived = await tx
+        .update(diningTables)
+        .set({ archivedAt: sql`now()` })
+        .where(live(restaurantId, tableId))
+        .returning({ id: diningTables.id });
+      if (archived.length === 0) return "not_found";
+      await recordAdminAction(tx, ctx, {
+        action: "table.archive",
+        entityType: "table",
+        entityId: tableId,
+      });
+      return "saved";
     });
-    return "saved";
-  });
+  } catch (error) {
+    if (constraintOf(error) !== ARCHIVE_GUARD) throw error;
+    // Lost a race with a confirm: the guard refused, so the table is still live.
+    return withTenant(ctx, async (tx) => {
+      const [table] = await tx
+        .select({ label: diningTables.label })
+        .from(diningTables)
+        .where(live(restaurantId, tableId));
+      return table
+        ? blockedBy(table.label, await blockingBookings(tx, restaurantId, tableId))
+        : "not_found";
+    });
+  }
   if (outcome === "saved") revalidateMenu(ctx);
   return outcome;
 }

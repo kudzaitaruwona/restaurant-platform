@@ -14,6 +14,7 @@ import { POST as regenerateTable } from "@/app/api/tables/[tableId]/regenerate/r
 import { POST as editTable } from "@/app/api/tables/[tableId]/route";
 import { POST as addTable } from "@/app/api/tables/route";
 import {
+  bookings,
   bookingSettings,
   categories,
   diningTables,
@@ -29,6 +30,7 @@ import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
+import { aBooking } from "../../../test/integration/bookings";
 import { statusOf } from "../../../test/integration/http";
 import { MenuScreen } from "./menu/menu-screen";
 import { TablesScreen } from "./tables/tables-screen";
@@ -535,6 +537,113 @@ describe("/dashboard/tables, managing", () => {
     await archive(post(`/api/tables/${id}/archive`), tableParams(id));
 
     expect(await statusOf(() => archive(post(`/api/tables/${id}/archive`), tableParams(id)))).toBe(404);
+  });
+
+  describe("a table with future bookings", () => {
+    const inHours = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
+
+    const book = async (
+      id: string,
+      from: number,
+      to: number,
+      fields: Partial<typeof bookings.$inferInsert> = {},
+    ) => {
+      const row = {
+        ...aBooking(tenant.restaurantId, id, inHours(from), inHours(to)),
+        guestPhone: "+263771234567",
+        ...fields,
+      };
+      await owner.db.insert(bookings).values(row);
+      return row;
+    };
+
+    it("answers 409 with the bookings, soonest first, and leaves the table", async () => {
+      await newTable("7");
+      const id = await tableId("7");
+      await book(id, 50, 52, { guestName: "Later Guest", partySize: 1 });
+      await book(id, 24, 26, { guestName: "Tendai Moyo", partySize: 4 });
+
+      const response = await archive(post(`/api/tables/${id}/archive`), tableParams(id));
+
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body.error).toContain("Move or cancel");
+      expect(body.bookings.map((b: { guestName: string }) => b.guestName)).toEqual([
+        "Tendai Moyo",
+        "Later Guest",
+      ]);
+      expect(body.bookings[0].summary).toMatch(/^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2} · Tendai Moyo · 4 guests$/);
+      expect(body.bookings[1].summary).toContain("1 guest");
+      expect(await screen(TablesScreen)).toContain('value="7"');
+    });
+
+    it("shows no phone, and no manage token, in the refusal", async () => {
+      await newTable("7");
+      const id = await tableId("7");
+      const row = await book(id, 24, 26);
+
+      const text = await (await archive(post(`/api/tables/${id}/archive`), tableParams(id))).text();
+
+      expect(text).not.toContain("263771234567");
+      expect(text).not.toContain(row.manageToken);
+    });
+
+    it("tells the time on the restaurant's clock, not the server's", async () => {
+      await owner.db.update(restaurants).set({ timezone: "Pacific/Kiritimati" }).where(eq(restaurants.id, tenant.restaurantId));
+      await newTable("7");
+      const id = await tableId("7");
+      // 12:00 UTC is 02:00 the next day at +14:00.
+      const noon = new Date(Date.now() + 48 * 3_600_000);
+      noon.setUTCHours(12, 0, 0, 0);
+      await book(id, 24, 26, { startsAt: noon, endsAt: new Date(noon.getTime() + 5_400_000), holdEndsAt: new Date(noon.getTime() + 5_400_000) });
+
+      const body = await (await archive(post(`/api/tables/${id}/archive`), tableParams(id))).json();
+
+      expect(body.bookings[0].summary).toContain(", 02:00 · ");
+    });
+
+    it("counts a seated booking, so a table in use can't be archived", async () => {
+      await newTable("7");
+      const id = await tableId("7");
+      await book(id, -1, 1, { status: "seated", guestName: "Walk-in" });
+
+      const response = await archive(post(`/api/tables/${id}/archive`), tableParams(id));
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).bookings[0].summary).toContain("(seated now)");
+    });
+
+    it("lists only the bookings that block: cancelled, finished and past ones don't", async () => {
+      await newTable("7");
+      await newTable("8");
+      const id = await tableId("7");
+      await book(id, 24, 26, { status: "cancelled" });
+      await book(id, 30, 32, { status: "no_show" });
+      await book(id, 40, 42, { status: "completed" });
+      await book(id, -9, -7);
+
+      expect((await archive(post(`/api/tables/${id}/archive`), tableParams(id))).status).toBe(303);
+    });
+
+    it("goes through once the bookings are cancelled", async () => {
+      await newTable("7");
+      const id = await tableId("7");
+      const row = await book(id, 24, 26);
+      expect((await archive(post(`/api/tables/${id}/archive`), tableParams(id))).status).toBe(409);
+
+      await owner.db.update(bookings).set({ status: "cancelled" }).where(eq(bookings.manageToken, row.manageToken));
+
+      expect((await archive(post(`/api/tables/${id}/archive`, {}, { [FORM_FETCH_HEADER]: "1" }), tableParams(id))).status).toBe(204);
+    });
+
+    it("refuses staff with a 403 and no list", async () => {
+      await newTable("7");
+      const id = await tableId("7");
+      await book(id, 24, 26);
+      session.tenant = { ...tenant, role: "staff" };
+
+      expect(await statusOf(() => archive(post(`/api/tables/${id}/archive`), tableParams(id)))).toBe(403);
+    });
   });
 
   it("refuses staff on all three routes", async () => {

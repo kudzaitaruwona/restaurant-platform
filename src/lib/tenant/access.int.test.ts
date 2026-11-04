@@ -1152,6 +1152,72 @@ describe("owner-only routes", () => {
   );
 });
 
+describe("archiving a table with future bookings", () => {
+  const archivePath = (tableId: string) => `/api/tables/${tableId}/archive`;
+  const callArchive = async (tableId: string) =>
+    (await import("@/app/api/tables/[tableId]/archive/route")).POST(
+      request(archivePath(tableId), { method: "POST" }),
+      tableParams(tableId),
+    );
+
+  const plantedBookings: string[] = [];
+  /** A planted table in the restaurant with a future confirmed booking on it. */
+  const bookedTable = async (restaurantId: string) => {
+    const tableId = await plantTable(restaurantId);
+    const row = {
+      ...aBooking(
+        restaurantId,
+        tableId,
+        new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        new Date(Date.now() + 26 * 3_600_000).toISOString(),
+      ),
+      guestName: "Harness booked guest",
+      guestPhone: "+263779999999",
+    };
+    await owner.db.insert(bookings).values(row);
+    plantedBookings.push(row.manageToken);
+    return tableId;
+  };
+  afterEach(async () => {
+    await owner.db.delete(bookings).where(inArray(bookings.manageToken, plantedBookings.splice(0)));
+  });
+
+  it("restaurant A's owner gets a 404 on B's booked table: no list, no guest, nothing archived", async () => {
+    session.identity = aOwner.key;
+    const tableId = await bookedTable(fixtures.b.restaurantId);
+
+    const outcome = await callArchive(tableId).then(
+      (response) => ({ status: response.status, body: response.text() }),
+      (error: { digest?: string }) => ({ status: Number(/(\d+)$/.exec(String(error.digest))?.[1]), body: Promise.resolve("") }),
+    );
+
+    expect(outcome.status).toBe(404);
+    const body = await outcome.body;
+    expect(body).not.toContain("Harness booked guest");
+    expect(body).not.toContain("263779999999");
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
+
+  it("a staff context gets a 403 on its own restaurant's booked table", async () => {
+    session.identity = aStaff.key;
+    const tableId = await bookedTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => callArchive(tableId))).toBe(403);
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
+
+  it("the owner of that restaurant gets the 409 list, and the table stays", async () => {
+    session.identity = aOwner.key;
+    const tableId = await bookedTable(fixtures.a.restaurantId);
+
+    const response = await callArchive(tableId);
+
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).not.toContain("263779999999");
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
+});
+
 describe("routes that take no id", () => {
   it.each(sessionRoutes.map((route) => [route.name, route] as const))(
     "%s: a staff context gets a 403 and changes nothing",
