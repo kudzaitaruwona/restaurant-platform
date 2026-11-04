@@ -72,7 +72,8 @@ describe("the day view", () => {
       return [...row.matchAll(/<form[^>]*action="\/api\/bookings\/[0-9a-f-]+\/([a-z-]+)"[^>]*method="post"/g)].map((m) => m[1]);
     };
 
-    expect(actionsOf("Waiting")).toEqual(["seat", "no-show", "cancel"]);
+    // Move is there because the no-show freed the third table.
+    expect(actionsOf("Waiting")).toEqual(["seat", "no-show", "cancel", "move"]);
     expect(actionsOf("Eating")).toEqual(["finish"]);
     expect(actionsOf("Gone")).toEqual([]);
   });
@@ -96,5 +97,34 @@ describe("the day view", () => {
     expect(html).toContain(`/dashboard/bookings?date=${addDays(day, -1)}`);
     expect(html).toContain(`/dashboard/bookings?date=${addDays(day, 1)}`);
     expect(html).toMatch(/<form[^>]*action="\/dashboard\/bookings"[^>]*method="get"/);
+  });
+
+  it("offers Add booking, for the day being looked at", async () => {
+    await dayWith([]);
+    const html = await render(day);
+    expect(html).toContain(`href="/dashboard/bookings/new?date=${day}"`);
+    expect(html).toContain("Add booking");
+  });
+
+  it("offers Move table on a confirmed booking only, with just the tables free for its hold", async () => {
+    // Waiting is on table 1; Eating holds table 2; Gone's no-show frees table 3.
+    await dayWith([{ guestName: "Waiting" }, { guestName: "Eating", status: "seated" }, { guestName: "Gone", status: "no_show" }]);
+
+    const html = await render(day);
+    const row = (name: string) => html.split("<li").find((part) => part.includes(name)) ?? "";
+
+    const options = [...row("Waiting").matchAll(/<option value="[0-9a-f-]+">([^<]*)</g)].map((m) => m[1]);
+    expect(options).toHaveLength(1);
+    expect(options[0]).toMatch(/^T3 \(seats 4/);
+    expect(row("Waiting")).toContain('name="tableId"');
+    expect(row("Eating")).not.toContain("tableId");
+    expect(row("Gone")).not.toContain("tableId");
+  });
+
+  it("says so when no other table is free", async () => {
+    await dayWith([{ guestName: "Alone" }]);
+    const html = await render(day);
+    expect(html).toContain("No other table is free");
+    expect(html).not.toContain('name="tableId"');
   });
 });

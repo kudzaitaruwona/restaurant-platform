@@ -52,7 +52,7 @@ const choices = (times: readonly AvailableTime[]): TimeChoice[] =>
 export const MAX_HOLD_MS = (720 + 240) * 60_000;
 
 /** Everything about the restaurant the engine needs, bar the bookings. */
-async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
+export async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
   const [restaurant] = await tx
     .select({
       name: restaurants.name,
@@ -88,7 +88,7 @@ async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
   return { restaurant, rules, periods };
 }
 
-type ReadRules = Awaited<ReturnType<typeof readRules>>;
+export type ReadRules = Awaited<ReturnType<typeof readRules>>;
 
 /**
  * The smallest party that can't book online: one more than the most the rules
@@ -119,12 +119,15 @@ const contactOf = (phone: string | null) => ({
   whatsappLink: whatsappLink(phone) ?? null,
 });
 
-/** The one path to what can be seated: the guest's list and confirm both come here. */
-async function timesOn(
+/**
+ * The tables and the holds that can reach into `date`: what the engine needs
+ * besides the rules. Staff booking reads them through here too.
+ */
+export async function readDayInputs(
   tx: TenantTransaction,
   { restaurantId }: Tenant,
-  { rules, periods, restaurant: { timezone } }: ReadRules,
-  { party, date, now }: { party: number; date: LocalDate; now: Date },
+  date: LocalDate,
+  timezone: string,
 ) {
   const tables = await tx
     .select({
@@ -154,6 +157,17 @@ async function timesOn(
         gt(bookings.holdEndsAt, dayStarts),
       ),
     );
+  return { tables, holds };
+}
+
+/** The one path to what can be seated: the guest's list and confirm both come here. */
+async function timesOn(
+  tx: TenantTransaction,
+  tenant: Tenant,
+  { rules, periods, restaurant: { timezone } }: ReadRules,
+  { party, date, now }: { party: number; date: LocalDate; now: Date },
+) {
+  const { tables, holds } = await readDayInputs(tx, tenant, date, timezone);
   return availableTimes({ party, date, rules, periods, tables, holds, timezone, now });
 }
 
@@ -218,7 +232,7 @@ const messages = {
 };
 
 // Postgres can't store a NUL byte in text, so one is a refusal here, not a 500.
-const noNul = (value: string) => !value.includes("\0");
+export const noNul = (value: string) => !value.includes("\0");
 
 /**
  * The number as E.164. A local number's leading 0 is the trunk prefix, not part
@@ -230,6 +244,9 @@ export function toE164(countryCode: string, number: string) {
     ? digits
     : `${countryCode.trim()}${digits.replace(/^0+/, "")}`;
 }
+
+/** What bookings_guest_phone_e164 accepts. */
+export const E164 = /^[+][1-9][0-9]{7,14}$/;
 
 const guestRequest = z
   .object({
@@ -265,7 +282,7 @@ const guestRequest = z
     note: note || null,
     whatsappOptIn: consent === "on",
   }))
-  .refine(({ phone }) => /^[+][1-9][0-9]{7,14}$/.test(phone), messages.phone);
+  .refine(({ phone }) => E164.test(phone), messages.phone);
 
 export type GuestRequest = z.output<typeof guestRequest>;
 
@@ -278,7 +295,7 @@ export function parseGuestRequest(form: FormData) {
 
 // --- confirming -------------------------------------------------------------
 
-const dbErrorOf = (error: unknown) =>
+export const dbErrorOf = (error: unknown) =>
   (error as { cause?: { code?: string; constraint?: string } } | null)?.cause;
 
 /**

@@ -26,7 +26,7 @@ import {
   staff,
   staffAuthUser,
 } from "@/db/schema";
-import { addDays, localToday } from "@/lib/booking-engine";
+import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
 import { signIn } from "../../../test/integration/auth";
 import {
   aBooking,
@@ -229,6 +229,33 @@ const postBookingAction = async (action: keyof typeof bookingRoutes, bookingId: 
     request(`/api/bookings/${bookingId}/${action}${query}`, { method: "POST" }),
     bookingParams(bookingId),
   );
+/** The first Sunday after today, where the fixture period (12:00 to 12:30) is, on Harare's calendar. */
+const nextSunday = () => {
+  let day = addDays(localToday(new Date(), "Africa/Harare"), 1);
+  while (weekdayOf(day) !== 0) day = addDays(day, 1);
+  return day;
+};
+const staffBookingForm = (fields: Record<string, string> = {}) =>
+  form({
+    party: "2",
+    date: nextSunday(),
+    time: "12:00",
+    name: `${plantedBookingPrefix}${crypto.randomUUID()}`,
+    ...fields,
+  });
+const postStaffBooking = async (fields: Record<string, string> = {}, init?: { path?: string; headers?: Record<string, string> }) =>
+  (await import("@/app/api/bookings/route")).POST(
+    request(init?.path ?? "/api/bookings", { method: "POST", headers: init?.headers, body: staffBookingForm(fields) }),
+  );
+const postMove = async (bookingId: string, tableId: string, init?: { path?: string; headers?: Record<string, string> }) =>
+  (await import("@/app/api/bookings/[bookingId]/move/route")).POST(
+    request(init?.path ?? `/api/bookings/${bookingId}/move`, {
+      method: "POST",
+      headers: init?.headers,
+      body: form({ tableId }),
+    }),
+    bookingParams(bookingId),
+  );
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -388,6 +415,28 @@ const routes: TenantRoute[] = [
   bookingAction("finish", "seated"),
   bookingAction("no-show", "confirmed"),
   bookingAction("cancel", "confirmed"),
+  {
+    // Each call books a table planted for it, so no call finds another's booking in its way.
+    name: "POST /api/bookings",
+    ownerOnly: false,
+    call: async (target) => {
+      const tableId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantTable(target.restaurantId)
+        : target.tableId;
+      return postStaffBooking({ tableId });
+    },
+  },
+  {
+    // Each call moves a booking planted for it to the restaurant's second fixture table.
+    name: "POST /api/bookings/[bookingId]/move",
+    ownerOnly: false,
+    call: async (target) => {
+      const bookingId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantBooking(target, "confirmed")
+        : target.tableId;
+      return postMove(bookingId, regenerationTarget(target.tableId));
+    },
+  },
 ];
 
 /**
@@ -1644,8 +1693,10 @@ describe("the example routes", () => {
       session.identity = aOwner.key;
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
+        // Nor is a blank table: on Add booking it means automatic.
         const categoryId = staffId || "not-a-uuid";
-        expect(await statusOf(() => route.call({ ...fixtures.a, staffId, categoryId, tableId: staffId, periodId: staffId }))).toBe(404);
+        const tableId = staffId || "not-a-uuid";
+        expect(await statusOf(() => route.call({ ...fixtures.a, staffId, categoryId, tableId, periodId: staffId }))).toBe(404);
       }
     },
   );
@@ -2058,6 +2109,144 @@ describe("the day view's actions", () => {
     const id = await plantBooking(fixtures.a, "confirmed");
     for (const action of actions) expect(await statusOf(() => postBookingAction(action, id))).toBe(401);
     expect((await standingOf(id)).status).toBe("confirmed");
+  });
+});
+
+describe("staff add and move", () => {
+  const standingOf = async (id: string) => {
+    const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+    return row;
+  };
+  const nameOf = () => `${plantedBookingPrefix}${crypto.randomUUID()}`;
+  const bookedAs = (guestName: string) =>
+    owner.db.select().from(bookings).where(eq(bookings.guestName, guestName));
+
+  it.each([aOwner, aStaff])("%s: owners and staff both add a booking, as source staff, on their restaurant's table", async (who) => {
+    session.identity = who.key;
+    const guestName = nameOf();
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await postStaffBooking({ guestName, name: guestName, tableId });
+
+    expect(response.status).toBeLessThan(400);
+    expect(await bookedAs(guestName)).toEqual([
+      expect.objectContaining({ restaurantId: fixtures.a.restaurantId, tableId, source: "staff", status: "confirmed", guestPhone: null }),
+    ]);
+  });
+
+  it("a table of restaurant B is a 404 and books nothing in either restaurant", async () => {
+    session.identity = aOwner.key;
+    const guestName = nameOf();
+
+    const status = await statusOf(() => postStaffBooking({ name: guestName, tableId: fixtures.b.tableId }));
+
+    expect(status).toBe(404);
+    expect(await bookedAs(guestName)).toEqual([]);
+  });
+
+  it("a restaurant id in the query, headers or body can't send the booking to B", async () => {
+    session.identity = aOwner.key;
+    const guestName = nameOf();
+    const b = fixtures.b.restaurantId;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await postStaffBooking(
+      { name: guestName, tableId, restaurantId: b, restaurant_id: b },
+      { path: `/api/bookings?restaurantId=${b}&restaurant_id=${b}`, headers: { "x-restaurant-id": b } },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect((await bookedAs(guestName)).map((row) => row.restaurantId)).toEqual([fixtures.a.restaurantId]);
+  });
+
+  it.each([
+    ["party", { party: "0" }], ["a crafted date", { date: "2026-02-31" }], ["a date far away", { date: "9999-12-31" }],
+    ["a crafted time", { time: "25:99" }], ["a NUL in the name", { name: "a\0b" }], ["a bad phone", { phone: "x" }],
+  ])("%s is a refusal, not a 500", async (_label, fields) => {
+    session.identity = aStaff.key;
+    const status = await statusOf(() => postStaffBooking(fields));
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(status).toBeLessThan(500);
+  });
+
+  it("a taken table is a 409 with a message, not a 500", async () => {
+    session.identity = aStaff.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    expect((await postStaffBooking({ tableId })).status).toBeLessThan(400);
+
+    const second = await postStaffBooking({ tableId });
+
+    expect(second.status).toBe(409);
+    expect((await second.json()).error).toMatch(/free|taken/);
+  });
+
+  it.each([aOwner, aStaff])("%s: moves a booking, and the move is audited with who did it", async (who) => {
+    session.identity = who.key;
+    const id = await plantBooking(fixtures.a, "confirmed");
+
+    const response = await postMove(id, fixtures.a.regeneratedTableId);
+
+    expect(response.status).toBeLessThan(400);
+    expect((await standingOf(id)).tableId).toBe(fixtures.a.regeneratedTableId);
+    const [entry] = await owner.db.select().from(auditLog).where(eq(auditLog.entityId, id));
+    expect(entry).toMatchObject({ restaurantId: fixtures.a.restaurantId, actorType: "staff", action: "booking.move" });
+  });
+
+  it("A's booking can't be moved onto B's table, and B's booking can't be moved at all", async () => {
+    session.identity = aOwner.key;
+    const mine = await plantBooking(fixtures.a, "confirmed");
+    const theirs = await plantBooking(fixtures.b, "confirmed");
+
+    expect(await statusOf(() => postMove(mine, fixtures.b.regeneratedTableId))).toBe(404);
+    expect(await statusOf(() => postMove(theirs, fixtures.a.regeneratedTableId))).toBe(404);
+    expect(await statusOf(() => postMove(theirs, fixtures.b.regeneratedTableId))).toBe(404);
+
+    expect((await standingOf(mine)).tableId).toBe(fixtures.a.tableId);
+    expect((await standingOf(theirs)).tableId).toBe(fixtures.b.tableId);
+  });
+
+  it("a restaurant id in the query, headers or body can't move B's booking", async () => {
+    session.identity = aOwner.key;
+    const theirs = await plantBooking(fixtures.b, "confirmed");
+    const b = fixtures.b.restaurantId;
+
+    const status = await statusOf(() =>
+      postMove(theirs, fixtures.b.regeneratedTableId, {
+        path: `/api/bookings/${theirs}/move?restaurantId=${b}`,
+        headers: { "x-restaurant-id": b },
+      }),
+    );
+
+    expect(status).toBe(404);
+    expect((await standingOf(theirs)).tableId).toBe(fixtures.b.tableId);
+  });
+
+  it("a malformed booking or table id is a 404, a missing table a 400, and a seated booking a 409", async () => {
+    session.identity = aOwner.key;
+    const id = await plantBooking(fixtures.a, "confirmed");
+    const seated = await plantBooking(fixtures.a, "seated");
+
+    for (const bad of ["not-a-uuid", "a\0b", "'; drop table bookings; --"]) {
+      expect(await statusOf(() => postMove(bad, fixtures.a.regeneratedTableId))).toBe(404);
+      expect(await statusOf(() => postMove(id, bad))).toBe(404);
+    }
+    expect(await statusOf(() => postMove(id, ""))).toBe(400);
+    const refused = await postMove(seated, fixtures.a.regeneratedTableId);
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/already seated/);
+    expect((await standingOf(seated)).tableId).toBe(fixtures.a.tableId);
+  });
+
+  it("is a 401 with no session, and changes nothing", async () => {
+    session.identity = "";
+    const id = await plantBooking(fixtures.a, "confirmed");
+    const guestName = nameOf();
+
+    expect(await statusOf(() => postMove(id, fixtures.a.regeneratedTableId))).toBe(401);
+    expect(await statusOf(() => postStaffBooking({ name: guestName }))).toBe(401);
+
+    expect((await standingOf(id)).tableId).toBe(fixtures.a.tableId);
+    expect(await bookedAs(guestName)).toEqual([]);
   });
 });
 
