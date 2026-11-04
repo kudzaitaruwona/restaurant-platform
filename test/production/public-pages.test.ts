@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   categories,
+  bookings,
   diningTables,
   menuItems,
   restaurants,
@@ -13,7 +14,7 @@ import {
   staffAuthRateLimit,
 } from "../../src/db/schema";
 import { addDays, localToday } from "../../src/lib/booking-engine";
-import { bookableRestaurant, bookingsOf } from "../integration/bookings";
+import { aBooking, bookableRestaurant, bookingsOf } from "../integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -346,6 +347,115 @@ describe("the booking page", () => {
       body: new FormData(),
     });
     expect(response.status).toBe(403);
+  });
+});
+
+/**
+ * A guest's manage link holds a bearer secret in its URL: nothing may store the
+ * page, nothing may pass the URL on, and only a POST may cancel.
+ */
+describe("the manage page", () => {
+  const MINUTE = 60_000;
+  async function booked(startsInMinutes = 300) {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const row = aBooking(
+      restaurantId,
+      tableIds[0],
+      new Date(Date.now() + startsInMinutes * MINUTE).toISOString(),
+      new Date(Date.now() + (startsInMinutes + 90) * MINUTE).toISOString(),
+    );
+    await owner.db.insert(bookings).values(row);
+    return { restaurantId, token: row.manageToken };
+  }
+  const statusIn = async (restaurantId: string) =>
+    (await bookingsOf(owner.db, restaurantId))[0].status;
+
+  it("is never stored by a cache, and never leaves in a Referer", async () => {
+    const { token } = await booked();
+
+    for (const response of [await visit(`/b/${token}`), await visit(`/b/${token}`)]) {
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("x-nextjs-cache")).not.toBe("HIT");
+      expect(response.headers.get("x-robots-tag")).toContain("noindex");
+    }
+  });
+
+  it("shows the booking as it is now, not as it was on the last visit", async () => {
+    const { restaurantId, token } = await booked();
+    expect(await (await visit(`/b/${token}`)).text()).toContain("Cancel booking");
+
+    await owner.db
+      .update(bookings)
+      .set({ status: "seated" })
+      .where(eq(bookings.restaurantId, restaurantId));
+
+    const after = await (await visit(`/b/${token}`)).text();
+    expect(after).not.toContain("Cancel booking");
+    expect(after).toContain("seated");
+  });
+
+  it("is a real 404, still with its headers, for an unknown token and a NUL", async () => {
+    for (const token of [`no-such-token-${crypto.randomUUID()}`, "a%00b"]) {
+      const response = await visit(`/b/${token}`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+  });
+
+  it("is only read by a GET, so a link preview or a prefetch can't cancel", async () => {
+    const { restaurantId, token } = await booked();
+
+    await visit(`/b/${token}`);
+    await visit(`/b/${token}`, { method: "HEAD" });
+    await visit(`/b/${token}?cancel=1&_method=POST`);
+
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("cancels on a POST, says so the second time too, and caches neither", async () => {
+    const { restaurantId, token } = await booked();
+
+    const first = await visit(`/b/${token}`, { method: "POST" });
+    const second = await visit(`/b/${token}`, { method: "POST" });
+
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("Your booking is cancelled.");
+    expect(second.status).toBe(200);
+    expect(await second.text()).toContain("This booking was already cancelled.");
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    expect(await statusIn(restaurantId)).toBe("cancelled");
+    expect(await (await visit(`/b/${token}`)).text()).toContain("cancelled");
+  });
+
+  it("refuses a cancel from another site", async () => {
+    const { restaurantId, token } = await booked();
+
+    const response = await visit(`/b/${token}`, {
+      method: "POST",
+      headers: { origin: "https://elsewhere.example" },
+    });
+
+    expect(response.status).toBe(403);
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("refuses a cancel inside the cutoff, on the server's own clock", async () => {
+    const { restaurantId, token } = await booked(60);
+
+    const response = await visit(`/b/${token}`, { method: "POST", headers: { "x-now": "2000-01-01" } });
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("Too late to cancel online — please call.");
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("holds no manage token in the server's output", async () => {
+    const { token } = await booked();
+    await visit(`/b/${token}`, { method: "POST" });
+    expect(serverOutput).not.toContain(token);
   });
 });
 

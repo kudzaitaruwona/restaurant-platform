@@ -14,7 +14,7 @@ import {
  * counting towards keeping a session alive.
  */
 export const config = {
-  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+", "/t/:path+"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+", "/t/:path+", "/b/:path+"],
 };
 
 /**
@@ -68,7 +68,18 @@ function keepSessionCookiesAlive(request: NextRequest, response: NextResponse) {
   }
 }
 
+/**
+ * A guest's manage link takes a POST (cancel), so it can't be refused like the
+ * cached pages above, and it isn't cached at all. What it needs from here is the
+ * cross-site check, and, like every public page, no session work.
+ */
+const isManagePage = (request: NextRequest) => request.nextUrl.pathname.startsWith("/b/");
+
 export function proxy(request: NextRequest) {
+  if (isManagePage(request)) {
+    return isCrossSiteWrite(request) ? new NextResponse(null, { status: 403 }) : NextResponse.next();
+  }
+
   if (isPublicPage(request)) {
     return cacheableMethods.has(request.method)
       ? NextResponse.next()
