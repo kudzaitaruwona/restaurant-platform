@@ -5,6 +5,7 @@ import { forbidden, unauthorized } from "next/navigation";
 import { getAdminDb } from "@/db/admin";
 import type { currencyMode } from "@/db/schema";
 import { sessionOf } from "@/lib/auth";
+import { type MetricCounts, metricsFrom } from "@/lib/booking-metrics";
 import { findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
 import { currentIdentity, sessionPlatformAdmin } from "./index";
@@ -153,6 +154,18 @@ export async function listRestaurants(admin: Admin) {
     currencyMode: currency_mode,
     hasOwner: has_owner,
   }));
+}
+
+/**
+ * Every restaurant's booking success metrics, by restaurant id, in one statement.
+ * platform_list_booking_metrics runs the same booking_success_metrics() a
+ * restaurant's own dashboard does, so the two can't disagree.
+ */
+export async function listBookingMetrics(admin: Admin) {
+  const { rows } = await getAdminDb().execute<MetricCounts & { restaurant_id: string }>(
+    sql`select * from platform_list_booking_metrics(${admin.platformAdminId})`,
+  );
+  return new Map(rows.map(({ restaurant_id, ...counts }) => [restaurant_id, metricsFrom(counts)]));
 }
 
 /** The items on a restaurant's onboarding checklist (spec 01), in display order. */

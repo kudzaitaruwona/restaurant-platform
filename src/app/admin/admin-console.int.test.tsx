@@ -6,8 +6,9 @@ import {
   devPlatformAdmin,
   devRestaurants,
 } from "@/lib/tenant/dev-identities";
-import { onboardingChecklist, restaurants } from "@/db/schema";
-import { testDatabaseSettings, openOwnerDatabase } from "../../../test/integration/database";
+import { bookings, onboardingChecklist, restaurants } from "@/db/schema";
+import { aBooking, bookableRestaurant } from "../../../test/integration/bookings";
+import { openOwnerDatabase, testDatabaseSettings } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
 import { AdminConsole } from "./admin-console";
 
@@ -126,6 +127,57 @@ describe("the admin screen", () => {
   it("refuses no identity with unauthorized(), before any data renders", async () => {
     session.identity = "nobody";
     expect(await statusOf(() => AdminConsole())).toBe(401);
+  });
+});
+
+describe("the booking metrics, per restaurant", () => {
+  const owner = openOwnerDatabase();
+  afterAll(() => owner.pool.end());
+
+  async function restaurantWith(rows: Partial<typeof bookings.$inferInsert>[]) {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: rows.map(() => ({ capacity: 2 })),
+    });
+    await owner.db.insert(bookings).values(
+      rows.map((row, index) => ({
+        ...aBooking(restaurantId, tableIds[index], "2027-01-10T16:00:00Z", "2027-01-10T17:45:00Z"),
+        ...row,
+      })),
+    );
+    return `Restaurant ${restaurantId}`;
+  }
+
+  /** The text of the list item that names the restaurant. */
+  const itemOf = (html: string, name: string) => {
+    const item = html.split("<li").find((part) => part.includes(name))!;
+    return item.replace(/<[^>]+>/g, " ").replaceAll("&#x27;", "'").replace(/\s+/g, " ");
+  };
+
+  it("shows each restaurant its own numbers, from the same count the owner sees", async () => {
+    // Made at 05:00 Harare time, before dinner opens: while staff weren't answering.
+    const early = { createdAt: new Date("2026-11-05T03:00:00Z") };
+    const busy = await restaurantWith([
+      { ...early, status: "no_show" },
+      { ...early, status: "completed" },
+      { ...early, status: "completed", source: "staff" },
+      { status: "completed", source: "staff" },
+    ]);
+    const quiet = await restaurantWith([{ status: "completed" }]);
+
+    const html = await render();
+
+    expect(itemOf(html, busy)).toContain("Booked online 50% 2 online, 2 added by staff");
+    expect(itemOf(html, busy)).toContain("Booked while staff weren't answering 2");
+    expect(itemOf(html, busy)).toContain("No-show rate 25% 1 of 4 finished bookings");
+    expect(itemOf(html, quiet)).toContain("Booked online 100% 1 online, 0 added by staff");
+    expect(itemOf(html, quiet)).toContain("No-show rate 0% 0 of 1 finished bookings");
+  });
+
+  it("shows a restaurant with no bookings as having none", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const empty = `Restaurant ${restaurantId}`;
+
+    expect(itemOf(await render(), empty)).toContain("No bookings yet");
   });
 });
 

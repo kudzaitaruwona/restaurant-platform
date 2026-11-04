@@ -3277,6 +3277,77 @@ describe("the day list", () => {
   });
 });
 
+describe("the booking metrics", () => {
+  // The metrics have no route of their own: they are a section of the owner's
+  // dashboard and of the admin console (S-28), so what's held here is that a
+  // restaurant's session sees its own numbers and that nobody else's reach it.
+  const dashboard = async () => {
+    const { Dashboard } = await import("@/app/dashboard/dashboard");
+    return renderToStaticMarkup(await Dashboard());
+  };
+  const metricsText = (html: string) =>
+    (html.split("Booking results")[1] ?? "").split("</dl>")[0].replace(/<[^>]+>/g, " ").replaceAll("&#x27;", "'").replace(/\s+/g, " ");
+
+  /** Three no-shows made online in B, gone again however the test ends. */
+  async function withNoShowsInB(run: () => Promise<void>) {
+    const name = `Metrics guest of B ${crypto.randomUUID()}`;
+    const days = ["2027-02-01", "2027-02-02", "2027-02-03"];
+    await owner.db.insert(bookings).values(
+      days.map((day) => ({
+        ...aBooking(fixtures.b.restaurantId, fixtures.b.tableId, `${day}T10:00:00Z`, `${day}T11:00:00Z`),
+        guestName: name,
+        status: "no_show" as const,
+      })),
+    );
+    try {
+      await run();
+    } finally {
+      await owner.db.delete(bookings).where(eq(bookings.guestName, name));
+    }
+  }
+
+  it("restaurant A's owner doesn't see restaurant B's bookings in its numbers, and B's owner does", async () => {
+    session.identity = aOwner.key;
+    const before = metricsText(await dashboard());
+    let seenByA = "";
+    let seenByB = "";
+
+    await withNoShowsInB(async () => {
+      session.identity = aOwner.key;
+      seenByA = metricsText(await dashboard());
+      session.identity = bOwner.key;
+      seenByB = metricsText(await dashboard());
+    });
+
+    expect(before).toContain("No-show rate");
+    expect(seenByA).toBe(before);
+    expect(seenByB).toContain("finished bookings");
+    expect(seenByB).not.toBe(seenByA);
+  });
+
+  it("is for owners: restaurant staff get no numbers", async () => {
+    for (const identity of [aStaff, bStaff]) {
+      session.identity = identity.key;
+      expect(await dashboard()).not.toContain("Booking results");
+    }
+  });
+
+  it("is a 403 for a platform admin who hasn't entered a restaurant, and a 401 with no session", async () => {
+    session.identity = devPlatformAdmin.key;
+    expect(await statusOf(dashboard)).toBe(403);
+    session.identity = "";
+    expect(await statusOf(dashboard)).toBe(401);
+  });
+
+  it("is a 403 on the admin console for every restaurant identity: the per-restaurant numbers there are the admin's alone", async () => {
+    const { AdminConsole } = await import("@/app/admin/admin-console");
+    for (const identity of devIdentities) {
+      session.identity = identity.key;
+      expect(await statusOf(() => AdminConsole())).toBe(403);
+    }
+  });
+});
+
 describe("harness coverage", () => {
   const appDirectory = join(process.cwd(), "src", "app");
   const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];

@@ -3,9 +3,11 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   openAdminDatabase,
   openOwnerDatabase,
+  openTestDatabase,
 } from "../../test/integration/database";
 import { devPlatformAdmin, devRestaurants } from "../lib/tenant/dev-identities";
-import { auditLog, restaurants, staff } from "./schema";
+import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
+import { auditLog, bookings, restaurants, staff } from "./schema";
 
 /**
  * The privileged path (S-28), driven the way the app drives it: as app_admin,
@@ -15,6 +17,7 @@ import { auditLog, restaurants, staff } from "./schema";
  */
 const app = openAdminDatabase();
 const owner = openOwnerDatabase();
+const tenantRole = openTestDatabase();
 
 const SLUG_PREFIX = "fn-test-";
 const adminId: string = devPlatformAdmin.platformAdminId;
@@ -28,7 +31,7 @@ const ALREADY_HAS_STAFF = "PA001";
 
 afterAll(async () => {
   // Restaurants created here stay behind: one with an owner can't lose it (S-26).
-  await Promise.all([app.pool.end(), owner.pool.end()]);
+  await Promise.all([app.pool.end(), owner.pool.end(), tenantRole.pool.end()]);
 });
 
 const slug = () => `${SLUG_PREFIX}${crypto.randomUUID()}`;
@@ -253,11 +256,52 @@ describe("platform_list_restaurants", () => {
   });
 });
 
+describe("platform_list_booking_metrics", () => {
+  it("gives every restaurant's counts, the same ones the restaurant's own function gives", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2 }, { capacity: 2 }, { capacity: 2 }],
+    });
+    const starts = "2027-01-10T16:00:00Z";
+    const ends = "2027-01-10T17:45:00Z";
+    await owner.db.insert(bookings).values([
+      // 03:00 UTC is 05:00 in Harare, before dinner: made while staff weren't answering.
+      { ...aBooking(restaurantId, tableIds[0], starts, ends), createdAt: new Date("2026-11-05T03:00:00Z"), status: "no_show" as const },
+      { ...aBooking(restaurantId, tableIds[1], starts, ends), createdAt: new Date("2026-11-05T17:00:00Z"), status: "completed" as const },
+      { ...aBooking(restaurantId, tableIds[2], starts, ends), source: "staff" as const },
+    ]);
+
+    const { rows } = await app.db.execute<{
+      restaurant_id: string;
+      online: number;
+      staff: number;
+      outside_hours: number;
+      no_shows: number;
+      attended: number;
+    }>(sql`select * from platform_list_booking_metrics(${adminId})`);
+    const { online, staff: byStaff, outside_hours, no_shows, attended } = rows.find(
+      (row) => row.restaurant_id === restaurantId,
+    )!;
+    const counts = { online, staff: byStaff, outside_hours, no_shows, attended };
+    // As the restaurant itself reads it: app_tenant, inside its tenant.
+    const own = await tenantRole.db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.restaurant_id', ${restaurantId}, true)`);
+      return tx.execute(sql`select * from booking_success_metrics(${restaurantId})`);
+    });
+
+    expect(counts).toEqual({ online: 2, staff: 1, outside_hours: 1, no_shows: 1, attended: 2 });
+    expect(own.rows).toEqual([counts]);
+    expect(rows.map((row) => row.restaurant_id)).toEqual(
+      expect.arrayContaining([restaurantId, restaurantA]),
+    );
+  });
+});
+
 describe("who can reach the functions", () => {
   const calls = (restaurantId: string, actor: string) => [
     createRestaurantSql("Refused", slug(), actor),
     createOwnerSql(restaurantId, email(), actor),
     sql`select * from platform_list_restaurants(${actor})`,
+    sql`select * from platform_list_booking_metrics(${actor})`,
     sql`select platform_enter_restaurant(${actor}, ${"no-such-session"}, ${restaurantId})`,
     sql`select platform_leave_restaurant(${actor}, ${"no-such-session"})`,
     sql`select * from platform_onboarding_checklist(${actor})`,
@@ -338,6 +382,7 @@ describe("every SECURITY DEFINER function", () => {
         "platform_create_restaurant",
         "platform_enter_restaurant",
         "platform_leave_restaurant",
+        "platform_list_booking_metrics",
         "platform_list_restaurants",
         "platform_onboarding_checklist",
         "platform_set_qr_codes_printed",

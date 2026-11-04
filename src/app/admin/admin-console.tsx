@@ -5,10 +5,12 @@ import {
   type CurrencyMode,
   DEFAULT_TIMEZONE,
   getPlatformAdminContext,
+  listBookingMetrics,
   listRestaurants,
   onboardingChecklists,
   onboardingItems,
 } from "@/lib/tenant/platform-admin";
+import { BookingMetricsPanel } from "../dashboard/booking-metrics";
 import { AdminForm } from "./admin-form";
 
 const currencyModeLabels: Record<CurrencyMode, string> = {
@@ -68,8 +70,9 @@ function QrCodesPrintedForm({
 /** Creates restaurants and their first owners, and enters them (spec 01, S-26). */
 export async function AdminConsole() {
   const admin = await getPlatformAdminContext();
-  const [restaurants, checklists] = await Promise.all([
+  const [restaurants, metrics, checklists] = await Promise.all([
     listRestaurants(admin),
+    listBookingMetrics(admin),
     onboardingChecklists(admin),
   ]);
 
@@ -125,6 +128,9 @@ export async function AdminConsole() {
                     {currencyModeLabels[restaurant.currencyMode]}
                   </p>
                 </div>
+                {metrics.has(restaurant.id) && (
+                  <BookingMetricsPanel metrics={metrics.get(restaurant.id)!} />
+                )}
                 <form
                   method="post"
                   action={`/api/admin/restaurants/${restaurant.id}/enter`}
