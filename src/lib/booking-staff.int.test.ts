@@ -13,6 +13,7 @@ import {
   type StaffRequest,
 } from "./booking-staff";
 import { confirmBooking, parseGuestRequest, type GuestRequest } from "./bookings";
+import { seatWalkIn } from "./walk-in";
 
 /**
  * Staff add a booking and move one (#36), against real rows as app_tenant, each
@@ -749,6 +750,28 @@ async function inOrder<A, B>(id: string, first: () => Promise<A>, second: () => 
     holder.release(true);
   }
 }
+
+describe("move targets and a walk-in", () => {
+  it("a seated walk-in holds its table, so it is no target for the hold, and the walk-in itself can't move", async () => {
+    const { restaurantId, tableIds, booking } = await twoTables("confirmed", {}, [
+      { capacity: 2, label: "A" }, { capacity: 2, label: "B" }, { capacity: 2, label: "C" },
+    ]);
+    // 19:30 local on B: held to 21:15 local, across the booking's 19:00 to 20:45 hold.
+    const seated = await seatWalkIn(actor(restaurantId), tableIds[1], 2, new Date("2026-11-06T17:30:00Z"));
+    expect(seated.outcome).toBe("seated");
+    const walkIn = (await bookingsOf(owner.db, restaurantId)).find((row) => row.guestName === "Walk-in")!;
+
+    const targets = await getMoveTargets({ restaurantId }, date);
+
+    expect(targets[booking.id]?.map((table) => table.label)).toEqual(["C"]);
+    expect(targets[walkIn.id]).toBeUndefined();
+    expect(await moveBooking(actor(restaurantId), walkIn.id, tableIds[2])).toEqual({
+      outcome: "wrong_status",
+      status: "seated",
+    });
+    expect(await rowOf(walkIn.id)).toMatchObject({ status: "seated", tableId: tableIds[1] });
+  });
+});
 
 describe("a move racing a seat or a cancel", () => {
   it("seat first: the move is told the booking is seated, and the table stays where they sit", async () => {

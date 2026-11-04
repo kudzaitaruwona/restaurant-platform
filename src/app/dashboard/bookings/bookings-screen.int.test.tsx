@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { bookings } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { bookings, diningTables } from "@/db/schema";
 import { addDays, localToday } from "@/lib/booking-engine";
 import type { TenantContext } from "@/lib/tenant";
 import { aBooking, bookableRestaurant } from "../../../../test/integration/bookings";
@@ -126,5 +127,77 @@ describe("the day view", () => {
     const html = await render(day);
     expect(html).toContain("No other table is free");
     expect(html).not.toContain('name="tableId"');
+  });
+});
+
+describe("seat walk-in on the day view", () => {
+  const today = localToday(new Date(), "Africa/Harare");
+
+  it("is offered today, with the live tables, walk-in-only ones included, and posts to the walk-in route", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2, label: "Table 7" }, { capacity: 4, label: "Bar", bookable: false }],
+    });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+
+    const html = await render();
+
+    expect(html).toContain("Seat a walk-in");
+    expect(html).toContain('action="/api/bookings/walk-in"');
+    expect(html).toContain('method="post"');
+    expect(html).toContain("Table 7 (seats 2)");
+    expect(html).toContain("Bar (seats 4)");
+    expect(html).toContain('name="party"');
+  });
+
+  it("is not offered on another day: a walk-in sits down now", async () => {
+    await dayWith([]);
+
+    expect(await render(addDays(today, 1))).not.toContain("Seat a walk-in");
+  });
+
+  it("is not offered when there is no live table to seat at", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }] });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+    await owner.db.update(diningTables).set({ archivedAt: new Date() }).where(eq(diningTables.id, tableIds[0]));
+
+    expect(await render()).not.toContain("Seat a walk-in");
+  });
+
+  it("today shows Add booking, a confirmed booking's Move select and the walk-in form together; another day has no walk-in form", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 4 }, { capacity: 4 }] });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+    await owner.db.insert(bookings).values({
+      ...aBooking(restaurantId, tableIds[0], `${today}T10:00:00Z`, `${today}T11:45:00Z`),
+      guestName: "Waiting",
+    });
+
+    const html = await render();
+    expect(html).toContain(`href="/dashboard/bookings/new?date=${today}"`);
+    expect(html).toContain("Seat a walk-in");
+    expect(html.split("<li").find((part) => part.includes("Waiting"))).toContain('name="tableId"');
+
+    const other = await render(addDays(today, 1));
+    expect(other).toContain("Add booking");
+    expect(other).not.toContain("Seat a walk-in");
+  });
+
+  it("shows a walk-in's row as a seated 'Walk-in' with no contact buttons, at the restaurant's time", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }] });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+    await owner.db.insert(bookings).values({
+      ...aBooking(restaurantId, tableIds[0], `${today}T10:00:00Z`, `${today}T11:45:00Z`),
+      guestName: "Walk-in",
+      guestPhone: null,
+      whatsappOptIn: false,
+      status: "seated",
+      source: "staff",
+    });
+
+    const html = await render();
+
+    expect(html).toContain("Walk-in");
+    expect(html).toContain("12:00");
+    expect(html).toContain("Finish");
+    expect(html).not.toContain("tel:");
   });
 });
