@@ -71,12 +71,11 @@ export async function BookingSettingsScreen() {
             {settings.enabled ? "Turn online booking off" : "Turn online booking on"}
           </Button>
         </ActionForm>
-        {settings.enabled && (
-          <p className="text-sm text-muted-foreground">
-            It switches itself off if you delete the last service period, archive the last
-            table that can be booked, or clear the contact phone.
-          </p>
-        )}
+        <p className="text-sm text-muted-foreground">
+          Online booking switches itself off if you delete the last service period, archive the
+          last table that can be booked, make that table walk-ins only, or clear the contact phone.
+          Put back what&apos;s missing to turn it on again.
+        </p>
       </section>
 
       <section className="flex flex-col gap-4" aria-labelledby="service-periods">
@@ -112,7 +111,12 @@ export async function BookingSettingsScreen() {
                   </ActionForm>
                   <ActionForm
                     action={`/api/bookings/periods/${period.id}/delete`}
-                    confirmation={`Delete ${period.name} on ${weekdayNames[weekday]}?`}
+                    confirmation={
+                      `Delete ${period.name} on ${weekdayNames[weekday]}?` +
+                      (settings.enabled && periods.length === 1
+                        ? " It's the last service period, so online booking will switch off."
+                        : "")
+                    }
                     savedMessage="Deleted. If it was the last one, online booking is switched off."
                   >
                     <Button type="submit" size="sm" variant="outline">

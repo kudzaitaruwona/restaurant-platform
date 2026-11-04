@@ -13,7 +13,14 @@ import { POST as move } from "@/app/api/tables/[tableId]/move/route";
 import { POST as regenerateTable } from "@/app/api/tables/[tableId]/regenerate/route";
 import { POST as editTable } from "@/app/api/tables/[tableId]/route";
 import { POST as addTable } from "@/app/api/tables/route";
-import { categories, diningTables, restaurants, staff } from "@/db/schema";
+import {
+  bookingSettings,
+  categories,
+  diningTables,
+  restaurants,
+  servicePeriods,
+  staff,
+} from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import { menuCodeUrl, qrSvg, tableCodeUrl } from "@/lib/qr-code";
@@ -576,6 +583,87 @@ const cardIn = (html: string) => {
 /** A print-only size on a card, in mm: a decimal must read as itself, not fall through. */
 const printMm = (className: string, utility: "h" | "p" | "gap") =>
   Number(new RegExp(`(?:^| )print:${utility}-\\[(\\d+(?:\\.\\d+)?)mm\\]`).exec(className)?.[1]);
+
+describe("what the owner is told about booking switching itself off", () => {
+  async function turnBookingOn() {
+    await owner.db
+      .update(restaurants)
+      .set({ contactPhone: "+263771234567" })
+      .where(eq(restaurants.id, tenant.restaurantId));
+    await owner.db.insert(servicePeriods).values({
+      restaurantId: tenant.restaurantId,
+      name: "Lunch",
+      weekday: 1,
+      opensAt: "12:00",
+      lastBookingAt: "14:00",
+      closesAt: "15:00",
+    });
+    await owner.db
+      .update(bookingSettings)
+      .set({ enabled: true })
+      .where(eq(bookingSettings.restaurantId, tenant.restaurantId));
+  }
+
+  const archiveConfirmation = (html: string, tableId: string) =>
+    new RegExp(`data-confirmation="([^"]*)"><form[^>]*action="/api/tables/${tableId}/archive"`).exec(
+      html,
+    )?.[1];
+
+  const savedMessageOf = (html: string, action: string) =>
+    new RegExp(`data-saved-message="([^"]*)"><form[^>]*action="${action}"`).exec(html)?.[1];
+
+  it("warns before archiving the last bookable table while booking is on", async () => {
+    const seven = await tableIdOf("7");
+    await turnBookingOn();
+
+    const confirmation = archiveConfirmation(await screen(TablesScreen), seven);
+
+    expect(confirmation).toContain("Its printed QR code will stop working");
+    expect(confirmation).toContain("online booking will switch off");
+  });
+
+  it("counts only bookable tables as the last one", async () => {
+    const seven = await tableIdOf("7");
+    const patio = await tableIdOf("Patio 1");
+    await owner.db.update(diningTables).set({ bookable: false }).where(eq(diningTables.id, patio));
+    await turnBookingOn();
+
+    const html = await screen(TablesScreen);
+
+    expect(archiveConfirmation(html, seven)).toContain("online booking will switch off");
+    expect(archiveConfirmation(html, patio)).not.toContain("switch off");
+  });
+
+  it("doesn't warn while another bookable table remains", async () => {
+    const seven = await tableIdOf("7");
+    await tableIdOf("Patio 1");
+    await turnBookingOn();
+
+    expect(archiveConfirmation(await screen(TablesScreen), seven)).not.toContain("switch off");
+  });
+
+  it("doesn't warn while booking is off", async () => {
+    const seven = await tableIdOf("7");
+
+    expect(archiveConfirmation(await screen(TablesScreen), seven)).not.toContain("switch off");
+  });
+
+  it("says so after a table save, in words that survive the page refreshing", async () => {
+    const seven = await tableIdOf("7");
+
+    const saved = savedMessageOf(await screen(TablesScreen), `/api/tables/${seven}`);
+
+    expect(saved).toContain("Capacity changes apply to bookings made from now on");
+    expect(saved).toContain("online booking has switched off");
+  });
+
+  it("says so after a settings save", async () => {
+    const saved = savedMessageOf(await screen(SettingsScreen), "/api/restaurant");
+
+    expect(saved).toContain("Settings saved");
+    expect(saved).toContain("online booking has switched off");
+  });
+});
 
 describe("/dashboard/tables/print", () => {
   it("has a card for a table the moment it is added: restaurant, label, instruction and Wi-Fi", async () => {

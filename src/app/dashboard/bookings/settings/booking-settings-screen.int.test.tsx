@@ -33,6 +33,19 @@ vi.mock("next/navigation", async (original) => ({
   useRouter: () => ({ refresh() {} }),
 }));
 
+// A client form's props never reach static markup, so what it would ask once
+// clicked is surfaced here beside the real form.
+vi.mock("../../action-form", async (original) => {
+  const { ActionForm } = await original<typeof import("../../action-form")>();
+  return {
+    ActionForm: (props: React.ComponentProps<typeof ActionForm>) => (
+      <div data-confirmation={props.confirmation}>
+        <ActionForm {...props} />
+      </div>
+    ),
+  };
+});
+
 const owner = openOwnerDatabase();
 const created: string[] = [];
 let tenant: TenantContext;
@@ -96,7 +109,65 @@ const settingsRow = async () =>
       .where(eq(bookingSettings.restaurantId, tenant.restaurantId))
   )[0];
 
+const deleteConfirmation = (html: string, periodId: string) =>
+  new RegExp(`data-confirmation="([^"]*)"><form[^>]*action="/api/bookings/periods/${periodId}/delete"`).exec(
+    html,
+  )?.[1];
+
+/** Everything the gate asks for, and booking turned on. */
+async function turnBookingOn() {
+  await owner.db
+    .update(restaurants)
+    .set({ contactPhone: "+263771234567" })
+    .where(eq(restaurants.id, tenant.restaurantId));
+  await addPeriod(post("/api/bookings/periods", lunch));
+  await owner.db.insert(diningTables).values({
+    restaurantId: tenant.restaurantId,
+    label: "1",
+    capacity: 2,
+    qrToken: crypto.randomUUID().replaceAll("-", "").slice(0, 22),
+  });
+  await setEnabled(post("/api/bookings/settings/enabled", { enabled: "true" }));
+}
+
 describe("/dashboard/bookings/settings", () => {
+  it.each([
+    ["on", true],
+    ["off, so it still explains a switch-off", false],
+  ])("names all four ways booking switches itself off while it's %s", async (_name, on) => {
+    if (on) await turnBookingOn();
+
+    const html = await screen();
+
+    expect(html).toContain("switches itself off");
+    expect(html).toContain("delete the last service period");
+    expect(html).toContain("archive the last table");
+    expect(html).toContain("walk-ins only");
+    expect(html).toContain("clear the contact phone");
+  });
+
+  it("warns before deleting the last service period while booking is on", async () => {
+    await turnBookingOn();
+    const [{ id }] = await periods();
+
+    expect(deleteConfirmation(await screen(), id)).toContain("online booking will switch off");
+  });
+
+  it("doesn't warn about a delete that can't switch booking off", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+
+    expect(deleteConfirmation(await screen(), id)).not.toContain("switch off");
+  });
+
+  it("doesn't warn while another service period remains", async () => {
+    await turnBookingOn();
+    await addPeriod(post("/api/bookings/periods", { ...lunch, weekday: "2" }));
+    const [{ id }] = await periods();
+
+    expect(deleteConfirmation(await screen(), id)).not.toContain("switch off");
+  });
+
   it("refuses staff with forbidden(), before any data renders", async () => {
     session.tenant = { ...tenant, role: "staff" };
 

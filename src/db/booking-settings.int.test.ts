@@ -1,6 +1,8 @@
+import type { PoolClient } from "@neondatabase/serverless";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
+  openAdminDatabase,
   openOwnerDatabase,
   openTestDatabase,
 } from "../../test/integration/database";
@@ -13,10 +15,12 @@ import { bookingSettings, diningTables, restaurants, servicePeriods } from "./sc
  */
 const owner = openOwnerDatabase();
 const app = openTestDatabase();
+const admin = openAdminDatabase();
 
 const CHECK_VIOLATION = "23514";
 const UNIQUE_VIOLATION = "23505";
 const EXCLUSION_VIOLATION = "23P01";
+const INSUFFICIENT_PRIVILEGE = "42501";
 
 const created: string[] = [];
 
@@ -40,7 +44,7 @@ afterAll(async () => {
     await owner.db.delete(diningTables).where(eq(diningTables.restaurantId, id));
     await owner.db.delete(restaurants).where(eq(restaurants.id, id));
   }
-  await Promise.all([owner.pool.end(), app.pool.end()]);
+  await Promise.all([owner.pool.end(), app.pool.end(), admin.pool.end()]);
 });
 
 const code = (promise: Promise<unknown>) =>
@@ -54,6 +58,16 @@ const constraint = (promise: Promise<unknown>) =>
     () => undefined,
     (error: { cause?: { constraint?: string; detail?: string } }) => ({
       constraint: error.cause?.constraint,
+      detail: error.cause?.detail,
+    }),
+  );
+
+const refusal = (promise: Promise<unknown>) =>
+  promise.then(
+    () => undefined,
+    (error: { cause?: { code?: string; message?: string; detail?: string } }) => ({
+      code: error.cause?.code,
+      message: error.cause?.message,
       detail: error.cause?.detail,
     }),
   );
@@ -377,15 +391,90 @@ describe("the enable gate", () => {
   });
 
   it("isn't asked again when something else on the row changes", async () => {
-    const { restaurantId } = await readyRestaurant();
+    const { restaurantId, tableId } = await readyRestaurant();
     await enable(restaurantId);
 
-    await owner.db
-      .update(bookingSettings)
-      .set({ sittingMinutes: 60 })
-      .where(eq(bookingSettings.restaurantId, restaurantId));
+    await owner.db.transaction(async (tx) => {
+      // Break the gate behind the recheck's back, so that asking again would refuse.
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(diningTables).set({ archivedAt: new Date() }).where(eq(diningTables.id, tableId));
+      await tx.execute(sql`set local session_replication_role = origin`);
 
-    expect(await isEnabled(restaurantId)).toBe(true);
+      await tx
+        .update(bookingSettings)
+        .set({ sittingMinutes: 60 })
+        .where(eq(bookingSettings.restaurantId, restaurantId));
+    });
+
+    expect((await settingsOf(restaurantId))[0]).toMatchObject({ enabled: true, sittingMinutes: 60 });
+  });
+});
+
+describe("the gate tells a tenant nothing about another restaurant", () => {
+  const asTenant = (restaurantId: string, write: (tx: Tx) => Promise<unknown>) =>
+    app.db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.restaurant_id', ${restaurantId}, true)`);
+      await write(tx);
+    });
+  type Tx = Parameters<Parameters<typeof app.db.transaction>[0]>[0];
+
+  const refusedByRowSecurity = {
+    code: INSUFFICIENT_PRIVILEGE,
+    message: 'new row violates row-level security policy for table "booking_settings"',
+    detail: undefined,
+  };
+
+  const victims: [string, () => Promise<string>][] = [
+    ["with nothing set up", () => newRestaurant(null)],
+    ["with only a table", async () => {
+      const id = await newRestaurant(null);
+      await addTable(id);
+      return id;
+    }],
+    ["with everything set up", async () => (await readyRestaurant()).restaurantId],
+  ];
+
+  it.each(victims)("a forged insert for a restaurant %s meets only RLS", async (_name, victim) => {
+    const tenant = await newRestaurant();
+    const other = await victim();
+
+    expect(
+      await refusal(
+        asTenant(tenant, (tx) =>
+          tx.insert(bookingSettings).values({ restaurantId: other, enabled: true }),
+        ),
+      ),
+    ).toEqual(refusedByRowSecurity);
+  });
+
+  it.each(victims)("a smuggled update to a restaurant %s meets only RLS", async (_name, victim) => {
+    const tenant = await newRestaurant();
+    const other = await victim();
+
+    expect(
+      await refusal(
+        asTenant(tenant, (tx) =>
+          tx
+            .update(bookingSettings)
+            .set({ restaurantId: other, enabled: true })
+            .where(eq(bookingSettings.restaurantId, tenant)),
+        ),
+      ),
+    ).toEqual(refusedByRowSecurity);
+  });
+
+  it.each([
+    ["app_tenant", "booking_gate_missing", app],
+    ["app_tenant", "booking_gate_recheck", app],
+    ["app_admin", "booking_gate_missing", admin],
+    ["app_admin", "booking_gate_recheck", admin],
+  ])("%s can't call %s", async (_role, name, login) => {
+    const call = login.db.execute(sql`select ${sql.identifier(name)}(${crypto.randomUUID()}::uuid)`);
+
+    expect(await refusal(call)).toMatchObject({
+      code: INSUFFICIENT_PRIVILEGE,
+      message: `permission denied for function ${name}`,
+    });
   });
 });
 
@@ -448,7 +537,7 @@ describe("booking switches itself off when the gate stops holding", () => {
     expect(await isEnabled(restaurantId)).toBe(true);
   });
 
-  it("and leaves a restaurant that never enabled alone", async () => {
+  it("and a restaurant that never enabled can still archive its last table", async () => {
     const { restaurantId, tableId } = await readyRestaurant();
 
     await owner.db.update(diningTables).set({ archivedAt: new Date() }).where(eq(diningTables.id, tableId));
@@ -458,21 +547,25 @@ describe("booking switches itself off when the gate stops holding", () => {
 });
 
 describe("enabling while the last bookable table is archived", () => {
-  let waiting: ReturnType<typeof setTimeout> | undefined;
-  afterAll(() => clearTimeout(waiting));
+  const backendPid = async (client: PoolClient) =>
+    (await client.query("select pg_backend_pid() as pid")).rows[0].pid as number;
 
-  /** Resolves once some backend is blocked on a lock, which is the interleaving under test. */
-  async function untilSomeoneWaitsOnALock() {
-    for (let attempt = 0; attempt < 200; attempt++) {
-      const { rows } = await owner.db.execute(sql`
-        select 1 from pg_stat_activity
-        where datname = current_database() and wait_event_type = 'Lock'
-      `);
-      if (rows.length > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("nothing ever waited on a lock");
-  }
+  /** Resolves once this backend is blocked on a lock, which is the interleaving under test. */
+  const waitUntilBlocked = (pid: number) =>
+    vi.waitFor(
+      async () => {
+        const { rows } = await owner.db.execute(
+          sql`select wait_event_type from pg_stat_activity where pid = ${pid}`,
+        );
+        expect(rows[0].wait_event_type).toBe("Lock");
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+
+  /** Closing a connection rolls it back, so a failure can't leave the other one waiting on it. */
+  const hangUp = (...clients: PoolClient[]) => {
+    for (const client of clients) client.release(true);
+  };
 
   it("enable commits first: the archive then switches booking off", async () => {
     const { restaurantId, tableId } = await readyRestaurant();
@@ -485,18 +578,22 @@ describe("enabling while the last bookable table is archived", () => {
       ]);
       // The gate passed: the table is still live as far as the enabler can see.
       await archiver.query("begin");
+      const archiverPid = await backendPid(archiver);
       const archiving = archiver
         .query("update tables set archived_at = now() where id = $1", [tableId])
-        .then(() => archiver.query("commit"));
-      await untilSomeoneWaitsOnALock();
+        .then(() => archiver.query("commit"))
+        .then(
+          () => undefined,
+          (error: Error) => error,
+        );
+      await waitUntilBlocked(archiverPid);
 
       await enabler.query("commit");
-      await archiving;
+      expect(await archiving).toBeUndefined();
 
       expect(await isEnabled(restaurantId)).toBe(false);
     } finally {
-      enabler.release();
-      archiver.release();
+      hangUp(enabler, archiver);
     }
   });
 
@@ -508,6 +605,7 @@ describe("enabling while the last bookable table is archived", () => {
       await archiver.query("begin");
       await archiver.query("update tables set archived_at = now() where id = $1", [tableId]);
       await enabler.query("begin");
+      const enablerPid = await backendPid(enabler);
       const enabling = enabler
         .query("update booking_settings set enabled = true where restaurant_id = $1", [restaurantId])
         .then(
@@ -515,7 +613,7 @@ describe("enabling while the last bookable table is archived", () => {
           (error: { constraint?: string }) => error.constraint,
         );
       // The archive took the settings row's lock in its trigger, so the enable queues behind it.
-      await untilSomeoneWaitsOnALock();
+      await waitUntilBlocked(enablerPid);
 
       await archiver.query("commit");
 
@@ -523,8 +621,7 @@ describe("enabling while the last bookable table is archived", () => {
       await enabler.query("rollback");
       expect(await isEnabled(restaurantId)).toBe(false);
     } finally {
-      enabler.release();
-      archiver.release();
+      hangUp(enabler, archiver);
     }
   });
 });

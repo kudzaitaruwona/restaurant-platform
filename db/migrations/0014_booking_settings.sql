@@ -122,10 +122,14 @@ $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION booking_gate_missing(uuid) FROM PUBLIC;
 --> statement-breakpoint
--- Turning booking on is refused while anything is missing. The trigger runs once
--- the UPDATE holds the settings row's lock, so an owner enabling and another
--- archiving the last table are queued on that row: whichever commits second sees
--- the other's result (the recheck below is the archiving side).
+-- Turning booking on is refused while anything is missing. AFTER, not BEFORE:
+-- Postgres applies RLS's WITH CHECK before it writes a row and after BEFORE
+-- triggers, so a row forged for another restaurant is refused by the policy and
+-- this definer function never reports on that restaurant. By the time it runs
+-- the UPDATE has written the row and holds its lock until the transaction ends,
+-- so an owner enabling and another archiving the last table are queued on that
+-- row: whichever commits second sees the other's result (the recheck below is the
+-- archiving side). The exception aborts the statement, as it would from BEFORE.
 CREATE FUNCTION booking_settings_enable_gate() RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -140,19 +144,19 @@ BEGIN
             CONSTRAINT = 'booking_settings_enable_gate',
             DETAIL = array_to_string(missing, ',');
   END IF;
-  RETURN NEW;
+  RETURN NULL;
 END;
 $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION booking_settings_enable_gate() FROM PUBLIC;
 --> statement-breakpoint
 CREATE TRIGGER booking_settings_enable_gate_insert
-  BEFORE INSERT ON booking_settings
+  AFTER INSERT ON booking_settings
   FOR EACH ROW WHEN (NEW.enabled)
   EXECUTE FUNCTION booking_settings_enable_gate();
 --> statement-breakpoint
 CREATE TRIGGER booking_settings_enable_gate_update
-  BEFORE UPDATE ON booking_settings
+  AFTER UPDATE ON booking_settings
   FOR EACH ROW WHEN (NEW.enabled AND NOT OLD.enabled)
   EXECUTE FUNCTION booking_settings_enable_gate();
 --> statement-breakpoint
