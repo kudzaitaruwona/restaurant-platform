@@ -553,9 +553,9 @@ describe("the platform admin", () => {
     expect(await statusOf(adminContext)).toBe(403);
   });
 
-  it("an admin session is not a staff session", async () => {
+  it("an admin session is not a staff session: a 403 until it enters a restaurant", async () => {
     request.cookie = await signIn(services, "admin", people.admin);
-    expect(await statusOf(tenantContext)).toBe(401);
+    expect(await statusOf(tenantContext)).toBe(403);
   });
 
   it("the two sessions use different cookies, so both can exist at once", async () => {
