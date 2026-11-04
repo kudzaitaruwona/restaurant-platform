@@ -1,15 +1,20 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as addCategory } from "@/app/api/menu/categories/route";
+import { POST as archiveCategory } from "@/app/api/menu/categories/[categoryId]/archive/route";
+import { POST as renameCategory } from "@/app/api/menu/categories/[categoryId]/route";
+import { POST as reorderCategories } from "@/app/api/menu/categories/order/route";
+import { POST as archiveItem } from "@/app/api/menu/items/[itemId]/archive/route";
+import { POST as editItem } from "@/app/api/menu/items/[itemId]/route";
 import { POST as setRate } from "@/app/api/menu/exchange-rate/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { auditLog, categories, exchangeRates, restaurants, staff } from "@/db/schema";
+import { auditLog, categories, exchangeRates, menuItems, restaurants, staff } from "@/db/schema";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -272,6 +277,146 @@ describe("/dashboard/menu", () => {
     expect(html).not.toContain('action="/api/menu/categories"');
     expect(html).not.toContain('action="/api/menu/items"');
     expect(html).not.toContain("Add an item");
+  });
+});
+
+describe("/dashboard/menu editing", () => {
+  const idOf = async (name: string) => {
+    const [{ id }] = await owner.db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(and(eq(menuItems.restaurantId, tenant.restaurantId), eq(menuItems.name, name)));
+    return id;
+  };
+
+  it("posts each category's rename and archive, and each item's edit and archive", async () => {
+    const categoryId = await newCategory("Mains");
+    await newCategory("Sides");
+    await addItem(post("/api/menu/items", item(categoryId)));
+    const itemId = await idOf("Beef stew");
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain(`action="/api/menu/categories/${categoryId}"`);
+    expect(html).toContain(`action="/api/menu/categories/${categoryId}/archive"`);
+    expect(html).toContain(`action="/api/menu/items/${itemId}"`);
+    expect(html).toContain(`action="/api/menu/items/${itemId}/archive"`);
+  });
+
+  it("asks where a category's items should go, only when it has some", async () => {
+    const full = await newCategory("Full");
+    await newCategory("Empty");
+    await addItem(post("/api/menu/items", item(full)));
+
+    const html = await screen(MenuScreen);
+
+    const forms = html.split("<form").filter((form) => form.includes("/archive"));
+    const withTarget = forms.filter((form) => form.includes('name="moveItemsTo"'));
+    expect(withTarget).toHaveLength(1);
+    expect(withTarget[0]).toContain(`action="/api/menu/categories/${full}/archive"`);
+  });
+
+  it("says to add another category first when the only one has items", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("Add another category before archiving");
+    expect(html).not.toContain(`/api/menu/categories/${categoryId}/archive`);
+  });
+
+  it("renames, edits and archives through the routes, and the editor follows", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+    const itemId = await idOf("Beef stew");
+
+    await renameCategory(post(`/api/menu/categories/${categoryId}`, { name: "Big plates" }), {
+      params: Promise.resolve({ categoryId }),
+    });
+    await editItem(
+      post(`/api/menu/items/${itemId}`, {
+        ...item(categoryId),
+        name: "Goat stew",
+        priceUsd: "9.00",
+        sortOrder: "2",
+      }),
+      { params: Promise.resolve({ itemId }) },
+    );
+    let html = await screen(MenuScreen);
+    expect(html).toContain("Big plates");
+    expect(html).toContain("Goat stew");
+    expect(html).not.toContain(">Beef stew<");
+
+    await archiveItem(post(`/api/menu/items/${itemId}/archive`), {
+      params: Promise.resolve({ itemId }),
+    });
+    await archiveCategory(post(`/api/menu/categories/${categoryId}/archive`), {
+      params: Promise.resolve({ categoryId }),
+    });
+    html = await screen(MenuScreen);
+    expect(html).not.toContain("Goat stew");
+    expect(html).not.toContain("Big plates");
+  });
+
+  it("answers a category with items and nowhere to put them with a 409 that says why", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+
+    const response = await archiveCategory(post(`/api/menu/categories/${categoryId}/archive`), {
+      params: Promise.resolve({ categoryId }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: expect.stringContaining("Choose where") });
+  });
+
+  it("moves the items when told where", async () => {
+    const from = await newCategory("Old");
+    const to = await newCategory("New");
+    await addItem(post("/api/menu/items", item(from)));
+
+    const response = await archiveCategory(
+      post(`/api/menu/categories/${from}/archive`, { moveItemsTo: to }, { [FORM_FETCH_HEADER]: "1" }),
+      { params: Promise.resolve({ categoryId: from }) },
+    );
+
+    expect(response.status).toBe(204);
+    expect(await screen(MenuScreen)).toContain("Beef stew");
+  });
+
+  it("refuses a bad edit with a reason, and an item left with no price", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+    const itemId = await idOf("Beef stew");
+    const edit = (fields: Record<string, string>) =>
+      editItem(post(`/api/menu/items/${itemId}`, { ...item(categoryId), sortOrder: "0", ...fields }), {
+        params: Promise.resolve({ itemId }),
+      });
+
+    for (const fields of [{ priceUsd: "free" } as Record<string, string>, { name: " " }, { sortOrder: "-1" }, { priceUsd: "" }]) {
+      const response = await edit(fields);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+    }
+  });
+
+  it("saves the order a drag leaves, and refuses a malformed one", async () => {
+    const [a, b] = [await newCategory("Alpha"), await newCategory("Beta")];
+    const order = (ids: string[]) => {
+      const body = new FormData();
+      for (const id of ids) body.append("ids", id);
+      return new NextRequest(new URL("/api/menu/categories/order", "http://localhost:3000"), {
+        method: "POST",
+        body,
+      });
+    };
+
+    expect((await reorderCategories(order([b, a]))).status).toBe(303);
+    const html = await screen(MenuScreen);
+    expect(html.indexOf("Beta")).toBeLessThan(html.indexOf("Alpha"));
+
+    expect((await reorderCategories(order([]))).status).toBe(400);
   });
 });
 

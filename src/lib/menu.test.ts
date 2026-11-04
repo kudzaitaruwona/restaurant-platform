@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   parseAvailability,
+  parseCategoryOrder,
+  parseItemEdit,
   parseNewCategory,
   parseNewMenuItem,
 } from "./menu";
@@ -141,5 +143,73 @@ describe("parseAvailability", () => {
 
   it("refuses a form with no availability at all", () => {
     expect(parseAvailability(form({}))).toMatchObject({ success: false });
+  });
+});
+
+describe("parseItemEdit", () => {
+  const edit = { ...valid, sortOrder: "3" };
+
+  it("takes the fields the editor shows", () => {
+    expect(parseItemEdit(form(edit))).toEqual({
+      success: true,
+      data: { ...valid, sortOrder: 3 },
+    });
+  });
+
+  it("reads a blank USD price as none, for the database to judge", () => {
+    expect(parseItemEdit(form({ ...edit, priceUsd: "  " }))).toMatchObject({
+      success: true,
+      data: { priceUsd: null },
+    });
+  });
+
+  it.each(["-1", "8.555", "1e3", "NaN", "Infinity", "1000000", "$8"])(
+    "refuses the price %j",
+    (priceUsd) => {
+      expect(parseItemEdit(form({ ...edit, priceUsd }))).toMatchObject({ success: false });
+    },
+  );
+
+  it.each(["0", "7", "9999", " 12 "])("takes the sort order %j", (sortOrder) => {
+    expect(parseItemEdit(form({ ...edit, sortOrder }))).toMatchObject({
+      success: true,
+      data: { sortOrder: Number(sortOrder) },
+    });
+  });
+
+  it.each(["", "-1", "1.5", "10000", "abc", "1e2"])(
+    "refuses the sort order %j",
+    (sortOrder) => {
+      expect(parseItemEdit(form({ ...edit, sortOrder }))).toMatchObject({ success: false });
+    },
+  );
+
+  it.each([
+    ["no name", { name: " " }],
+    ["a long description", { description: "x".repeat(1001) }],
+    ["no category", { categoryId: "" }],
+  ])("refuses %s", (_name, change) => {
+    expect(parseItemEdit(form({ ...edit, ...change }))).toMatchObject({ success: false });
+  });
+});
+
+describe("parseCategoryOrder", () => {
+  const ids = [crypto.randomUUID(), crypto.randomUUID()];
+  const order = (values: string[]) => {
+    const body = new FormData();
+    for (const value of values) body.append("ids", value);
+    return body;
+  };
+
+  it("keeps the order sent", () => {
+    expect(parseCategoryOrder(order(ids))).toEqual({ success: true, data: ids });
+  });
+
+  it.each([
+    ["no ids", []],
+    ["a blank id", [ids[0], ""]],
+    ["the same id twice", [ids[0], ids[0]]],
+  ])("refuses %s", (_name, sent) => {
+    expect(parseCategoryOrder(order(sent))).toMatchObject({ success: false });
   });
 });

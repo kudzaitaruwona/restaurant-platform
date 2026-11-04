@@ -16,8 +16,13 @@ import {
 import {
   addCategory,
   addMenuItem,
+  archiveCategory,
+  archiveMenuItem,
   getMenu,
+  renameCategory,
+  reorderCategories,
   setItemAvailability,
+  updateMenuItem,
 } from "./menu";
 import { menuTag } from "./menu-cache";
 
@@ -387,5 +392,379 @@ describe("an item's availability", () => {
         details: { available: false },
       },
     ]);
+  });
+});
+
+/** A restaurant with the given categories, each holding the named items. */
+async function menuOf(layout: Record<string, string[]>) {
+  const tenant = await newRestaurant();
+  for (const name of Object.keys(layout)) await addCategory(tenant, { name });
+  for (const [name, items] of Object.entries(layout)) {
+    const categoryId = await categoryIdOf(tenant, name);
+    for (const item of items) await addMenuItem(tenant, itemIn(categoryId, item));
+  }
+  revalidateTag.mockClear();
+  return tenant;
+}
+
+const shape = async (tenant: { restaurantId: string }) =>
+  Object.fromEntries(
+    (await getMenu(tenant)).categories.map(({ name, items }) => [
+      name,
+      items.map((item) => item.name),
+    ]),
+  );
+
+const itemIdOf = async (tenant: { restaurantId: string }, name: string) =>
+  (await getMenu(tenant)).categories
+    .flatMap((category) => category.items)
+    .find((item) => item.name === name)!.id;
+
+const edit = (categoryId: string, change: Record<string, unknown> = {}) => ({
+  name: "Beef stew",
+  description: "Slow-cooked",
+  priceUsd: "9.00" as string | null,
+  sortOrder: 0,
+  categoryId,
+  ...change,
+});
+
+const touchedCache = () => revalidateTag.mock.calls.length;
+
+describe("renaming a category", () => {
+  it("changes its name, keeps its place and its items", async () => {
+    const tenant = await menuOf({ Starters: [], Mains: ["Stew"] });
+
+    expect(
+      await renameCategory(tenant, await categoryIdOf(tenant, "Mains"), {
+        name: "Big plates",
+      }),
+    ).toBe("saved");
+
+    expect(await shape(tenant)).toEqual({ Starters: [], "Big plates": ["Stew"] });
+    expect(Object.keys(await shape(tenant))).toEqual(["Starters", "Big plates"]);
+    expect(touchedCache()).toBe(1);
+  });
+
+  it("won't rename another restaurant's category, or an unknown one", async () => {
+    const [mine, theirs] = [await menuOf({}), await menuOf({ Theirs: [] })];
+    const theirCategory = await categoryIdOf(theirs, "Theirs");
+
+    for (const id of [theirCategory, crypto.randomUUID(), "not-a-uuid"]) {
+      expect(await renameCategory(mine, id, { name: "Mine now" })).toBe("not_found");
+    }
+
+    expect(await shape(theirs)).toEqual({ Theirs: [] });
+    expect(touchedCache()).toBe(0);
+  });
+});
+
+describe("reordering categories", () => {
+  it("shows them in the order given", async () => {
+    const tenant = await menuOf({ A: [], B: [], C: [] });
+    const [a, b, c] = await Promise.all(
+      ["A", "B", "C"].map((name) => categoryIdOf(tenant, name)),
+    );
+
+    expect(await reorderCategories(tenant, [c, a, b])).toBe("saved");
+
+    expect(Object.keys(await shape(tenant))).toEqual(["C", "A", "B"]);
+    expect(touchedCache()).toBe(1);
+  });
+
+  it("refuses a list with another restaurant's category in it, and changes nothing", async () => {
+    const tenant = await menuOf({ A: [], B: [] });
+    const theirs = await menuOf({ Theirs: [] });
+    const [a, b] = await Promise.all(
+      ["A", "B"].map((name) => categoryIdOf(tenant, name)),
+    );
+    const theirCategory = await categoryIdOf(theirs, "Theirs");
+
+    expect(await reorderCategories(tenant, [b, theirCategory, a])).toBe("not_found");
+
+    expect(Object.keys(await shape(tenant))).toEqual(["A", "B"]);
+    const [row] = await owner.db
+      .select({ sortOrder: categories.sortOrder })
+      .from(categories)
+      .where(eq(categories.id, theirCategory));
+    expect(row.sortOrder).toBe(0);
+    expect(touchedCache()).toBe(0);
+  });
+
+  it("refuses an archived or malformed id", async () => {
+    const tenant = await menuOf({ A: [], B: [] });
+    const a = await categoryIdOf(tenant, "A");
+    await archiveCategory(tenant, a);
+
+    expect(await reorderCategories(tenant, [a])).toBe("not_found");
+    expect(await reorderCategories(tenant, ["not-a-uuid"])).toBe("not_found");
+  });
+});
+
+describe("archiving a category", () => {
+  it("takes an empty category off the menu, and keeps the row", async () => {
+    const tenant = await menuOf({ Starters: [], Mains: [] });
+    const starters = await categoryIdOf(tenant, "Starters");
+
+    expect(await archiveCategory(tenant, starters)).toBe("archived");
+
+    expect(await shape(tenant)).toEqual({ Mains: [] });
+    const [row] = await owner.db.select().from(categories).where(eq(categories.id, starters));
+    expect(row.archivedAt).toBeInstanceOf(Date);
+    expect(touchedCache()).toBe(1);
+  });
+
+  it("refuses a category that still has items, and changes nothing", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"] });
+
+    expect(await archiveCategory(tenant, await categoryIdOf(tenant, "Mains"))).toBe(
+      "not_empty",
+    );
+
+    expect(await shape(tenant)).toEqual({ Mains: ["Stew"] });
+    expect(touchedCache()).toBe(0);
+  });
+
+  it("moves its items to the category chosen, after what is already there", async () => {
+    const tenant = await menuOf({ Old: ["Soup", "Stew"], New: ["Rice"] });
+
+    expect(
+      await archiveCategory(
+        tenant,
+        await categoryIdOf(tenant, "Old"),
+        await categoryIdOf(tenant, "New"),
+      ),
+    ).toBe("archived");
+
+    expect(await shape(tenant)).toEqual({ New: ["Rice", "Soup", "Stew"] });
+  });
+
+  it("doesn't count an archived item as one that needs moving", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"] });
+    await archiveMenuItem(tenant, await itemIdOf(tenant, "Stew"));
+
+    expect(await archiveCategory(tenant, await categoryIdOf(tenant, "Mains"))).toBe(
+      "archived",
+    );
+  });
+
+  it.each([
+    ["itself", (own: string) => own],
+    ["an unknown category", () => crypto.randomUUID()],
+    ["a malformed id", () => "not-a-uuid"],
+  ])("won't move items to %s", async (_name, target) => {
+    const tenant = await menuOf({ Mains: ["Stew"] });
+    const mains = await categoryIdOf(tenant, "Mains");
+
+    expect(await archiveCategory(tenant, mains, target(mains))).toBe("not_found");
+
+    expect(await shape(tenant)).toEqual({ Mains: ["Stew"] });
+  });
+
+  it("won't move items to another restaurant's category, or an archived one", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"], Gone: [] });
+    const theirs = await menuOf({ Theirs: [] });
+    const mains = await categoryIdOf(tenant, "Mains");
+    const gone = await categoryIdOf(tenant, "Gone");
+    await archiveCategory(tenant, gone);
+
+    for (const target of [await categoryIdOf(theirs, "Theirs"), gone]) {
+      expect(await archiveCategory(tenant, mains, target)).toBe("not_found");
+    }
+
+    expect(await shape(tenant)).toEqual({ Mains: ["Stew"] });
+    expect(await shape(theirs)).toEqual({ Theirs: [] });
+  });
+
+  it("won't archive another restaurant's category, or one already archived", async () => {
+    const [mine, theirs] = [await menuOf({ Mine: [] }), await menuOf({ Theirs: [] })];
+    const mineId = await categoryIdOf(mine, "Mine");
+
+    expect(await archiveCategory(mine, await categoryIdOf(theirs, "Theirs"))).toBe(
+      "not_found",
+    );
+    await archiveCategory(mine, mineId);
+    expect(await archiveCategory(mine, mineId)).toBe("not_found");
+    expect(await shape(theirs)).toEqual({ Theirs: [] });
+  });
+
+  it("can't be added to once archived", async () => {
+    const tenant = await menuOf({ Gone: [] });
+    const gone = await categoryIdOf(tenant, "Gone");
+    await archiveCategory(tenant, gone);
+
+    expect(await addMenuItem(tenant, itemIn(gone))).toBe("no_such_category");
+  });
+
+  it("leaves no live item behind when an item is added as it archives", async () => {
+    const tenant = await menuOf({ Mains: [] });
+    const mains = await categoryIdOf(tenant, "Mains");
+
+    const [archived, added] = await Promise.all([
+      archiveCategory(tenant, mains),
+      addMenuItem(tenant, itemIn(mains, "Latecomer")),
+    ]);
+
+    // Either the item got in first and the archive was refused, or it was
+    // archived first and the item was refused. Never both succeeding.
+    expect(
+      (archived === "archived" && added === "no_such_category") ||
+        (archived === "not_empty" && added === "saved"),
+    ).toBe(true);
+  });
+});
+
+describe("editing an item", () => {
+  it("saves its name, description, price, category and sort order", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"], Sides: ["Rice"] });
+    const sides = await categoryIdOf(tenant, "Sides");
+
+    expect(
+      await updateMenuItem(
+        tenant,
+        await itemIdOf(tenant, "Stew"),
+        edit(sides, { name: "Beef stew", priceUsd: "9.00", sortOrder: 5 }),
+      ),
+    ).toBe("saved");
+
+    const menu = await getMenu(tenant);
+    expect(menu.categories.map((category) => category.items.length)).toEqual([0, 2]);
+    expect(menu.categories[1].items.find((item) => item.name === "Beef stew")).toMatchObject({
+      description: "Slow-cooked",
+      priceUsd: "9.00",
+      sortOrder: 5,
+    });
+    expect(touchedCache()).toBe(1);
+  });
+
+  it("orders items by their sort order", async () => {
+    const tenant = await menuOf({ Mains: ["First", "Second"] });
+    const mains = await categoryIdOf(tenant, "Mains");
+
+    await updateMenuItem(tenant, await itemIdOf(tenant, "First"), edit(mains, { name: "First", sortOrder: 9 }));
+
+    expect((await shape(tenant)).Mains).toEqual(["Second", "First"]);
+  });
+
+  it("leaves a fixed ZiG price alone", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"] });
+    const id = await itemIdOf(tenant, "Stew");
+    await owner.db.update(menuItems).set({ priceZig: "210" }).where(eq(menuItems.id, id));
+
+    await updateMenuItem(tenant, id, edit(await categoryIdOf(tenant, "Mains")));
+
+    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, id));
+    expect(row.priceZig).toBe("210");
+  });
+
+  it("takes the USD price off an item that has a ZiG price, but not one that has no other", async () => {
+    const tenant = await menuOf({ Mains: ["Stew", "Soup"] });
+    const mains = await categoryIdOf(tenant, "Mains");
+    const [stew, soup] = [await itemIdOf(tenant, "Stew"), await itemIdOf(tenant, "Soup")];
+    await owner.db.update(menuItems).set({ priceZig: "210" }).where(eq(menuItems.id, stew));
+
+    expect(await updateMenuItem(tenant, stew, edit(mains, { priceUsd: null }))).toBe("saved");
+    expect(await updateMenuItem(tenant, soup, edit(mains, { name: "Soup", priceUsd: null }))).toBe(
+      "no_price",
+    );
+
+    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, soup));
+    expect(row.priceUsd).toBe("8.50");
+  });
+
+  it("won't move an item to another restaurant's category, or an archived one", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"], Gone: [] });
+    const theirs = await menuOf({ Theirs: [] });
+    const gone = await categoryIdOf(tenant, "Gone");
+    await archiveCategory(tenant, gone);
+    const stew = await itemIdOf(tenant, "Stew");
+    revalidateTag.mockClear();
+
+    for (const target of [await categoryIdOf(theirs, "Theirs"), gone, "not-a-uuid"]) {
+      expect(await updateMenuItem(tenant, stew, edit(target))).toBe("no_such_category");
+    }
+
+    expect(await shape(tenant)).toEqual({ Mains: ["Stew"] });
+    expect(touchedCache()).toBe(0);
+  });
+
+  it("won't edit another restaurant's item, an unknown one or an archived one", async () => {
+    const [mine, theirs] = [await menuOf({ Mine: ["Soup"] }), await menuOf({ Theirs: ["Stew"] })];
+    const mineCategory = await categoryIdOf(mine, "Mine");
+    const archived = await itemIdOf(mine, "Soup");
+    await archiveMenuItem(mine, archived);
+
+    for (const id of [
+      await itemIdOf(theirs, "Stew"),
+      crypto.randomUUID(),
+      "not-a-uuid",
+      archived,
+    ]) {
+      expect(await updateMenuItem(mine, id, edit(mineCategory, { name: "Hijacked" }))).toBe(
+        "not_found",
+      );
+    }
+
+    expect(await shape(theirs)).toEqual({ Theirs: ["Stew"] });
+  });
+});
+
+describe("archiving an item", () => {
+  it("takes it off the menu and keeps the row", async () => {
+    const tenant = await menuOf({ Mains: ["Stew", "Soup"] });
+    const id = await itemIdOf(tenant, "Stew");
+
+    expect(await archiveMenuItem(tenant, id)).toBe("archived");
+
+    expect(await shape(tenant)).toEqual({ Mains: ["Soup"] });
+    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, id));
+    expect(row.archivedAt).toBeInstanceOf(Date);
+    expect(touchedCache()).toBe(1);
+  });
+
+  it("won't archive another restaurant's item, an unknown one or one already archived", async () => {
+    const [mine, theirs] = [await menuOf({ Mine: ["Soup"] }), await menuOf({ Theirs: ["Stew"] })];
+    const soup = await itemIdOf(mine, "Soup");
+    await archiveMenuItem(mine, soup);
+    revalidateTag.mockClear();
+
+    for (const id of [await itemIdOf(theirs, "Stew"), crypto.randomUUID(), "not-a-uuid", soup]) {
+      expect(await archiveMenuItem(mine, id)).toBe("not_found");
+    }
+
+    expect(await shape(theirs)).toEqual({ Theirs: ["Stew"] });
+    expect(touchedCache()).toBe(0);
+  });
+});
+
+describe("an entered platform admin's edits", () => {
+  const platformAdminId = crypto.randomUUID();
+
+  it("audits each kind of change under its own action", async () => {
+    const tenant = await menuOf({ A: ["Stew"], B: [], C: [] });
+    const admin = { ...tenant, platformAdminId };
+    const [a, b, c] = await Promise.all(
+      ["A", "B", "C"].map((name) => categoryIdOf(tenant, name)),
+    );
+    const stew = await itemIdOf(tenant, "Stew");
+
+    await renameCategory(admin, b, { name: "B2" });
+    await reorderCategories(admin, [c, b, a]);
+    await updateMenuItem(admin, stew, edit(a));
+    await archiveCategory(admin, b);
+    await archiveMenuItem(admin, stew);
+
+    const entries = await owner.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.restaurantId, tenant.restaurantId));
+    expect(entries.map((entry) => entry.action).sort()).toEqual([
+      "category.archive",
+      "category.rename",
+      "category.reorder",
+      "menu_item.archive",
+      "menu_item.update",
+    ]);
+    expect(entries.every((entry) => entry.actorId === platformAdminId)).toBe(true);
   });
 });

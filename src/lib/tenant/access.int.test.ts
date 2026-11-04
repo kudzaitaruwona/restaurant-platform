@@ -73,7 +73,13 @@ vi.mock("next/cache", () => ({
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string; categoryId: string; itemId: string };
+type Target = {
+  staffId: string;
+  categoryId: string;
+  /** A second live category: where archiving a category moves its items. */
+  spareCategoryId: string;
+  itemId: string;
+};
 
 type TenantRoute = {
   name: string;
@@ -84,6 +90,7 @@ type TenantRoute = {
 const harnessItem = "Harness item";
 const harnessCategory = "Harness category";
 const harnessRate = "31.5";
+const renamedByHarness = "Renamed by the harness";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -168,6 +175,70 @@ const routes: TenantRoute[] = [
             categoryId: target.categoryId,
           }),
         }),
+      ),
+  },
+  {
+    name: "POST /api/menu/categories/[categoryId]",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/categories/[categoryId]/route")).POST(
+        request(`/api/menu/categories/${target.categoryId}`, {
+          method: "POST",
+          body: form({ name: renamedByHarness }),
+        }),
+        { params: Promise.resolve({ categoryId: target.categoryId }) },
+      ),
+  },
+  {
+    name: "POST /api/menu/categories/[categoryId]/archive",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/categories/[categoryId]/archive/route")).POST(
+        request(`/api/menu/categories/${target.categoryId}/archive`, {
+          method: "POST",
+          body: form({ moveItemsTo: target.spareCategoryId }),
+        }),
+        { params: Promise.resolve({ categoryId: target.categoryId }) },
+      ),
+  },
+  {
+    // The ids are in the form, like the item's category.
+    name: "POST /api/menu/categories/order",
+    ownerOnly: true,
+    call: async (target) => {
+      const body = new FormData();
+      body.append("ids", target.categoryId);
+      body.append("ids", target.spareCategoryId);
+      return (await import("@/app/api/menu/categories/order/route")).POST(
+        request("/api/menu/categories/order", { method: "POST", body }),
+      );
+    },
+  },
+  {
+    name: "POST /api/menu/items/[itemId]",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/route")).POST(
+        request(`/api/menu/items/${target.itemId}`, {
+          method: "POST",
+          body: form({
+            name: renamedByHarness,
+            description: "",
+            priceUsd: "9.00",
+            sortOrder: "0",
+            categoryId: target.categoryId,
+          }),
+        }),
+        { params: Promise.resolve({ itemId: target.itemId }) },
+      ),
+  },
+  {
+    name: "POST /api/menu/items/[itemId]/archive",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/archive/route")).POST(
+        request(`/api/menu/items/${target.itemId}/archive`, { method: "POST" }),
+        { params: Promise.resolve({ itemId: target.itemId }) },
       ),
   },
 ];
@@ -341,17 +412,21 @@ const fixtures = {
   a: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    spareCategoryId: crypto.randomUUID(),
     itemId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    spareCategoryId: crypto.randomUUID(),
     itemId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
 const fixtureName = "Harness fixture";
+/** The menu fixtures before any route touched them. */
+const pristine = {} as Record<"a" | "b", Awaited<ReturnType<typeof menuFixtureState>>>;
 const emailOf = (key: string) => `${key}@dev.example.test`;
 
 beforeAll(async () => {
@@ -374,11 +449,13 @@ beforeAll(async () => {
     })),
   );
   await owner.db.insert(categories).values(
-    Object.values(fixtures).map(({ categoryId, restaurantId }) => ({
-      id: categoryId,
-      restaurantId,
-      name: fixtureName,
-    })),
+    Object.values(fixtures).flatMap(({ categoryId, spareCategoryId, restaurantId }) =>
+      [categoryId, spareCategoryId].map((id) => ({
+        id,
+        restaurantId,
+        name: fixtureName,
+      })),
+    ),
   );
   await owner.db.insert(menuItems).values(
     Object.values(fixtures).map(({ itemId, categoryId, restaurantId }) => ({
@@ -389,6 +466,8 @@ beforeAll(async () => {
       priceUsd: "8.50",
     })),
   );
+  pristine.a = await menuFixtureState(fixtures.a);
+  pristine.b = await menuFixtureState(fixtures.b);
 });
 
 afterEach(async () => {
@@ -396,17 +475,17 @@ afterEach(async () => {
     .update(staff)
     .set({ displayName: fixtureName, role: "staff", active: true })
     .where(eq(staff.id, fixtures.a.staffId));
+  await resetMenuFixtures();
 });
 
 afterAll(async () => {
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
-  await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
   await owner.db.delete(exchangeRates).where(eq(exchangeRates.usdToZig, harnessRate));
   await owner.db
     .delete(menuItems)
-    .where(inArray(menuItems.id, Object.values(fixtures).map(({ itemId }) => itemId)));
+    .where(inArray(menuItems.name, [harnessItem, fixtureName]));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -425,6 +504,35 @@ afterAll(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
+
+/** Puts the menu fixtures back as they were: the routes rename and archive them. */
+async function resetMenuFixtures() {
+  const all = Object.values(fixtures);
+  await owner.db
+    .update(categories)
+    .set({ name: fixtureName, archivedAt: null, sortOrder: 0 })
+    .where(inArray(categories.id, all.flatMap((f) => [f.categoryId, f.spareCategoryId])));
+  await owner.db
+    .update(menuItems)
+    .set({ name: fixtureName, archivedAt: null, priceUsd: "8.50" })
+    .where(inArray(menuItems.id, all.map((f) => f.itemId)));
+  for (const { itemId, categoryId } of all) {
+    await owner.db.update(menuItems).set({ categoryId }).where(eq(menuItems.id, itemId));
+  }
+}
+
+/** What the menu routes would change in a fixture's restaurant. */
+const menuFixtureState = async ({ categoryId, spareCategoryId, itemId }: Target) => {
+  const rows = await owner.db
+    .select({ id: categories.id, name: categories.name, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder })
+    .from(categories)
+    .where(inArray(categories.id, [categoryId, spareCategoryId]));
+  const [item] = await owner.db
+    .select({ name: menuItems.name, categoryId: menuItems.categoryId, archivedAt: menuItems.archivedAt })
+    .from(menuItems)
+    .where(eq(menuItems.id, itemId));
+  return { categories: rows.sort((x, y) => x.id.localeCompare(y.id)), item };
+};
 
 const displayName = async (staffId: string) => {
   const [row] = await owner.db
@@ -536,6 +644,7 @@ describe("cross-tenant access", () => {
       expect(await standing(fixtures.b.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.b.restaurantId)).toEqual([]);
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(itemsInA);
+      expect(await menuFixtureState(fixtures.b)).toEqual(pristine.b);
     },
   );
 
@@ -618,6 +727,7 @@ describe("owner-only routes", () => {
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.a.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(items);
+      expect(await menuFixtureState(fixtures.a)).toEqual(pristine.a);
     },
   );
 
@@ -914,9 +1024,8 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        expect(
-          await statusOf(() => route.call({ staffId, categoryId, itemId: staffId })),
-        ).toBe(404);
+        const target = { staffId, categoryId, spareCategoryId: `${categoryId}-spare`, itemId: categoryId };
+        expect(await statusOf(() => route.call(target))).toBe(404);
       }
     },
   );
@@ -1117,7 +1226,11 @@ describe("a platform admin inside restaurant A", () => {
 
   it("no write is audited under the shadow row: S-29", async () => {
     const shadowId = await shadowOfA();
-    for (const route of writes) await route.call(fixtures.a);
+    for (const route of writes) {
+      await route.call(fixtures.a);
+      // One route archives what the next one edits.
+      await resetMenuFixtures();
+    }
     for (const route of sessionRoutes) await route.call();
 
     const actors = (await auditEntries(fixtures.a.restaurantId)).map(

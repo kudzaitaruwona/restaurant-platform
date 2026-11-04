@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { getMenu } from "@/lib/menu";
+import { getMenu, type Menu } from "@/lib/menu";
 import {
   effectiveUsd,
   effectiveZig,
@@ -8,8 +8,9 @@ import {
   formatZig,
   type Pricing,
 } from "@/lib/pricing";
-import { getTenantContext, requireOwner } from "@/lib/tenant";
+import { getTenantContext } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
+import { SortableCategories } from "./sortable-categories";
 import { Field, inputClassName } from "../field";
 import { ExchangeRateStatus } from "../exchange-rate-status";
 import { ItemPriceFields } from "./item-price-fields";
@@ -60,51 +61,20 @@ export async function MenuScreen() {
         </ActionForm>
       </section>
 
-      {menu.categories.map((category) => (
-        <section key={category.id} className="flex flex-col gap-2">
-          <h2 className="font-heading text-xl font-semibold">{category.name}</h2>
-          {category.items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nothing here yet.</p>
-          ) : (
-            <ul className="flex flex-col divide-y">
-              {category.items.map((item) => (
-                <li
-                  key={item.id}
-                  className="flex flex-col gap-1 py-2 sm:flex-row sm:items-start sm:justify-between"
-                >
-                  <div className="flex flex-col">
-                    <span className="flex justify-between gap-4 font-medium">
-                      {item.name}
-                      <ItemPrices item={item} pricing={menu.pricing} />
-                    </span>
-                    {item.description && (
-                      <span className="text-sm text-muted-foreground">
-                        {item.description}
-                      </span>
-                    )}
-                    {!item.available && (
-                      <span className="text-sm font-medium text-destructive">Sold out</span>
-                    )}
-                  </div>
-                  <ActionForm
-                    action={`/api/menu/items/${item.id}/availability`}
-                    className="self-start"
-                  >
-                    <input
-                      type="hidden"
-                      name="available"
-                      value={item.available ? "false" : "true"}
-                    />
-                    <Button type="submit" variant="outline" size="sm">
-                      {item.available ? "Mark sold out" : "Mark available"}
-                    </Button>
-                  </ActionForm>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
+      <SortableCategories
+        entries={menu.categories.map((category) => ({
+          id: category.id,
+          name: category.name,
+          content: (
+            <CategorySection
+              category={category}
+              others={menu.categories.filter((other) => other.id !== category.id)}
+              all={menu.categories}
+              pricing={menu.pricing}
+            />
+          ),
+        }))}
+      />
 
       {isOwner && (
         <section className="flex flex-col gap-3">
@@ -189,5 +159,174 @@ function ItemPrices({
         </span>
       )}
     </span>
+  );
+}
+
+type Category = Menu["categories"][number];
+
+function CategorySection({
+  category,
+  others,
+  all,
+  pricing,
+}: {
+  category: Category;
+  others: Category[];
+  all: Category[];
+  pricing: Pricing;
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <ActionForm
+        action={`/api/menu/categories/${category.id}`}
+        savedMessage="Renamed."
+        className="flex items-end gap-2"
+      >
+        <label className="flex flex-1 flex-col gap-1 text-sm font-medium">
+          <span className="sr-only">Category name</span>
+          <input
+            name="name"
+            defaultValue={category.name}
+            required
+            maxLength={200}
+            className={`${inputClassName} font-heading text-xl font-semibold`}
+          />
+        </label>
+        <Button type="submit" variant="outline">
+          Rename
+        </Button>
+      </ActionForm>
+
+      {category.items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nothing here yet.</p>
+      ) : (
+        <ul className="flex flex-col divide-y">
+          {category.items.map((item) => (
+            <li key={item.id} className="flex flex-col gap-1 py-2">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex flex-col">
+                  <span className="flex justify-between gap-4 font-medium">
+                    {item.name}
+                    <ItemPrices item={item} pricing={pricing} />
+                  </span>
+                  {item.description && (
+                    <span className="text-sm text-muted-foreground">
+                      {item.description}
+                    </span>
+                  )}
+                  {!item.available && (
+                    <span className="text-sm font-medium text-destructive">Sold out</span>
+                  )}
+                </div>
+                <ActionForm
+                  action={`/api/menu/items/${item.id}/availability`}
+                  className="self-start"
+                >
+                  <input
+                    type="hidden"
+                    name="available"
+                    value={item.available ? "false" : "true"}
+                  />
+                  <Button type="submit" variant="outline" size="sm">
+                    {item.available ? "Mark sold out" : "Mark available"}
+                  </Button>
+                </ActionForm>
+              </div>
+              <ItemEditor item={item} categories={all} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <ArchiveCategory category={category} others={others} />
+    </section>
+  );
+}
+
+function ItemEditor({
+  item,
+  categories,
+}: {
+  item: Category["items"][number];
+  categories: Category[];
+}) {
+  return (
+    <details className="mt-1 text-sm">
+      <summary className="cursor-pointer text-muted-foreground underline">Edit</summary>
+      <div className="mt-2 flex flex-col gap-3">
+        <ActionForm
+          action={`/api/menu/items/${item.id}`}
+          savedMessage="Saved."
+          className="flex flex-col gap-3"
+        >
+          <Field label="Name">
+            <input name="name" defaultValue={item.name} required maxLength={200} className={inputClassName} />
+          </Field>
+          <Field label="Description">
+            <textarea name="description" defaultValue={item.description} rows={2} maxLength={1000} className={inputClassName} />
+          </Field>
+          <Field label="Price (USD)">
+            <input name="priceUsd" defaultValue={item.priceUsd ?? ""} inputMode="decimal" className={inputClassName} />
+          </Field>
+          <Field label="Category">
+            <select name="categoryId" defaultValue={item.categoryId} className={inputClassName}>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Sort order" hint="Lower numbers come first.">
+            <input name="sortOrder" defaultValue={item.sortOrder} inputMode="numeric" required className={inputClassName} />
+          </Field>
+          <Button type="submit" className="self-start">
+            Save item
+          </Button>
+        </ActionForm>
+        <ActionForm
+          action={`/api/menu/items/${item.id}/archive`}
+          confirmation={`Archive ${item.name}? Customers will stop seeing it.`}
+        >
+          <Button type="submit" variant="outline">
+            Archive item
+          </Button>
+        </ActionForm>
+      </div>
+    </details>
+  );
+}
+
+/** Empty: just archive. Otherwise the items have to go somewhere (spec 02). */
+function ArchiveCategory({ category, others }: { category: Category; others: Category[] }) {
+  const hasItems = category.items.length > 0;
+  if (hasItems && others.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Add another category before archiving this one, so its items have somewhere to go.
+      </p>
+    );
+  }
+  return (
+    <ActionForm
+      action={`/api/menu/categories/${category.id}/archive`}
+      confirmation={`Archive ${category.name}? Customers will stop seeing it.`}
+      className="flex flex-wrap items-end gap-2"
+    >
+      {hasItems && (
+        <Field label="Move its items to">
+          <select name="moveItemsTo" required className={inputClassName}>
+            {others.map((other) => (
+              <option key={other.id} value={other.id}>
+                {other.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Button type="submit" variant="outline">
+        Archive category
+      </Button>
+    </ActionForm>
   );
 }

@@ -219,6 +219,8 @@ export const categories = pgTable(
     restaurantId: uuid("restaurant_id").notNull(),
     name: text().notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
+    // Nothing customer-facing is hard-deleted (spec 00).
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -246,6 +248,7 @@ export const menuItems = pgTable(
     // False while the kitchen has run out (S-26). Staff toggle it from the item list.
     available: boolean().notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({

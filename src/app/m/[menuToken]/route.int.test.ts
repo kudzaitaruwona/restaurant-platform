@@ -77,7 +77,7 @@ async function setRate(restaurantId: string, usdToZig: string) {
 const addItem = (
   restaurantId: string,
   categoryId: string,
-  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; sortOrder?: number; available?: boolean },
+  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; sortOrder?: number; available?: boolean; archivedAt?: Date },
 ) => owner.db.insert(menuItems).values({ restaurantId, categoryId, ...item });
 
 const visit = (menuToken: string) =>
@@ -107,6 +107,26 @@ afterAll(async () => {
 });
 
 describe("/m/{menu_token}", () => {
+  it("leaves out archived items and archived categories", async () => {
+    const { id, menuToken } = await newRestaurant("Archiving");
+    const mains = await addCategory(id, "Mains", 0);
+    const gone = await addCategory(id, "Retired specials", 1);
+    await addItem(id, mains, { name: "Beef stew", priceUsd: "8" });
+    await addItem(id, mains, { name: "Old pie", priceUsd: "5", archivedAt: new Date() });
+    await addItem(id, gone, { name: "Hidden stew", priceUsd: "9", archivedAt: new Date() });
+    await owner.db
+      .update(categories)
+      .set({ archivedAt: new Date() })
+      .where(eq(categories.id, gone));
+
+    const body = await page(menuToken);
+
+    expect(body).toContain("Beef stew");
+    expect(body).not.toContain("Old pie");
+    expect(body).not.toContain("Retired specials");
+    expect(body).not.toContain("Hidden stew");
+  });
+
   it("is a whole HTML page", async () => {
     const { menuToken } = await newRestaurant("Mama's Kitchen");
 
