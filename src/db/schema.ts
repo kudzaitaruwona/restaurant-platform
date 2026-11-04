@@ -503,6 +503,24 @@ export const bookings = pgTable(
 );
 
 /**
+ * How many booking submissions one network address has made lately (spec 04,
+ * abuse controls, proposed). In Postgres because memory would be per-instance on
+ * Vercel, and a limit that each instance counts alone is no limit. Belongs to no
+ * restaurant (the guest hasn't been resolved to one when this is spent), so it
+ * gets the reverse of the tenant policy, like the sign-in tables. `key` is a
+ * keyed hash of the address (src/lib/booking-limits.ts), never the address.
+ */
+export const bookingRateLimit = pgTable(
+  "booking_rate_limit",
+  {
+    key: text().primaryKey(),
+    attempts: integer().notNull(),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+  },
+  () => [outsideTenantOnly()],
+);
+
+/**
  * Better Auth's tables, one set per session type (S-30): a staff session, link
  * or code means nothing to the platform-admin sign-in, and the other way round.
  *

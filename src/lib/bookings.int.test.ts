@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { bookings, bookingSettings, diningTables, servicePeriods } from "@/db/schema";
+import { addDays, localToday } from "@/lib/booking-engine";
 import { settingFields } from "@/lib/booking-settings";
 import {
   aBooking,
@@ -366,9 +367,12 @@ describe("confirming", () => {
       rules: { maxOnlinePartySize: 6 },
     });
 
-    expect((await confirmBooking({ restaurantId }, guest({ party: 7 }), now)).outcome).toBe(
-      "race_lost",
-    );
+    expect(await confirmBooking({ restaurantId }, guest({ party: 7 }), now)).toEqual({
+      outcome: "party_too_large",
+      threshold: 7,
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
+    });
     expect((await confirmBooking({ restaurantId }, guest({ party: 6 }), now)).outcome).toBe(
       "confirmed",
     );
@@ -553,7 +557,8 @@ describe("the list and confirm agree", () => {
       const result = await confirmBooking({ restaurantId }, guest({ time }), lateNow);
       expect([time, result.outcome]).toEqual([
         time,
-        listed.includes(time) ? "confirmed" : "race_lost",
+        // Each hidden time says why: inside the lead time, or taken.
+        listed.includes(time) ? "confirmed" : time <= "19:30" ? "lead_time" : "race_lost",
       ]);
       await owner.db
         .update(bookings)
@@ -704,5 +709,200 @@ describe("the day list", () => {
     );
 
     expect(list.bookings).toEqual([]);
+  });
+});
+
+describe("the refusals at confirm", () => {
+  const confirm = (restaurantId: string, overrides: Partial<GuestRequest> = {}, at = now) =>
+    confirmBooking({ restaurantId }, guest(overrides), at);
+
+  it("refuses a party bigger than every bookable table, with the threshold, not an empty list", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 4 }, { capacity: 8, bookable: false }],
+      rules: { maxOnlinePartySize: 10 },
+    });
+
+    expect(await confirm(restaurantId, { party: 5 })).toMatchObject({
+      outcome: "party_too_large",
+      threshold: 5,
+    });
+    expect((await confirm(restaurantId, { party: 4 })).outcome).toBe("confirmed");
+  });
+
+  it("refuses a time that has come inside the lead time while the page was open, with the next times", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { rules: { minLeadMinutes: 120 } });
+    // 18:00 Harare Friday is 16:00Z; at 15:00Z the lead (two hours) reaches 17:00Z.
+    const late = new Date("2026-11-06T15:00:00Z");
+
+    const result = await confirm(restaurantId, { time: "18:30" }, late);
+
+    expect(result).toEqual({
+      outcome: "lead_time",
+      times: [
+        { period: "Dinner", time: "19:00" },
+        { period: "Dinner", time: "19:30" },
+        { period: "Dinner", time: "20:00" },
+        { period: "Dinner", time: "20:30" },
+      ],
+    });
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+    // A time exactly at the end of the lead is fine.
+    expect((await confirm(restaurantId, { time: "19:00" }, late)).outcome).toBe("confirmed");
+  });
+
+  it.each(["9999-12-31", "0001-01-01", "2026-11-04", "2027-11-06"])(
+    "refuses the date %s as unavailable, not with an error",
+    async (date) => {
+      const { restaurantId } = await bookableRestaurant(owner.db);
+      expect(await confirm(restaurantId, { date })).toEqual({ outcome: "date_unavailable" });
+    },
+  );
+
+  it("takes today and the last bookable day", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, {
+      rules: { maxDaysAhead: 3, minLeadMinutes: 0 },
+    });
+    expect((await confirm(restaurantId, { date: "2026-11-08" })).outcome).toBe("confirmed");
+    expect((await confirm(restaurantId, { date: "2026-11-09", phone: "+263771230002" })).outcome).toBe(
+      "date_unavailable",
+    );
+  });
+
+  it("refuses a phone that already holds its limit, with the count, and saves nothing more", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2 }, { capacity: 2 }],
+    });
+    for (const day of ["06", "07"]) {
+      await owner.db
+        .insert(bookings)
+        .values({
+          ...aBooking(restaurantId, tableIds[0], `2026-11-${day}T10:00:00Z`, `2026-11-${day}T11:00:00Z`),
+          guestPhone: "+263771234567",
+        });
+    }
+
+    expect(await confirm(restaurantId)).toEqual({ outcome: "phone_limit", held: 2 });
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(2);
+    expect((await confirm(restaurantId, { phone: "+263771230009" })).outcome).toBe("confirmed");
+  });
+
+  it("doesn't count a cancelled or past booking, or another restaurant's", async () => {
+    const mine = await bookableRestaurant(owner.db);
+    const other = await bookableRestaurant(owner.db);
+    const held = (restaurantId: string, tableId: string, day: string, status = "confirmed" as const) => ({
+      ...aBooking(restaurantId, tableId, `${day}T10:00:00Z`, `${day}T11:00:00Z`),
+      guestPhone: "+263771234567",
+      status,
+    });
+    await owner.db.insert(bookings).values([
+      held(mine.restaurantId, mine.tableIds[0], "2026-11-06", "cancelled" as never),
+      held(mine.restaurantId, mine.tableIds[0], "2026-11-03"),
+      held(other.restaurantId, other.tableIds[0], "2026-11-06"),
+      held(other.restaurantId, other.tableIds[0], "2026-11-07"),
+    ]);
+
+    expect((await confirm(mine.restaurantId)).outcome).toBe("confirmed");
+  });
+
+  it("gives each refusal its own answer, never the race-lost one", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const outcomes = [
+      (await confirm(restaurantId, { date: "9999-12-31" })).outcome,
+      (await confirm(restaurantId, { party: 3 })).outcome,
+      (await confirm(restaurantId, { time: "17:00" }, new Date("2026-11-06T16:30:00Z"))).outcome,
+    ];
+    expect(outcomes).toEqual(["date_unavailable", "party_too_large", "lead_time"]);
+  });
+});
+
+describe("two confirms for one phone at once, through confirm", () => {
+  it("lets exactly one take the phone's last place, whichever gets there first", async () => {
+    // Real clock, because the trigger counts from the database's now().
+    const live = new Date();
+    const day = addDays(localToday(live, "Africa/Harare"), 2);
+    for (let round = 0; round < 4; round++) {
+      const { restaurantId } = await bookableRestaurant(owner.db, {
+        tables: [{ capacity: 2 }, { capacity: 2 }],
+        rules: { maxActiveBookingsPerPhone: 1, minLeadMinutes: 0 },
+      });
+
+      const results = await Promise.all(
+        ["19:00", "20:00"].map((time) =>
+          confirmBooking({ restaurantId }, guest({ date: day, time }), live),
+        ),
+      );
+
+      expect(results.map(({ outcome }) => outcome).sort()).toEqual(["confirmed", "phone_limit"]);
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+    }
+  });
+});
+
+describe("a confirm racing another for the same phone, held mid-flight", () => {
+  it("waits on the other's lock, then is told the phone is full", async () => {
+    const live = new Date();
+    const day = addDays(localToday(live, "Africa/Harare"), 2);
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2 }, { capacity: 2 }],
+      rules: { maxActiveBookingsPerPhone: 1, minLeadMinutes: 0 },
+    });
+    const holder = await owner.pool.connect();
+    try {
+      await holder.query("begin");
+      // The other confirm's insert, in but not committed: its trigger holds the phone's lock.
+      await holder.query(
+        `insert into bookings (restaurant_id, table_id, guest_name, guest_phone, whatsapp_opt_in,
+           party_size, starts_at, ends_at, hold_ends_at, status, source, manage_token)
+         values ($1, $2, 'First', '+263771234567', true, 2, $3, $4, $4, 'confirmed', 'online', $5)`,
+        [
+          restaurantId,
+          tableIds[1],
+          `${day}T10:00:00Z`,
+          `${day}T11:00:00Z`,
+          crypto.randomUUID().replaceAll("-", ""),
+        ],
+      );
+      const { rows } = await holder.query("select pg_backend_pid() as pid");
+      const pid = rows[0].pid as number;
+
+      const second = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
+      await vi.waitFor(
+        async () => {
+          const blocked = await owner.db.execute<{ pid: number }>(sql`
+            select pid from pg_stat_activity
+            where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+          expect(blocked.rows).toHaveLength(1);
+        },
+        { timeout: 5_000, interval: 20 },
+      );
+      await holder.query("commit");
+
+      expect(await second).toEqual({ outcome: "phone_limit", held: 1 });
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+    } finally {
+      holder.release(true);
+    }
+  });
+});
+
+describe("the booking page for large parties", () => {
+  it("offers a final option, and says contact the restaurant for a party over every table", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 4 }],
+      rules: { maxOnlinePartySize: 6 },
+    });
+
+    const page = await getBookingPage({ restaurantId }, { party: "7", date }, now);
+
+    expect(page).toMatchObject({
+      party: undefined,
+      times: undefined,
+      maxParty: 6,
+      largeParty: { threshold: 5, contactPhone: "+263771234567", whatsappLink: "https://wa.me/263771234567" },
+    });
+    expect((await getBookingPage({ restaurantId }, { party: "5", date }, now)).largeParty).toMatchObject({
+      threshold: 5,
+    });
+    expect((await getBookingPage({ restaurantId }, { party: "4", date }, now)).largeParty).toBeUndefined();
   });
 });

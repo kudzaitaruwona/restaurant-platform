@@ -1771,6 +1771,53 @@ describe("the guest's confirm", () => {
   });
 });
 
+describe("the guest's confirm: the new refusals stay inside the slug's restaurant", () => {
+  it("counts a phone's bookings at the named restaurant only, and refuses nothing for another's", async () => {
+    session.identity = "";
+    const named = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const other = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    for (const day of [3, 4]) {
+      await owner.db.insert(bookings).values({
+        ...aBooking(
+          other.restaurantId,
+          other.tableIds[0],
+          `${addDays(localToday(new Date(), "Africa/Harare"), day)}T10:00:00Z`,
+          `${addDays(localToday(new Date(), "Africa/Harare"), day)}T11:00:00Z`,
+        ),
+        guestPhone: "+263771234567",
+      });
+    }
+
+    const response = await postBooking(named.slug, {
+      query: `?restaurantId=${other.restaurantId}`,
+      headers: { "x-restaurant-id": other.restaurantId },
+      body: guestForm({ restaurantId: other.restaurantId, phone: "0771234567" }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await bookingsOf(owner.db, named.restaurantId)).toHaveLength(1);
+    expect(await bookingsOf(owner.db, other.restaurantId)).toHaveLength(2);
+  });
+
+  it("answers a large party with the named restaurant's number, never another's", async () => {
+    session.identity = "";
+    const named = await bookableRestaurant(owner.db);
+    const other = await bookableRestaurant(owner.db);
+    await owner.db
+      .update(restaurants)
+      .set({ contactPhone: "+263779999999" })
+      .where(eq(restaurants.id, other.restaurantId));
+
+    const response = await postBooking(named.slug, {
+      headers: { "x-restaurant-id": other.restaurantId },
+      body: guestForm({ party: "9", restaurantId: other.restaurantId }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).not.toContain("9999999");
+  });
+});
+
 describe("the day list", () => {
   const screen = async () => {
     const { BookingsScreen } = await import("@/app/dashboard/bookings/bookings-screen");

@@ -1,9 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { servicePeriods } from "@/db/schema";
+import { bookings, restaurants, servicePeriods } from "@/db/schema";
 import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
-import { bookableRestaurant } from "../../../../../test/integration/bookings";
+import { aBooking, bookableRestaurant } from "../../../../../test/integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -56,13 +56,53 @@ describe("the booking page", () => {
     expect(page).not.toContain("WhatsApp number");
   });
 
-  it("offers party sizes from 1 to max_online_party_size", async () => {
+  it("offers party sizes from 1 to max_online_party_size, then a final option above it", async () => {
     const { slug } = await bookableRestaurant(owner.db, { rules: { maxOnlinePartySize: 3 } });
 
     const page = await render(slug);
 
     const sizes = [...page.matchAll(/<option value="(\d+)"/g)].map((match) => match[1]);
-    expect(sizes).toEqual(["1", "2", "3"]);
+    expect(sizes).toEqual(["1", "2", "3", "4"]);
+    expect(page).toContain(">4+</option>");
+  });
+
+  it("shows the contact message with the number and a WhatsApp link for the final option, not an empty list", async () => {
+    const { slug } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 6 }],
+      rules: { maxOnlinePartySize: 6 },
+    });
+
+    const page = await render(slug, { party: "7", date: tomorrow() });
+
+    expect(page).toContain("For groups of 7+, contact the restaurant");
+    expect(page).toContain('href="tel:+263771234567"');
+    expect(page).toContain('href="https://wa.me/263771234567"');
+    expect(page).not.toContain("No tables for");
+    expect(page).not.toContain("Available times");
+    expect(page).toContain('<option value="7" selected="">7+</option>');
+  });
+
+  it("says the same for a size that fits online but no bookable table", async () => {
+    const { slug } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 4 }],
+      rules: { maxOnlinePartySize: 8 },
+    });
+
+    const page = await render(slug, { party: "6", date: tomorrow() });
+
+    expect(page).toContain("For groups of 5+, contact the restaurant");
+    expect(page).not.toContain("No tables for");
+  });
+
+  it("gives the number but no WhatsApp link when the contact number can't make one", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db, { rules: { maxOnlinePartySize: 2 } });
+    await owner.db.update(restaurants).set({ contactPhone: "+12" }).where(eq(restaurants.id, restaurantId));
+
+    const page = await render(slug, { party: "3", date: tomorrow() });
+
+    expect(page).toContain("For groups of 3+, contact the restaurant");
+    expect(page).toContain('href="tel:+12"');
+    expect(page).not.toContain("wa.me");
   });
 
   it("offers local today to max_days_ahead, with dates that have no service disabled", async () => {
@@ -111,12 +151,25 @@ describe("the booking page", () => {
     expect(page).not.toContain("Secret corner");
   });
 
-  it("says so when no table fits the party, rather than showing nothing", async () => {
+  it("gives the contact message, not an empty list, when no table fits the party (D-02)", async () => {
     const { slug } = await bookableRestaurant(owner.db);
 
     const page = await render(slug, { party: "3", date: tomorrow() });
 
-    expect(page).toContain("No tables for 3");
+    expect(page).toContain("For groups of 3+, contact the restaurant");
+    expect(page).not.toContain("No tables for");
+  });
+
+  it("says no tables are free, for a party that fits, when every table is taken that day", async () => {
+    const { slug, restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const day = tomorrow();
+    await owner.db.insert(bookings).values(
+      aBooking(restaurantId, tableIds[0], `${day}T14:00:00Z`, `${day}T21:00:00Z`),
+    );
+
+    const page = await render(slug, { party: "2", date: day });
+
+    expect(page).toContain("No tables for 2");
   });
 
   it("asks for the details once a time is chosen, with the consent and +263", async () => {

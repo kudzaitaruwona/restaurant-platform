@@ -30,6 +30,8 @@ The guest never sees which table they've been given.
 - A name is 1 to 100 characters. The number is stored as E.164: a leading 0 is dropped, and a number typed with its own `+` keeps its own country code.
 - A date is also disabled once every time on it is inside the lead time. A date that's only full stays enabled and says no tables are free.
 - The race-lost response offers up to 4 times, on the same date, closest first.
+- The final party size option is labelled one above the maximum ("9+" when `max_online_party_size` is 8) *(proposed)*, because "8" is already bookable. The contact message's `{n}` is the smallest party that can't book online: one more than the smaller of `max_online_party_size` and the biggest bookable, unarchived table. A size between the two limits shows the same message, not an empty list. If the number can't make a WhatsApp link (wa.me needs the full international number), the page shows the number alone.
+- A date outside today to `max_days_ahead` is refused on confirm with "That date can't be booked online. Choose another date." The date is bounded before any date arithmetic, so a date like 9999-12-31 is a refusal, not an error. A time that was never on the grid is still the race-lost answer. "1 upcoming bookings" is written "1 upcoming booking".
 - Confirming needs JavaScript, so that a refusal keeps what was typed without putting a phone number in a URL. The earlier steps are plain links and a GET form.
 
 **Party too large** (the "{max}+" option, or a size bigger than every bookable table): the page says "For groups of {n}+, contact the restaurant" and shows the phone and WhatsApp click-to-chat link (`restaurants.contact_phone`). This covers D-02.
@@ -123,9 +125,10 @@ These run on the same scheduled job as notifications (spec 05).
 - A **copy-able booking link** and a QR code to share on Instagram, WhatsApp status or a Google profile.
 
 ## Abuse controls (proposed)
-- At most `max_active_bookings_per_phone` (default 2) future confirmed bookings per phone number per restaurant.
-- Rate limit on booking submissions: 5 per IP per 10 minutes.
-- An invisible bot check (Cloudflare Turnstile) on the confirm step.
+- At most `max_active_bookings_per_phone` (default 2) future confirmed bookings per phone number per restaurant. The rule is a Postgres trigger (migration 0016): it takes a per-(restaurant, phone) advisory lock and then counts, so two simultaneous confirms for one phone can't both take the last place. The app counts first only to answer with the number. Online bookings only: staff may add past it, and staff bookings count toward it.
+- Rate limit on booking submissions: 5 per IP per 10 minutes. *(Proposed detail)* Counted in Postgres (`booking_rate_limit`), because memory is per-instance on Vercel, as with the sign-in code ceiling (S-30). Every submission counts, valid or not, in one statement, from a fixed window that refusals don't extend. The key is an HMAC of the address (an IPv6 address counts as its /64), never the address. The address is `x-vercel-forwarded-for` on Vercel, which the edge sets itself; off Vercel in production no header is trusted and everyone shares one count; in development and tests there is no limit without an address. The answer is 429 with `Retry-After`. It runs before the body is read and before the restaurant is looked up. Rows past their window are swept at random on use, and by the scheduled job when there is one.
+- Size: a request over 8 KiB is refused with 413 from its Content-Length, or as it is read when it has none, and the country code and number are length-limited before any pattern runs.
+- An invisible bot check (Cloudflare Turnstile) on the confirm step. *(Proposed detail)* The widget runs when the guest confirms, on this page only, and only when `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set. The token goes in the post body and is verified server-side with `TURNSTILE_SECRET_KEY`. A rejected or missing token is "We couldn't verify the request — please try again." (403). With no secret, or a secret Cloudflare refuses: development and tests go on, production refuses (fails closed). With Cloudflare unreachable or erroring: every environment goes on (fails open), the rate and phone limits still stand.
 - No phone verification in v1. A fake number can still hold a table, and staff can cancel it. Revisit if it happens.
 
 ## Data and privacy

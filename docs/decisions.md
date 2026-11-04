@@ -85,6 +85,13 @@
 - **The public path doesn't load sign-in.** `withTenant()` lives in `src/lib/tenant/scope.ts`, and `src/lib/tenant/index.ts` re-exports it alongside the identity code that imports Better Auth. Code on a public route imports `./scope` and `./public`, never `@/lib/tenant`. `src/lib/tenant/public-path.test.ts` fails if the route reaches Better Auth by any path.
 - **How it's checked.** `use cache` and the proxy don't run under the ordinary tests, so `npm run test:production` runs `next start` on a production build, in CI as well: miss then hit, the `s-maxage`, each refused method followed by a customer's visit, a 404 for an unknown token, and a save refreshing one restaurant and not another. That's Next.js's own cache, not Vercel's.
 
+### Abuse controls on the guest's confirm — **proposed, not yet confirmed by Kudzai**
+Spec 04's abuse controls (ticket #33), with the calls the spec left open. Detail is in spec 04 › Abuse controls.
+- **Rate-limit storage:** Postgres (`booking_rate_limit`), not memory or a new service. Hashed key, 5 per 10 minutes, per visitor.
+- **Which address:** `x-vercel-forwarded-for` on Vercel only. Missing in production: one shared count (fails closed). Missing in development: no limit.
+- **Per-phone limit:** a trigger with an advisory lock, because counting then inserting is a race.
+- **Bot check:** fails closed in production with no secret; fails open in every environment when Cloudflare is down.
+
 ## Open
 
 ### D-01: Fake remote QR orders
