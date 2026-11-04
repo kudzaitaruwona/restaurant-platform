@@ -113,6 +113,13 @@
       "when": 1793803601244,
       "tag": "0015_bookings",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793806874155,
+      "tag": "0016_booking_manage_token_lookup",
+      "breakpoints": true
     }
   ]
 }

@@ -70,6 +70,43 @@ describe("the public pages' cache (S-32)", () => {
   });
 });
 
+describe("a guest's manage link", () => {
+  it("is covered by the matcher, for the cross-site check", () => {
+    expect(unstable_doesMiddlewareMatch({ config, url: "/b/a-manage-token" })).toBe(true);
+  });
+
+  it("takes a POST, which the cached pages refuse", () => {
+    expect(proxy(request("/b/a-manage-token", { method: "POST" })).status).toBe(200);
+  });
+
+  it("refuses a cancel posted from another site", () => {
+    const response = proxy(
+      request("/b/a-manage-token", {
+        method: "POST",
+        headers: { origin: "https://evil.example.test" },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("allows its own form's post", () => {
+    const response = proxy(
+      request("/b/a-manage-token", {
+        method: "POST",
+        headers: { origin: "http://app.example.test" },
+      }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("does no session work, even for someone with a staff cookie", () => {
+    const response = proxy(
+      request("/b/a-manage-token", { headers: { cookie: "staff.session_token=token" } }),
+    );
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+});
+
 describe("cross-site writes (S-30)", () => {
   it.each(["POST", "PUT", "PATCH", "DELETE"])("refuses a cross-site %s", (method) => {
     const response = proxy(

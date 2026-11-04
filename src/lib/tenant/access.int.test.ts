@@ -110,6 +110,10 @@ const regeneratedLabel = "Harness regenerated";
 const fixtureTableToken = (restaurant: "a" | "b") =>
   `Harness${restaurant.toUpperCase()}`.padEnd(22, "0");
 
+/** A guest's manage token: one booking of each restaurant's, planted far ahead. */
+const fixtureManageToken = (restaurant: "a" | "b") =>
+  `HarnessManage${restaurant.toUpperCase()}`.padEnd(22, "0");
+
 const regeneratedToken = (restaurant: "a" | "b") =>
   `Regen${restaurant.toUpperCase()}`.padEnd(22, "0");
 
@@ -493,6 +497,15 @@ const publicRoutes: PublicRoute[] = [
       ),
   },
   {
+    name: "GET /b/[manageToken]",
+    tokenOf: fixtureManageToken,
+    call: async (manageToken, init) =>
+      (await import("@/app/b/[manageToken]/route")).GET(
+        request(`/b/${manageToken}${init?.query ?? ""}`, { headers: init?.headers }),
+        { params: Promise.resolve({ manageToken }) },
+      ),
+  },
+  {
     // A page, not a handler, so it goes through what the page renders.
     name: "PAGE /r/[slug]/book",
     tokenOf: (restaurant) => `restaurant-${restaurant}`,
@@ -513,6 +526,22 @@ const publicRoutes: PublicRoute[] = [
 
 /** The one public write. It takes its slug like the pages, and is tested below them. */
 const guestConfirm = "POST /api/r/[slug]/book";
+
+/** The other: a guest's cancel, by their manage token and nothing else. */
+const guestCancel = "POST /b/[manageToken]";
+
+const postCancel = async (
+  manageToken: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: FormData },
+) =>
+  (await import("@/app/b/[manageToken]/route")).POST(
+    request(`/b/${manageToken}${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body,
+    }),
+    { params: Promise.resolve({ manageToken }) },
+  );
 
 /** What a guest's browser posts, for a time that's free tomorrow at any hour of today. */
 const guestForm = (extra: Record<string, string> = {}) => {
@@ -689,6 +718,19 @@ beforeAll(async () => {
       qrToken: regeneratedToken(key),
     })),
   );
+  // The manage page is aimed at a booking of each restaurant's, far ahead of the
+  // day list's today and clear of any cutoff.
+  await owner.db.insert(bookings).values(
+    (["a", "b"] as const).map((key) => ({
+      ...aBooking(
+        fixtures[key].restaurantId,
+        fixtures[key].tableId,
+        "2031-03-04T10:00:00Z",
+        "2031-03-04T11:00:00Z",
+      ),
+      manageToken: fixtureManageToken(key),
+    })),
+  );
 });
 
 afterEach(async () => {
@@ -699,6 +741,9 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  await owner.db
+    .delete(bookings)
+    .where(inArray(bookings.manageToken, [fixtureManageToken("a"), fixtureManageToken("b")]));
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
@@ -1771,6 +1816,92 @@ describe("the guest's confirm", () => {
   });
 });
 
+describe("the guest's cancel", () => {
+  const MINUTE = 60_000;
+  /** A booking far enough ahead to cancel, on a restaurant of its own. */
+  async function booked() {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const start = new Date(Date.now() + 300 * MINUTE).toISOString();
+    const row = aBooking(restaurantId, tableIds[0], start, new Date(Date.now() + 390 * MINUTE).toISOString());
+    await owner.db.insert(bookings).values(row);
+    return { restaurantId, token: row.manageToken };
+  }
+  const statusIn = async (restaurantId: string) =>
+    (await bookingsOf(owner.db, restaurantId))[0].status;
+
+  it("needs no session", async () => {
+    session.identity = "";
+    const { restaurantId, token } = await booked();
+
+    expect(await statusOf(() => postCancel(token))).toBe(200);
+    expect(await statusIn(restaurantId)).toBe("cancelled");
+  });
+
+  it("is a 404 for an unknown token, and for a NUL in one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => postCancel("no-such-token"))).toBe(404);
+    expect(await statusOf(() => postCancel("a\0b"))).toBe(404);
+  });
+
+  it("a restaurant id in the query, headers or body can't stand in for the token", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId } = await booked();
+    const id = fixtures.a.restaurantId;
+    const body = new FormData();
+    body.set("restaurantId", id);
+    body.set("restaurant_id", id);
+
+    expect(
+      await statusOf(() =>
+        postCancel("no-such-token", {
+          query: `?restaurantId=${id}`,
+          headers: { "x-restaurant-id": id },
+          body,
+        }),
+      ),
+    ).toBe(404);
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("restaurant B's token cancels B's booking only, whoever is signed in", async () => {
+    session.identity = aOwner.key;
+    const mine = await booked();
+    const theirs = await booked();
+
+    const response = await postCancel(theirs.token, {
+      query: `?restaurantId=${mine.restaurantId}`,
+      headers: { "x-restaurant-id": mine.restaurantId },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await statusIn(theirs.restaurantId)).toBe("cancelled");
+    expect(await statusIn(mine.restaurantId)).toBe("confirmed");
+  });
+
+  it("one restaurant's token is a 404 for a booking of another's: nothing crosses", async () => {
+    session.identity = "";
+    const aBooked = await owner.db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.manageToken, fixtureManageToken("a")));
+
+    const response = await postCancel(fixtureManageToken("b"));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("Restaurant A");
+    const [stillThere] = await owner.db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.manageToken, fixtureManageToken("a")));
+    expect(stillThere).toEqual(aBooked[0]);
+    // Restore B's, which the cancel above spent.
+    await owner.db
+      .update(bookings)
+      .set({ status: "confirmed", cancelledBy: null, cancelledAt: null })
+      .where(eq(bookings.manageToken, fixtureManageToken("b")));
+  });
+});
+
 describe("the day list", () => {
   const screen = async () => {
     const { BookingsScreen } = await import("@/app/dashboard/bookings/bookings-screen");
@@ -1858,6 +1989,7 @@ describe("harness coverage", () => {
       ...sessionRoutes.map((route) => route.name),
       ...publicRoutes.map((route) => route.name),
       guestConfirm,
+      guestCancel,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());

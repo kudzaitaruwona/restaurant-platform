@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, gt, gte, lt } from "drizzle-orm";
+import { and, asc, eq, gt, gte, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   bookings,
@@ -242,6 +242,14 @@ const dbErrorOf = (error: unknown) =>
   (error as { cause?: { code?: string; constraint?: string } } | null)?.cause;
 
 /**
+ * Drizzle's message quotes the statement's parameters, and on the guest's public
+ * paths those are the manage token and the guest's phone: say only what failed.
+ */
+const failed = (what: string) => (error: unknown): never => {
+  throw new Error(`${what} failed: ${dbErrorOf(error)?.code ?? "unknown"}`);
+};
+
+/**
  * Someone else got the table. 23P01 is the constraint saying so. 40P01 is the same
  * news: each of two inserts landing together sees the other's unfinished row and
  * waits for it, so Postgres ends that deadlock by failing one of them, and the
@@ -366,6 +374,101 @@ export async function confirmBooking(
     // the guest's phone and the manage token, and whatever is thrown gets logged.
     throw new Error(`confirming a booking failed: ${dbErrorOf(error)?.code ?? "unknown"}`);
   }
+}
+
+// --- the guest's manage page -----------------------------------------------
+
+/**
+ * The one definition of "the guest may still cancel": confirmed, and now() is no
+ * later than the cutoff before the start. It is SQL so that the page's button and
+ * the cancel itself can't disagree, and so the instant is the database's own clock,
+ * never a time the client sent. Both sides are instants, so the restaurant's zone
+ * has no part in it. The cutoff is read in the same statement, so a change to the
+ * setting takes effect for the next cancel.
+ */
+const cancellableNow = sql<boolean>`(
+  ${bookings.status} = 'confirmed'
+  and now() <= ${bookings.startsAt} - make_interval(mins => (
+    select ${bookingSettings.guestCancelCutoffMinutes} from ${bookingSettings}
+    where ${bookingSettings.restaurantId} = ${bookings.restaurantId}
+  ))
+)`;
+
+/**
+ * What a guest may see of their own booking, and no more: no table, no phone, and
+ * nothing of any other booking. The time is on the restaurant's clock.
+ */
+async function readManaged(tx: TenantTransaction, { restaurantId }: Tenant, token: string) {
+  const [row] = await tx
+    .select({
+      guestName: bookings.guestName,
+      party: bookings.partySize,
+      startsAt: bookings.startsAt,
+      note: bookings.guestNote,
+      status: bookings.status,
+      cancelledBy: bookings.cancelledBy,
+      cancellable: cancellableNow,
+    })
+    .from(bookings)
+    .where(and(eq(bookings.restaurantId, restaurantId), eq(bookings.manageToken, token)));
+  if (!row) return undefined;
+  const [restaurant] = await tx
+    .select({
+      name: restaurants.name,
+      timezone: restaurants.timezone,
+      contactPhone: restaurants.contactPhone,
+    })
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId));
+  const { startsAt, ...rest } = row;
+  return {
+    ...rest,
+    restaurantName: restaurant.name,
+    contactPhone: restaurant.contactPhone,
+    dateLabel: dateLabel(localToday(startsAt, restaurant.timezone)),
+    time: localTime(startsAt, restaurant.timezone),
+  };
+}
+
+export type ManagedBooking = NonNullable<Awaited<ReturnType<typeof readManaged>>>;
+
+export function getManagedBooking(tenant: Tenant, token: string) {
+  return withTenant(tenant, (tx) => readManaged(tx, tenant, token)).catch(failed("reading a booking"));
+}
+
+export type CancelOutcome =
+  | { outcome: "cancelled" | "already_cancelled" | "too_late" | "not_cancellable"; booking: ManagedBooking }
+  | { outcome: "not_found" };
+
+/**
+ * Cancels a booking for its guest, if they still may. One UPDATE guarded by the
+ * status and the cutoff decides it, so a staff member who seats the guest at the
+ * same moment can't be overwritten: the cancel waits on that row, then re-reads
+ * it, sees `seated` and changes nothing. What it did is then worked out from the
+ * row, so cancelling twice is safe and says so.
+ *
+ * A guest's cancel isn't audited: spec 01's list has staff's cancellations only,
+ * and the row itself records `cancelled_by = guest` and when.
+ */
+export async function cancelBooking(tenant: Tenant, token: string): Promise<CancelOutcome> {
+  return withTenant(tenant, async (tx): Promise<CancelOutcome> => {
+    const cancelled = await tx
+      .update(bookings)
+      .set({ status: "cancelled", cancelledBy: "guest", cancelledAt: sql`now()` })
+      .where(
+        and(
+          eq(bookings.restaurantId, tenant.restaurantId),
+          eq(bookings.manageToken, token),
+          cancellableNow,
+        ),
+      )
+      .returning({ id: bookings.id });
+    const booking = await readManaged(tx, tenant, token);
+    if (!booking) return { outcome: "not_found" };
+    if (cancelled.length > 0) return { outcome: "cancelled", booking };
+    if (booking.status === "cancelled") return { outcome: "already_cancelled", booking };
+    return { outcome: booking.status === "confirmed" ? "too_late" : "not_cancellable", booking };
+  }).catch(failed("cancelling a booking"));
 }
 
 // --- the staff day list -----------------------------------------------------
