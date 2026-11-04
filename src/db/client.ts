@@ -30,6 +30,13 @@ export function createDatabase({ connectionString, wsProxy }: DatabaseSettings) 
   }
 
   const pool = new Pool({ connectionString });
+  // A connection that drops while idle in the pool is emitted here, outside any
+  // request, and an unhandled `error` event would take the process down. The
+  // pool replaces the connection, so noting it is enough. Only the code: the
+  // error object holds the client, and the client holds the password.
+  pool.on("error", (error: Error & { code?: string }) => {
+    console.error(`Idle database connection lost: ${error.code ?? error.name}`);
+  });
   const db = drizzle({ client: pool, schema });
   return { db, pool };
 }
