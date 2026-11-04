@@ -5,7 +5,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
 import { Field, inputClassName } from "../field";
 
-/** The table manager: owner only (S-26). Add, edit, reorder and archive; regenerating a code follows. */
+/** The table manager: owner only (S-26). Add, edit, reorder, archive and regenerate a table's code. */
 export async function TablesScreen() {
   const tenant = await getTenantContext();
   requireOwner(tenant);
@@ -94,6 +94,15 @@ export async function TablesScreen() {
                 >
                   <Button type="submit" size="sm" variant="outline">
                     Archive
+                  </Button>
+                </ActionForm>
+                <ActionForm
+                  action={`/api/tables/${table.id}/regenerate`}
+                  confirmation={`The printed code on Table ${table.label} will stop working. Make a new one?`}
+                  savedMessage={`New code made for Table ${table.label}. The old one has stopped working: reprint it from the print sheet.`}
+                >
+                  <Button type="submit" size="sm" variant="outline">
+                    Regenerate QR
                   </Button>
                 </ActionForm>
               </div>

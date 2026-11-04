@@ -86,15 +86,27 @@ const harnessCategory = "Harness category";
 const harnessTablePrefix = "Harness table ";
 /** Tables the archive route is aimed at: not the ones a new-table test counts. */
 const plantedPrefix = "Harness planted ";
+/** Not under the prefix above, which counts the tables the add route made. */
+const regeneratedLabel = "Harness regenerated";
 /** A table's QR token, one for each restaurant's table the harness plants. */
 const fixtureTableToken = (restaurant: "a" | "b") =>
   `Harness${restaurant.toUpperCase()}`.padEnd(22, "0");
+
+const regeneratedToken = (restaurant: "a" | "b") =>
+  `Regen${restaurant.toUpperCase()}`.padEnd(22, "0");
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
   params: Promise.resolve({ staffId }),
 });
 const tableParams = (tableId: string) => ({ params: Promise.resolve({ tableId }) });
+/** The regenerate fixture of the restaurant whose fixture table this is; any other id as it is. */
+const regenerationTarget = (tableId: string) =>
+  tableId === fixtures.a.tableId
+    ? fixtures.a.regeneratedTableId
+    : tableId === fixtures.b.tableId
+      ? fixtures.b.regeneratedTableId
+      : tableId;
 /** The tables the archive route was aimed at, by restaurant. */
 const planted: { id: string; restaurantId: string }[] = [];
 const plantTable = async (restaurantId: string) => {
@@ -214,6 +226,19 @@ const routes: TenantRoute[] = [
         : target.tableId;
       return (await import("@/app/api/tables/[tableId]/archive/route")).POST(
         request(`/api/tables/${tableId}/archive`, { method: "POST" }),
+        tableParams(tableId),
+      );
+    },
+  },
+  {
+    name: "POST /api/tables/[tableId]/regenerate",
+    ownerOnly: true,
+    // Regenerating changes the token, so it takes tables of its own: the fixture
+    // table's id maps to its restaurant's regenerate table, any other id is used as it is.
+    call: async (target) => {
+      const tableId = regenerationTarget(target.tableId);
+      return (await import("@/app/api/tables/[tableId]/regenerate/route")).POST(
+        request(`/api/tables/${tableId}/regenerate`, { method: "POST" }),
         tableParams(tableId),
       );
     },
@@ -406,12 +431,14 @@ const fixtures = {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
+    regeneratedTableId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
+    regeneratedTableId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -453,6 +480,16 @@ beforeAll(async () => {
       qrToken: fixtureTableToken(key),
     })),
   );
+  // The regenerate route changes its table's token, so it gets tables of its own.
+  await owner.db.insert(diningTables).values(
+    (["a", "b"] as const).map((key) => ({
+      id: fixtures[key].regeneratedTableId,
+      restaurantId: fixtures[key].restaurantId,
+      label: regeneratedLabel,
+      capacity: 2,
+      qrToken: regeneratedToken(key),
+    })),
+  );
 });
 
 afterEach(async () => {
@@ -472,6 +509,7 @@ afterAll(async () => {
     .where(
       or(
         eq(diningTables.label, fixtureName),
+        eq(diningTables.label, regeneratedLabel),
         like(diningTables.label, `${harnessTablePrefix}%`),
         like(diningTables.label, `${plantedPrefix}%`),
       ),
@@ -653,6 +691,59 @@ describe("cross-tenant access", () => {
         );
       }
     }
+  });
+});
+
+describe("regenerating a table's token", () => {
+  const [regenerate] = routes.filter((route) => route.name.endsWith("/regenerate"));
+  const tokenOf = async (tableId: string) => {
+    const [row] = await owner.db
+      .select({ qrToken: diningTables.qrToken, rotatedAt: diningTables.tokenRotatedAt })
+      .from(diningTables)
+      .where(eq(diningTables.id, tableId));
+    return row;
+  };
+
+  it("leaves another restaurant's token alone, whoever asks", async () => {
+    const theirs = await tokenOf(fixtures.b.regeneratedTableId);
+    for (const identity of [aOwner, aStaff]) {
+      session.identity = identity.key;
+      await statusOf(() => regenerate.call(fixtures.b));
+    }
+    expect(await tokenOf(fixtures.b.regeneratedTableId)).toEqual(theirs);
+    expect(theirs.qrToken).toBe(regeneratedToken("b"));
+  });
+
+  it("leaves the token alone for a staff context in its own restaurant", async () => {
+    session.identity = aStaff.key;
+    const before = await tokenOf(fixtures.a.regeneratedTableId);
+
+    expect(await statusOf(() => regenerate.call(fixtures.a))).toBe(403);
+
+    expect(await tokenOf(fixtures.a.regeneratedTableId)).toEqual(before);
+  });
+
+  it("an owner's regeneration is audited as that owner, without either token", async () => {
+    session.identity = aOwner.key;
+    const before = await tokenOf(fixtures.a.regeneratedTableId);
+    const known = (
+      await owner.db.select().from(auditLog).where(eq(auditLog.entityId, fixtures.a.regeneratedTableId))
+    ).length;
+
+    expect(await statusOf(() => regenerate.call(fixtures.a))).toBeLessThan(400);
+
+    const entries = await owner.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.entityId, fixtures.a.regeneratedTableId));
+    expect(entries).toHaveLength(known + 1);
+    expect(entries).toContainEqual(
+      expect.objectContaining({ action: "table.regenerate_qr", actorType: "staff" }),
+    );
+    const after = await tokenOf(fixtures.a.regeneratedTableId);
+    expect(after.qrToken).not.toBe(before.qrToken);
+    expect(JSON.stringify(entries)).not.toContain(before.qrToken);
+    expect(JSON.stringify(entries)).not.toContain(after.qrToken);
   });
 });
 

@@ -10,6 +10,7 @@ import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
 import { POST as archive } from "@/app/api/tables/[tableId]/archive/route";
 import { POST as move } from "@/app/api/tables/[tableId]/move/route";
+import { POST as regenerateTable } from "@/app/api/tables/[tableId]/regenerate/route";
 import { POST as editTable } from "@/app/api/tables/[tableId]/route";
 import { POST as addTable } from "@/app/api/tables/route";
 import { categories, diningTables, restaurants, staff } from "@/db/schema";
@@ -231,6 +232,14 @@ describe("how a saved form is answered", () => {
         return archive(post(`/api/tables/${id}/archive`, {}, headers), tableParams(id));
       },
     ],
+    [
+      "POST /api/tables/[tableId]/regenerate",
+      "/dashboard/tables",
+      async (headers) => {
+        const id = await tableIdOf("7");
+        return regenerateTable(post(`/api/tables/${id}/regenerate`, {}, headers), tableParams(id));
+      },
+    ],
   ];
 
   it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
@@ -315,6 +324,19 @@ describe("the menu routes", () => {
 const newTable = (label = "7", capacity = "4") =>
   addTable(post("/api/tables", { label, capacity }));
 
+const tableParams = (tableId: string) => ({ params: Promise.resolve({ tableId }) });
+
+/** The table with this label, added first if the restaurant has none by then. */
+async function tableIdOf(label: string) {
+  const find = () =>
+    owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(and(eq(diningTables.restaurantId, tenant.restaurantId), eq(diningTables.label, label)));
+  if ((await find()).length === 0) await newTable(label);
+  return (await find())[0].id;
+}
+
 describe("/dashboard/tables", () => {
   it("lists the tables an owner has added", async () => {
     await newTable("7", "4");
@@ -330,6 +352,17 @@ describe("/dashboard/tables", () => {
 
   it("posts to the route behind it", async () => {
     expect(await screen(TablesScreen)).toContain('action="/api/tables"');
+  });
+
+  it("offers each table a regenerate form, to its own route", async () => {
+    const seven = await tableIdOf("7");
+    const patio = await tableIdOf("Patio 1");
+
+    const html = await screen(TablesScreen);
+
+    expect(html).toContain(`action="/api/tables/${seven}/regenerate"`);
+    expect(html).toContain(`action="/api/tables/${patio}/regenerate"`);
+    expect(html).toContain("Regenerate QR");
   });
 
   it("offers no print sheet until there's a table", async () => {
@@ -351,7 +384,6 @@ const tableId = async (label: string) => {
     .where(and(eq(diningTables.restaurantId, tenant.restaurantId), eq(diningTables.label, label)));
   return id;
 };
-const tableParams = (id: string) => ({ params: Promise.resolve({ tableId: id }) });
 const edit = async (label: string, fields: Record<string, string>) => {
   const id = await tableId(label);
   return editTable(post(`/api/tables/${id}`, fields), tableParams(id));
@@ -967,5 +999,27 @@ describe("/dashboard/settings", () => {
   it("refuses staff with forbidden(), so they never receive the Wi-Fi password", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => SettingsScreen())).toBe(403);
+  });
+});
+
+describe("regenerating a table's code", () => {
+  const tokenOfTable = async (id: string) =>
+    (await owner.db.select({ t: diningTables.qrToken }).from(diningTables).where(eq(diningTables.id, id)))[0].t;
+
+  it("changes what the print sheet encodes, so the sheet to reprint has the new code", async () => {
+    const id = await tableIdOf("7");
+    const old = await tokenOfTable(id);
+
+    expect((await regenerateTable(post(`/api/tables/${id}/regenerate`), tableParams(id))).status).toBe(303);
+
+    const fresh = await tokenOfTable(id);
+    const html = await screen(PrintSheet);
+    const url = (token: string) => qrSvg(tableCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, token));
+    expect(html).toContain((await url(fresh)).trim());
+    expect(html).not.toContain((await url(old)).trim());
+  });
+
+  it.each(["not-a-uuid", crypto.randomUUID()])("is a 404 for a table that isn't there: %s", async (id) => {
+    expect(await statusOf(() => regenerateTable(post(`/api/tables/${id}/regenerate`), tableParams(id)))).toBe(404);
   });
 });

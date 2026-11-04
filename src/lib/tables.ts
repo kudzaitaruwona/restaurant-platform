@@ -5,7 +5,7 @@ import { z } from "zod";
 import { diningTables, restaurants } from "@/db/schema";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { mintQrToken } from "@/lib/qr-token";
-import { recordAdminAction } from "@/lib/tenant/audit";
+import { recordAdminAction, recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 /**
@@ -227,6 +227,43 @@ export async function archiveTable(ctx: Writer, tableId: string): Promise<TableC
     return "saved";
   });
   if (outcome === "saved") revalidateMenu(ctx);
+  return outcome;
+}
+
+/**
+ * Gives a live table a new token, so the printed code stops working at once
+ * (spec 03). The old token is not kept anywhere: it resolves to nothing, so its
+ * scan gets the out-of-date page, which is also why that page has no menu link.
+ * On spec 01's audit list, so an owner's is audited too. Neither token is ever
+ * logged or put in the entry. The page is cached under the restaurant's tag with
+ * the old token as its key, so that tag is expired once this has committed.
+ */
+export async function regenerateQrToken(
+  ctx: Tenant & Pick<TenantContext, "staffId" | "platformAdminId">,
+  tableId: string,
+): Promise<"done" | "not_found"> {
+  const outcome = await withTenant(ctx, async (tx) => {
+    const [table] = await tx
+      .update(diningTables)
+      .set({ qrToken: mintQrToken(), tokenRotatedAt: sql`now()` })
+      .where(
+        and(
+          eq(diningTables.restaurantId, ctx.restaurantId),
+          eq(diningTables.id, tableId),
+          isNull(diningTables.archivedAt),
+        ),
+      )
+      .returning({ id: diningTables.id, label: diningTables.label });
+    if (!table) return "not_found" as const;
+    await recordAudit(tx, ctx, {
+      action: "table.regenerate_qr",
+      entityType: "table",
+      entityId: table.id,
+      details: { label: table.label },
+    });
+    return "done" as const;
+  });
+  if (outcome === "done") revalidateMenu(ctx);
   return outcome;
 }
 
