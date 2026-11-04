@@ -248,6 +248,28 @@ describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
     expect(await refreshed.text()).toContain("Sadza");
     expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
   });
+
+  it("changing the exchange rate reprices the calculated ZiG prices on the next visit", async () => {
+    const mine = await newRestaurant("Stew", "zig_only");
+    const cookie = await signInAsOwnerOf(mine.id);
+    const setRate = (usdToZig: string) =>
+      visit("/api/menu/exchange-rate", {
+        method: "POST",
+        headers: { origin, cookie },
+        body: new URLSearchParams({ usdToZig }),
+      });
+    expect((await setRate("26.2")).status).toBe(303);
+    expect(await (await visit(url(tokenOf(mine)))).text()).toContain("ZiG 210");
+    expect(cacheStatus(await visit(url(tokenOf(mine))))).toBe("HIT");
+
+    expect((await setRate("30")).status).toBe(303);
+
+    const repriced = await visit(url(tokenOf(mine)));
+    expect(cacheStatus(repriced)).toBe("MISS");
+    const body = await repriced.text();
+    expect(body).toContain("ZiG 240");
+    expect(body).not.toContain("ZiG 210");
+  });
 });
 
 describe("archiving a table", () => {
@@ -334,27 +356,5 @@ describe("regenerating a table's token", () => {
 
   it("holds neither token in the server's output", () => {
     expect(serverOutput).not.toMatch(/\/t\/[0-9A-Za-z]{22}\b/);
-  });
-
-  it("changing the exchange rate reprices the calculated ZiG prices on the next visit", async () => {
-    const mine = await newRestaurant("Stew", "zig_only");
-    const cookie = await signInAsOwnerOf(mine.id);
-    const setRate = (usdToZig: string) =>
-      visit("/api/menu/exchange-rate", {
-        method: "POST",
-        headers: { origin, cookie },
-        body: new URLSearchParams({ usdToZig }),
-      });
-    expect((await setRate("26.2")).status).toBe(303);
-    expect(await (await visit(url(mine.menuToken))).text()).toContain("ZiG 210");
-    expect(cacheStatus(await visit(url(mine.menuToken)))).toBe("HIT");
-
-    expect((await setRate("30")).status).toBe(303);
-
-    const repriced = await visit(url(mine.menuToken));
-    expect(cacheStatus(repriced)).toBe("MISS");
-    const body = await repriced.text();
-    expect(body).toContain("ZiG 240");
-    expect(body).not.toContain("ZiG 210");
   });
 });
