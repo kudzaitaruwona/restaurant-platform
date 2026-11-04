@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { menuItems } from "@/db/schema";
 import { revalidateMenu } from "@/lib/menu-cache";
@@ -25,7 +25,11 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 type Writer = Pick<TenantContext, "restaurantId" | "platformAdminId">;
 type Outcome = "saved" | "no_such_item";
 
-/** The item's current photo key, or undefined when this restaurant has no such item. */
+/**
+ * The item's current photo key, or undefined when this restaurant has no such
+ * live item. An archived item keeps its photo, and it can't be changed, as the
+ * item can't be edited.
+ */
 async function findItem(ctx: Writer, itemId: string) {
   if (!z.uuid().safeParse(itemId).success) return undefined;
   return withTenant(ctx, async (tx) => {
@@ -33,7 +37,11 @@ async function findItem(ctx: Writer, itemId: string) {
       .select({ photoKey: menuItems.photoKey })
       .from(menuItems)
       .where(
-        and(eq(menuItems.restaurantId, ctx.restaurantId), eq(menuItems.id, itemId)),
+        and(
+          eq(menuItems.restaurantId, ctx.restaurantId),
+          eq(menuItems.id, itemId),
+          isNull(menuItems.archivedAt),
+        ),
       );
     return item;
   });

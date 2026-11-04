@@ -363,6 +363,49 @@ describe("/dashboard/menu", () => {
     expect(html).not.toContain('action="/api/menu/items"');
     expect(html).not.toContain("Add an item");
   });
+
+  it("gives staff the toggle and nothing else that changes the menu", async () => {
+    const itemId = await newItem();
+    await setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId));
+    await newCategory("Sides");
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    const asOwner = await screen(MenuScreen);
+    session.tenant = { ...tenant, role: "staff" };
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("Mains");
+    expect(html).toContain("Sides");
+    const owners = [
+      "/api/menu/exchange-rate",
+      'name="usdToZig"',
+      "Exchange rate",
+      'name="priceUsd"',
+      'name="priceZig"',
+      "Calculated:",
+      'name="sortOrder"',
+      "Edit",
+      `action="/api/menu/items/${itemId}"`,
+      `/api/menu/items/${itemId}/archive`,
+      "Archive item",
+      "Archive category",
+      'name="moveItemsTo"',
+      "Rename",
+      "Category name",
+      "Move Mains",
+      "Drag to reorder",
+      `/api/menu/items/${itemId}/photo`,
+      'type="file"',
+      "Remove photo",
+      "Change photo",
+    ];
+    for (const control of owners) {
+      // So a control that's renamed fails here, rather than this passing on nothing.
+      expect(asOwner).toContain(control);
+      expect(html).not.toContain(control);
+    }
+    expect(html).not.toMatch(/action="\/api\/menu\/categories\//);
+  });
 });
 
 describe("/dashboard/menu editing", () => {
@@ -386,6 +429,103 @@ describe("/dashboard/menu editing", () => {
     expect(html).toContain(`action="/api/menu/categories/${categoryId}/archive"`);
     expect(html).toContain(`action="/api/menu/items/${itemId}"`);
     expect(html).toContain(`action="/api/menu/items/${itemId}/archive"`);
+  });
+
+  it("fills the edit form's prices, with the same calculated hint as the add form", async () => {
+    const categoryId = await newCategory("Mains");
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    await addItem(post("/api/menu/items", { ...item(categoryId), priceZig: "300" }));
+    const itemId = await idOf("Beef stew");
+
+    const html = await screen(MenuScreen);
+
+    const edit = html.split("<form").find((form) =>
+      form.includes(`action="/api/menu/items/${itemId}"`),
+    )!;
+    expect(edit).toMatch(/<input[^>]*name="priceUsd"[^>]*value="8.50"/);
+    expect(edit).toMatch(/<input[^>]*name="priceZig"[^>]*value="300"/);
+    expect(edit).toContain("Calculated: ZiG 230 at rate 26.2");
+  });
+
+  it("edits the ZiG price through the route, and refuses what the add form refuses", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+    const itemId = await idOf("Beef stew");
+    const edit = (fields: Record<string, string>) =>
+      editItem(post(`/api/menu/items/${itemId}`, { ...item(categoryId), sortOrder: "0", ...fields }), {
+        params: Promise.resolve({ itemId }),
+      });
+    const prices = async () => {
+      const [row] = await owner.db
+        .select({ priceUsd: menuItems.priceUsd, priceZig: menuItems.priceZig })
+        .from(menuItems)
+        .where(eq(menuItems.id, itemId));
+      return row;
+    };
+
+    expect((await edit({ priceUsd: "", priceZig: "210" })).status).toBe(303);
+    expect(await prices()).toEqual({ priceUsd: null, priceZig: "210" });
+
+    const refused: Record<string, string>[] = [
+      { priceZig: "1e3" },
+      { priceUsd: "", priceZig: "" },
+    ];
+    for (const fields of refused) {
+      const response = await edit(fields);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+    }
+    expect(await prices()).toEqual({ priceUsd: null, priceZig: "210" });
+  });
+
+  it("keeps the photo form beside the edit form, and the photo through an edit", async () => {
+    const itemId = await newItem();
+    await setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId));
+    const photo = async () =>
+      (await owner.db.select().from(menuItems).where(eq(menuItems.id, itemId)))[0].photoKey;
+    const before = await photo();
+    const [{ categoryId }] = await owner.db
+      .select({ categoryId: menuItems.categoryId })
+      .from(menuItems)
+      .where(eq(menuItems.id, itemId));
+
+    await editItem(
+      post(`/api/menu/items/${itemId}`, { ...item(categoryId), name: "Goat stew", sortOrder: "0" }),
+      itemParams(itemId),
+    );
+
+    expect(before).not.toBeNull();
+    expect(await photo()).toBe(before);
+    const html = await screen(MenuScreen);
+    expect(html).toContain('aria-label="Change photo for Goat stew"');
+    expect(html).toContain(`action="/api/menu/items/${itemId}"`);
+  });
+
+  it("answers a photo change on an archived item with a 404, and keeps the photo", async () => {
+    const itemId = await newItem();
+    await setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId));
+    const [{ photoKey }] = await owner.db
+      .select({ photoKey: menuItems.photoKey })
+      .from(menuItems)
+      .where(eq(menuItems.id, itemId));
+    await archiveItem(post(`/api/menu/items/${itemId}/archive`), itemParams(itemId));
+
+    expect(
+      await statusOf(async () =>
+        setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId)),
+      ),
+    ).toBe(404);
+    expect(
+      await statusOf(() =>
+        removePhoto(post(`/api/menu/items/${itemId}/photo/remove`), itemParams(itemId)),
+      ),
+    ).toBe(404);
+
+    const [row] = await owner.db
+      .select({ photoKey: menuItems.photoKey })
+      .from(menuItems)
+      .where(eq(menuItems.id, itemId));
+    expect(row.photoKey).toBe(photoKey);
   });
 
   it("asks where a category's items should go, only when it has some", async () => {

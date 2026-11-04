@@ -36,6 +36,7 @@ li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom
 .price{white-space:nowrap;text-align:right}
 .sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
 .sold-out{color:var(--muted)}
+.sold-out .thumb{opacity:.5}
 .tag{margin-left:.5rem;padding:0 .3rem;border:1px solid currentColor;border-radius:.25rem;font-size:.75rem;font-style:normal;font-weight:600;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle}
 p{margin:.25rem 0 0;color:var(--muted)}
 `;

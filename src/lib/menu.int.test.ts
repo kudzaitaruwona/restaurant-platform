@@ -424,6 +424,7 @@ const edit = (categoryId: string, change: Record<string, unknown> = {}) => ({
   name: "Beef stew",
   description: "Slow-cooked",
   priceUsd: "9.00" as string | null,
+  priceZig: null as string | null,
   sortOrder: 0,
   categoryId,
   ...change,
@@ -646,24 +647,31 @@ describe("editing an item", () => {
     expect((await shape(tenant)).Mains).toEqual(["Second", "First"]);
   });
 
-  it("leaves a fixed ZiG price alone", async () => {
+  it("sets a fixed ZiG price, keeps it when it's sent back, and clears it when blank", async () => {
     const tenant = await menuOf({ Mains: ["Stew"] });
     const id = await itemIdOf(tenant, "Stew");
-    await owner.db.update(menuItems).set({ priceZig: "210" }).where(eq(menuItems.id, id));
+    const mains = await categoryIdOf(tenant, "Mains");
+    const zig = async () =>
+      (await owner.db.select().from(menuItems).where(eq(menuItems.id, id)))[0].priceZig;
 
-    await updateMenuItem(tenant, id, edit(await categoryIdOf(tenant, "Mains")));
+    await updateMenuItem(tenant, id, edit(mains, { priceZig: "210" }));
+    expect(await zig()).toBe("210");
 
-    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, id));
-    expect(row.priceZig).toBe("210");
+    await updateMenuItem(tenant, id, edit(mains, { name: "Goat stew", priceZig: "210" }));
+    expect(await zig()).toBe("210");
+
+    await updateMenuItem(tenant, id, edit(mains));
+    expect(await zig()).toBeNull();
   });
 
   it("takes the USD price off an item that has a ZiG price, but not one that has no other", async () => {
     const tenant = await menuOf({ Mains: ["Stew", "Soup"] });
     const mains = await categoryIdOf(tenant, "Mains");
     const [stew, soup] = [await itemIdOf(tenant, "Stew"), await itemIdOf(tenant, "Soup")];
-    await owner.db.update(menuItems).set({ priceZig: "210" }).where(eq(menuItems.id, stew));
 
-    expect(await updateMenuItem(tenant, stew, edit(mains, { priceUsd: null }))).toBe("saved");
+    expect(
+      await updateMenuItem(tenant, stew, edit(mains, { priceUsd: null, priceZig: "210" })),
+    ).toBe("saved");
     expect(await updateMenuItem(tenant, soup, edit(mains, { name: "Soup", priceUsd: null }))).toBe(
       "no_price",
     );
@@ -740,7 +748,7 @@ describe("archiving an item", () => {
 describe("an entered platform admin's edits", () => {
   const platformAdminId = crypto.randomUUID();
 
-  it("audits each kind of change under its own action", async () => {
+  it("audits each kind of change under its own action, and revalidates after each", async () => {
     const tenant = await menuOf({ A: ["Stew"], B: [], C: [] });
     const admin = { ...tenant, platformAdminId };
     const [a, b, c] = await Promise.all(
@@ -748,6 +756,9 @@ describe("an entered platform admin's edits", () => {
     );
     const stew = await itemIdOf(tenant, "Stew");
 
+    await addCategory(admin, { name: "D" });
+    await addMenuItem(admin, itemIn(a, "Soup"));
+    await setItemAvailability(admin, stew, false);
     await renameCategory(admin, b, { name: "B2" });
     await reorderCategories(admin, [c, b, a]);
     await updateMenuItem(admin, stew, edit(a));
@@ -760,11 +771,15 @@ describe("an entered platform admin's edits", () => {
       .where(eq(auditLog.restaurantId, tenant.restaurantId));
     expect(entries.map((entry) => entry.action).sort()).toEqual([
       "category.archive",
+      "category.create",
       "category.rename",
       "category.reorder",
       "menu_item.archive",
+      "menu_item.availability",
+      "menu_item.create",
       "menu_item.update",
     ]);
     expect(entries.every((entry) => entry.actorId === platformAdminId)).toBe(true);
+    expect(touchedCache()).toBe(entries.length);
   });
 });

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { getMenu, type Menu } from "@/lib/menu";
 import { photoUrls } from "@/lib/photo-urls";
@@ -19,13 +20,27 @@ import { PhotoForm } from "./photo-form";
 
 /**
  * The menu. Owners and staff both see the item list, because the sold-out toggle
- * is staff's most-used action (S-26). Everything that changes the menu itself
- * (adding items and categories) stays with owners, and so do its routes.
+ * is staff's most-used action (S-26). That toggle is all staff get here: the
+ * exchange rate, every add, edit, reorder and archive control, and the photo form
+ * render for owners only, and their routes refuse anyone else.
  */
 export async function MenuScreen() {
   const tenant = await getTenantContext();
   const menu = await getMenu(tenant);
   const isOwner = tenant.role === "owner";
+  const sections = menu.categories.map((category) => ({
+    id: category.id,
+    name: category.name,
+    content: (
+      <CategorySection
+        category={category}
+        others={menu.categories.filter((other) => other.id !== category.id)}
+        all={menu.categories}
+        pricing={menu.pricing}
+        isOwner={isOwner}
+      />
+    ),
+  }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -40,43 +55,40 @@ export async function MenuScreen() {
         </a>
       </div>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="font-heading text-xl font-semibold">Exchange rate</h2>
-        <ExchangeRateStatus rate={menu.pricing.rate} setAt={menu.rateSetAt} />
-        <ActionForm
-          action="/api/menu/exchange-rate"
-          savedMessage="Rate saved. Calculated ZiG prices are updated."
-          className="flex flex-col gap-4"
-        >
-          <Field label="1 USD = ZiG">
-            <input
-              name="usdToZig"
-              inputMode="decimal"
-              required
-              defaultValue={menu.pricing.rate ?? ""}
-              className={inputClassName}
-            />
-          </Field>
-          <Button type="submit" variant="outline" className="self-start">
-            Save rate
-          </Button>
-        </ActionForm>
-      </section>
+      {isOwner && (
+        <section className="flex flex-col gap-3">
+          <h2 className="font-heading text-xl font-semibold">Exchange rate</h2>
+          <ExchangeRateStatus rate={menu.pricing.rate} setAt={menu.rateSetAt} />
+          <ActionForm
+            action="/api/menu/exchange-rate"
+            savedMessage="Rate saved. Calculated ZiG prices are updated."
+            className="flex flex-col gap-4"
+          >
+            <Field label="1 USD = ZiG">
+              <input
+                name="usdToZig"
+                inputMode="decimal"
+                required
+                defaultValue={menu.pricing.rate ?? ""}
+                className={inputClassName}
+              />
+            </Field>
+            <Button type="submit" variant="outline" className="self-start">
+              Save rate
+            </Button>
+          </ActionForm>
+        </section>
+      )}
 
-      <SortableCategories
-        entries={menu.categories.map((category) => ({
-          id: category.id,
-          name: category.name,
-          content: (
-            <CategorySection
-              category={category}
-              others={menu.categories.filter((other) => other.id !== category.id)}
-              all={menu.categories}
-              pricing={menu.pricing}
-            />
-          ),
-        }))}
-      />
+      {isOwner ? (
+        <SortableCategories entries={sections} />
+      ) : (
+        <div className="flex flex-col gap-6">
+          {sections.map((section) => (
+            <Fragment key={section.id}>{section.content}</Fragment>
+          ))}
+        </div>
+      )}
 
       {isOwner && (
         <section className="flex flex-col gap-3">
@@ -171,33 +183,39 @@ function CategorySection({
   others,
   all,
   pricing,
+  isOwner,
 }: {
   category: Category;
   others: Category[];
   all: Category[];
   pricing: Pricing;
+  isOwner: boolean;
 }) {
   return (
     <section className="flex flex-col gap-2">
-      <ActionForm
-        action={`/api/menu/categories/${category.id}`}
-        savedMessage="Renamed."
-        className="flex items-end gap-2"
-      >
-        <label className="flex flex-1 flex-col gap-1 text-sm font-medium">
-          <span className="sr-only">Category name</span>
-          <input
-            name="name"
-            defaultValue={category.name}
-            required
-            maxLength={200}
-            className={`${inputClassName} font-heading text-xl font-semibold`}
-          />
-        </label>
-        <Button type="submit" variant="outline">
-          Rename
-        </Button>
-      </ActionForm>
+      {isOwner ? (
+        <ActionForm
+          action={`/api/menu/categories/${category.id}`}
+          savedMessage="Renamed."
+          className="flex items-end gap-2"
+        >
+          <label className="flex flex-1 flex-col gap-1 text-sm font-medium">
+            <span className="sr-only">Category name</span>
+            <input
+              name="name"
+              defaultValue={category.name}
+              required
+              maxLength={200}
+              className={`${inputClassName} font-heading text-xl font-semibold`}
+            />
+          </label>
+          <Button type="submit" variant="outline">
+            Rename
+          </Button>
+        </ActionForm>
+      ) : (
+        <h2 className="font-heading text-xl font-semibold">{category.name}</h2>
+      )}
 
       {category.items.length === 0 ? (
         <p className="text-sm text-muted-foreground">Nothing here yet.</p>
@@ -234,18 +252,22 @@ function CategorySection({
                   </Button>
                 </ActionForm>
               </div>
-              <PhotoForm
-                itemId={item.id}
-                itemName={item.name}
-                thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
-              />
-              <ItemEditor item={item} categories={all} />
+              {isOwner && (
+                <>
+                  <PhotoForm
+                    itemId={item.id}
+                    itemName={item.name}
+                    thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
+                  />
+                  <ItemEditor item={item} categories={all} pricing={pricing} />
+                </>
+              )}
             </li>
           ))}
         </ul>
       )}
 
-      <ArchiveCategory category={category} others={others} />
+      {isOwner && <ArchiveCategory category={category} others={others} />}
     </section>
   );
 }
@@ -253,9 +275,11 @@ function CategorySection({
 function ItemEditor({
   item,
   categories,
+  pricing,
 }: {
   item: Category["items"][number];
   categories: Category[];
+  pricing: Pricing;
 }) {
   return (
     <details className="mt-1 text-sm">
@@ -272,9 +296,7 @@ function ItemEditor({
           <Field label="Description">
             <textarea name="description" defaultValue={item.description} rows={2} maxLength={1000} className={inputClassName} />
           </Field>
-          <Field label="Price (USD)">
-            <input name="priceUsd" defaultValue={item.priceUsd ?? ""} inputMode="decimal" className={inputClassName} />
-          </Field>
+          <ItemPriceFields pricing={pricing} saved={item} />
           <Field label="Category">
             <select name="categoryId" defaultValue={item.categoryId} className={inputClassName}>
               {categories.map((category) => (

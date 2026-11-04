@@ -14,7 +14,7 @@ import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../test/integration/database";
-import { addCategory, addMenuItem, getMenu } from "./menu";
+import { addCategory, addMenuItem, archiveMenuItem, getMenu } from "./menu";
 import { menuTag } from "./menu-cache";
 import { removeItemPhoto, setItemPhoto } from "./menu-photos";
 import { PhotoRefused } from "./photo-image";
@@ -230,6 +230,39 @@ describe("removeItemPhoto", () => {
     const tenant = await newRestaurant();
     expect(await removeItemPhoto(tenant, tenant.itemId)).toBe("saved");
     expect(bucket.deleted).toEqual([]);
+  });
+});
+
+describe("an archived item", () => {
+  it("keeps its key and its files, and drops off the menu", async () => {
+    const tenant = await newRestaurant();
+    await setItemPhoto(tenant, tenant.itemId, await jpeg());
+    const key = await photoKeyOf(tenant.itemId);
+    const files = [...bucket.files.keys()];
+
+    await archiveMenuItem(tenant, tenant.itemId);
+
+    expect(await photoKeyOf(tenant.itemId)).toBe(key);
+    expect([...bucket.files.keys()]).toEqual(files);
+    expect(bucket.deleted).toEqual([]);
+    expect((await getMenu(tenant)).categories[0].items).toEqual([]);
+  });
+
+  it("can't have its photo changed or removed", async () => {
+    const tenant = await newRestaurant();
+    await setItemPhoto(tenant, tenant.itemId, await jpeg());
+    const key = await photoKeyOf(tenant.itemId);
+    await archiveMenuItem(tenant, tenant.itemId);
+    const files = [...bucket.files.keys()];
+    revalidateTag.mockClear();
+
+    expect(await setItemPhoto(tenant, tenant.itemId, await jpeg())).toBe("no_such_item");
+    expect(await removeItemPhoto(tenant, tenant.itemId)).toBe("no_such_item");
+
+    expect(await photoKeyOf(tenant.itemId)).toBe(key);
+    expect([...bucket.files.keys()]).toEqual(files);
+    expect(bucket.deleted).toEqual([]);
+    expect(revalidateTag).not.toHaveBeenCalled();
   });
 });
 

@@ -38,7 +38,6 @@ const messages = {
   priceZig: "Enter the ZiG price as a number, like 210.",
   price: "Enter a USD price, a ZiG price, or both.",
   category: "Choose a category.",
-  priceUsdOrBlank: "Enter the USD price as a number like 8.50, or leave it blank.",
   sortOrder: "Enter the sort order as a whole number from 0 to 9999.",
   order: "Send each category once, in the order they should appear.",
 };
@@ -86,27 +85,22 @@ const itemFields = z.object({
   categoryId: z.string(messages.category).min(1, messages.category),
 });
 
-const newMenuItem = itemFields
-  // The database refuses an item with neither, too: this gives the reason.
-  .refine((item) => item.priceUsd !== null || item.priceZig !== null, {
-    message: messages.price,
-    path: ["priceUsd"],
-  });
+// The database refuses an item with neither, too: this gives the reason.
+const hasAPrice = (item: { priceUsd: string | null; priceZig: string | null }) =>
+  item.priceUsd !== null || item.priceZig !== null;
+const noPrice = { message: messages.price, path: ["priceUsd"] };
 
-// Blank means no USD price, which only an item with a fixed ZiG price may have:
-// menu_items_has_a_price is what refuses the rest, so it's one rule, not two.
-const itemEdit = itemFields.omit({ priceZig: true }).extend({
-  priceUsd: z
-    .string(messages.priceUsdOrBlank)
-    .trim()
-    .regex(/^([0-9]{1,6}(\.[0-9]{1,2})?)?$/, messages.priceUsdOrBlank)
-    .transform((price) => price || null),
-  sortOrder: z
-    .string(messages.sortOrder)
-    .trim()
-    .regex(/^[0-9]{1,4}$/, messages.sortOrder)
-    .transform(Number),
-});
+const newMenuItem = itemFields.refine(hasAPrice, noPrice);
+
+const itemEdit = itemFields
+  .extend({
+    sortOrder: z
+      .string(messages.sortOrder)
+      .trim()
+      .regex(/^[0-9]{1,4}$/, messages.sortOrder)
+      .transform(Number),
+  })
+  .refine(hasAPrice, noPrice);
 
 // Whether each is a category of this restaurant is reorderCategories' question,
 // so a malformed id gets the 404 an unknown one does.
@@ -511,8 +505,8 @@ const liveItem = (restaurantId: string, itemId: string) =>
   );
 
 /**
- * Saves the editor's fields on a live item. Prices other than USD are not this
- * form's: the ZiG price is left as it was.
+ * Saves the editor's fields on a live item. A blank ZiG price clears a fixed one,
+ * so the item goes back to calculated from the rate (S-10).
  */
 export async function updateMenuItem(
   ctx: Writer,
@@ -552,7 +546,11 @@ export async function updateMenuItem(
   }
 }
 
-/** Archives instead of deleting: nothing customer-facing is hard-deleted. */
+/**
+ * Archives instead of deleting: nothing customer-facing is hard-deleted. That
+ * includes the photo: its key and files stay, and only leave the public page with
+ * the item.
+ */
 export async function archiveMenuItem(
   ctx: Writer,
   itemId: string,

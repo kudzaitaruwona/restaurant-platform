@@ -299,7 +299,7 @@ describe("prices by currency_mode", () => {
   }
 
   const priceOf = (body: string) =>
-    /<li>\n<div class="item"><span>Stew<\/span>(.*?)<\/div>/.exec(body)![1];
+    /<li[^>]*>\n<div class="text">\n<div class="item"><span>Stew<\/span>(.*?)<\/div>/.exec(body)![1];
 
   it("usd_only shows dollars alone", async () => {
     const { menuToken } = await menuIn("usd_only");
@@ -473,6 +473,33 @@ describe("a sold-out item", () => {
     expect(positions).not.toContain(-1);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(body).toMatch(/class="sold-out"[\s\S]*Gone steak/);
+  });
+
+  it("keeps the sort order on both sides of the split, with prices, photos and no archived rows", async () => {
+    const { id, menuToken } = await newRestaurant("Everything", "both");
+    await setRate(id, "26.2");
+    const mains = await addCategory(id, "Mains");
+    await addItem(id, mains, { name: "Item C", priceUsd: "8", sortOrder: 3, available: false, photoKey: "menu/gone" });
+    await addItem(id, mains, { name: "Item A", priceUsd: "8", sortOrder: 2, available: false });
+    await addItem(id, mains, { name: "Item D", priceUsd: "8", sortOrder: 1, photoKey: "menu/on" });
+    await addItem(id, mains, { name: "Item B", priceUsd: "8", sortOrder: 0 });
+    await addItem(id, mains, { name: "Item E", priceUsd: "8", sortOrder: 0, archivedAt: new Date(), photoKey: "menu/archived" });
+
+    const body = await page(menuToken);
+
+    const order = ["Item B", "Item D", "Item A", "Item C"].map((name) => body.indexOf(name));
+    expect(order.every((at) => at !== -1)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(body).not.toContain("Item E");
+    expect(body).not.toContain("menu/archived");
+    expect(body.match(/\$8\.00 · ZiG 210/g)).toHaveLength(4);
+    expect(body.match(/Sold out/g)).toHaveLength(2);
+    for (const key of ["menu/on", "menu/gone"]) {
+      expect(body).toContain(
+        `<img class="thumb" src="https://cdn.example.test/${key}-320.webp" width="64" height="64" loading="lazy"`,
+      );
+    }
+    expect(body).not.toContain("<script");
   });
 
   it("doesn't mark an available item", async () => {

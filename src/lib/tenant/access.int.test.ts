@@ -253,6 +253,7 @@ const routes: TenantRoute[] = [
             name: renamedByHarness,
             description: "",
             priceUsd: "9.00",
+            priceZig: "300",
             sortOrder: "0",
             categoryId: target.categoryId,
           }),
@@ -522,10 +523,6 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await owner.db
-    .update(menuItems)
-    .set({ photoKey: fixturePhoto })
-    .where(inArray(menuItems.id, [fixtures.a.itemId, fixtures.b.itemId]));
-  await owner.db
     .update(staff)
     .set({ displayName: fixtureName, role: "staff", active: true })
     .where(eq(staff.id, fixtures.a.staffId));
@@ -559,7 +556,10 @@ afterAll(async () => {
   vi.unstubAllGlobals();
 });
 
-/** Puts the menu fixtures back as they were: the routes rename and archive them. */
+/**
+ * Puts the menu fixtures back as they were: the routes rename, archive, reprice
+ * and mark them sold out, and change their photo.
+ */
 async function resetMenuFixtures() {
   const all = Object.values(fixtures);
   await owner.db
@@ -568,7 +568,14 @@ async function resetMenuFixtures() {
     .where(inArray(categories.id, all.flatMap((f) => [f.categoryId, f.spareCategoryId])));
   await owner.db
     .update(menuItems)
-    .set({ name: fixtureName, archivedAt: null, priceUsd: "8.50" })
+    .set({
+      name: fixtureName,
+      archivedAt: null,
+      priceUsd: "8.50",
+      priceZig: null,
+      available: true,
+      photoKey: fixturePhoto,
+    })
     .where(inArray(menuItems.id, all.map((f) => f.itemId)));
   for (const { itemId, categoryId } of all) {
     await owner.db.update(menuItems).set({ categoryId }).where(eq(menuItems.id, itemId));
@@ -582,7 +589,15 @@ const menuFixtureState = async ({ categoryId, spareCategoryId, itemId }: Target)
     .from(categories)
     .where(inArray(categories.id, [categoryId, spareCategoryId]));
   const [item] = await owner.db
-    .select({ name: menuItems.name, categoryId: menuItems.categoryId, archivedAt: menuItems.archivedAt })
+    .select({
+      name: menuItems.name,
+      categoryId: menuItems.categoryId,
+      archivedAt: menuItems.archivedAt,
+      priceUsd: menuItems.priceUsd,
+      priceZig: menuItems.priceZig,
+      available: menuItems.available,
+      photoKey: menuItems.photoKey,
+    })
     .from(menuItems)
     .where(eq(menuItems.id, itemId));
   return { categories: rows.sort((x, y) => x.id.localeCompare(y.id)), item };

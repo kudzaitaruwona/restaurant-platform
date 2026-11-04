@@ -29,6 +29,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 - Upload from a phone camera. Resize and convert to WebP on the server, at 800px for the item view and 320px for the thumbnail, aiming for under 60KB each.
 - **Request size.** Vercel refuses a request body over 4.5MB, and a phone original can be larger. The editor shrinks the photo to a 1600px JPEG in the browser before sending it, and the server turns that into the two WebP files. The server also refuses anything over 4MB. That script is in the editor only; the public page stays script-free.
 - Each upload gets a new random storage key, so a replaced photo is never served from cache, and the old two files are deleted through `deleteImage`. The public page shows the 320px file at a fixed 64x64 with `loading="lazy"`.
+- Archiving an item keeps its photo: the key and both files stay, the photo leaves the public page with the item, and it can't be changed while archived *(proposed)*.
 - Storage: Cloudflare R2 on a custom domain, behind an `uploadImage` / `deleteImage` / `getUrl` interface (decided, D-07).
 
 ### Exchange rate

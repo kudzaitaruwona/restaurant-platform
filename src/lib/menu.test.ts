@@ -152,14 +152,34 @@ describe("parseItemEdit", () => {
   it("takes the fields the editor shows", () => {
     expect(parseItemEdit(form(edit))).toEqual({
       success: true,
-      data: { ...valid, sortOrder: 3 },
+      data: { ...valid, priceZig: null, sortOrder: 3 },
     });
   });
 
-  it("reads a blank USD price as none, for the database to judge", () => {
-    expect(parseItemEdit(form({ ...edit, priceUsd: "  " }))).toMatchObject({
+  it("takes a fixed ZiG price, and reads a blank one as calculated", () => {
+    expect(parseItemEdit(form({ ...edit, priceZig: " 210 " }))).toMatchObject({
       success: true,
-      data: { priceUsd: null },
+      data: { priceZig: "210" },
+    });
+    expect(parseItemEdit(form({ ...edit, priceZig: "  " }))).toMatchObject({
+      success: true,
+      data: { priceZig: null },
+    });
+  });
+
+  it("takes a ZiG price alone, with the USD price blank", () => {
+    expect(parseItemEdit(form({ ...edit, priceUsd: "  ", priceZig: "210" }))).toMatchObject({
+      success: true,
+      data: { priceUsd: null, priceZig: "210" },
+    });
+  });
+
+  it("needs at least one price, as the add form does", () => {
+    expect(parseItemEdit(form({ ...edit, priceUsd: "", priceZig: "" }))).toEqual(
+      parseNewMenuItem(form({ ...valid, priceUsd: "", priceZig: "" })),
+    );
+    expect(parseItemEdit(form({ ...edit, priceUsd: "", priceZig: "" }))).toMatchObject({
+      success: false,
     });
   });
 
@@ -167,6 +187,13 @@ describe("parseItemEdit", () => {
     "refuses the price %j",
     (priceUsd) => {
       expect(parseItemEdit(form({ ...edit, priceUsd }))).toMatchObject({ success: false });
+    },
+  );
+
+  it.each(["-1", "8.555", "1e3", "NaN", "Infinity", "1000000000", "ZiG 210"])(
+    "refuses the ZiG price %j",
+    (priceZig) => {
+      expect(parseItemEdit(form({ ...edit, priceZig }))).toMatchObject({ success: false });
     },
   );
 
