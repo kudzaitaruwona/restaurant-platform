@@ -23,7 +23,7 @@ The shared schema is in [docs/specs/00-data-model.md](docs/specs/00-data-model.m
 
 Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, proposed) · Vercel
 
-The public menu page is the one proposed exception: a Route Handler with no React, Tailwind or shadcn/ui (S-32, not yet confirmed).
+The public menu page is the one exception: a Route Handler with no React, Tailwind or shadcn/ui (S-32).
 
 ## Development
 
@@ -68,7 +68,7 @@ Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, co
 
 ### Public menu page
 
-`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because an App Router page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32, proposed). `src/lib/public-menu.ts` has the whole page. It's cached for 5 minutes at most, and anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing, so a customer sees a save straight away. Every function in `src/lib/menu.ts` that writes already does. `src/proxy.ts` refuses everything but GET and HEAD here, because Next.js would store the answer as the page.
+`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because an App Router page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32). `src/lib/public-menu.ts` has the whole page. It's cached for 5 minutes at most, and anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing, so a customer sees a save straight away. Every function in `src/lib/menu.ts` that writes already does. `src/proxy.ts` refuses everything but GET and HEAD here, because Next.js would store the answer as the page.
 
 `npm run test:production` checks all of this against the real cache. It needs `npm run build` first, because the ordinary tests can't run `use cache` or the proxy.
 
