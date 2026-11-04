@@ -110,3 +110,7 @@ jobs:
       # Includes the cross-tenant and role harnesses
       # (src/lib/tenant/access.int.test.ts) and the RLS coverage test.
       - run: npm run test:integration
+      # The public pages' real cache, which only exists on a production build
+      # (S-32). The same Postgres, so it runs here rather than in `checks`.
+      - run: npm run build
+      - run: npm run test:production

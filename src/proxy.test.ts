@@ -28,6 +28,33 @@ describe("the matcher", () => {
   it.each(["/", "/login", "/login/admin", "/r/restaurant-a"])("leaves %s alone", (url) => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false);
   });
+
+  it("covers the public menu page, for its cache (S-32)", () => {
+    expect(unstable_doesMiddlewareMatch({ config, url: "/m/a-menu-token" })).toBe(true);
+  });
+});
+
+describe("the public pages' cache (S-32)", () => {
+  it.each(["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "PROPFIND"])(
+    "refuses %s, which Next.js would store as the page",
+    (method) => {
+      const response = proxy(request("/m/a-menu-token", { method }));
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+    },
+  );
+
+  it.each(["GET", "HEAD"])("lets %s through to the cache", (method) => {
+    const response = proxy(request("/m/a-menu-token", { method }));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it("does no session work, even for someone with a staff cookie", () => {
+    const response = proxy(
+      request("/m/a-menu-token", { headers: { cookie: "staff.session_token=token" } }),
+    );
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
 });
 
 describe("cross-site writes (S-30)", () => {

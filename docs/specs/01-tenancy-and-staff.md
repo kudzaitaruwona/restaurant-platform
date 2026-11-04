@@ -34,7 +34,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Tenant isolation
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
-- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept.
+- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept. The lookup is a `SECURITY DEFINER` function per token type that returns only the restaurant's id (S-31).
 - **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
 - **Admin routes:** a platform admin works across tenants, so two routes take the restaurant ID from the URL, the only exceptions to taking it from the session (S-28). `POST /api/admin/restaurants/[restaurantId]/owner` passes it only to `platform_create_first_owner`, which refuses a restaurant that already has staff. `POST /api/admin/restaurants/[restaurantId]/enter` passes it only to `platform_enter_restaurant`, and from then on the ID comes from the session. Both sit behind `getPlatformAdminContext()`.
 - **The admin path has its own database login,** `app_admin` (`DATABASE_URL_ADMIN`), which only the admin seam loads. Only it can run the `platform_*` functions or touch `admin_auth_*`. `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28).
@@ -73,6 +73,7 @@ Write an entry for: exchange rate changes, staff created, deactivated or role-ch
 - Neon Postgres with Drizzle ORM, over Neon's WebSocket `Pool` driver (interactive transactions for `set_config` and `SAVEPOINT`s). Drizzle supports partial indexes and raw SQL for the exclusion constraint and triggers.
 - Cloudflare R2 for photos, on a custom domain, behind an `uploadImage` / `deleteImage` / `getUrl` interface
 - Better Auth for staff sessions, with two separate session types for staff and platform admin. Implemented last (S-25).
+- One proposed exception, not yet confirmed by Kudzai: the public menu page is a Route Handler with no React, Tailwind or shadcn/ui (S-32).
 
 The audit log has no viewer in v1. It is database-only.
 

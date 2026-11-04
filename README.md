@@ -23,6 +23,8 @@ The shared schema is in [docs/specs/00-data-model.md](docs/specs/00-data-model.m
 
 Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, proposed) · Vercel
 
+The public menu page is the one proposed exception: a Route Handler with no React, Tailwind or shadcn/ui (S-32, not yet confirmed).
+
 ## Development
 
 ```bash
@@ -47,6 +49,7 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run test:unit` | Unit tests (no database) |
 | `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin` |
 | `npm test` | Both test projects |
+| `npm run test:production` | The public pages' cache, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
 | `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` and the `app_admin` password from `DATABASE_URL_ADMIN`, and fails if RLS wouldn't apply to either role |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
@@ -55,11 +58,19 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 
 All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` says who is asking, `requireOwner(ctx)` guards owner-only actions, and `withTenant(ctx, fn)` runs `fn` in a transaction scoped to that restaurant. ESLint keeps `getDb` out of everything else.
 
+A public route has no session, so `resolvePublicToken()` (`src/lib/tenant/public.ts`) turns its token into a tenant for `withTenant()` (S-31). Code on a public route imports `@/lib/tenant/scope`, not `@/lib/tenant`, which loads sign-in; a test fails if it reaches Better Auth (S-32).
+
 There are three database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), under the same rules and with its own pool (see "Platform admin"). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
-Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, or to `sessionRoutes` if it takes no id. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, or a route isn't listed. Nothing checks the `UNIQUE` or the composite foreign keys yet, so those are on you and your reviewer.
+Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, to `sessionRoutes` if it takes no id, or to `publicRoutes` if it has no session. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, no `UNIQUE (restaurant_id, id)`, or a foreign key to another tenant table that isn't composite, or if a route isn't listed.
+
+### Public menu page
+
+`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because an App Router page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32, proposed). `src/lib/public-menu.ts` has the whole page. It's cached for 5 minutes at most, and anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing, so a customer sees a save straight away. Every function in `src/lib/menu.ts` that writes already does. `src/proxy.ts` refuses everything but GET and HEAD here, because Next.js would store the answer as the page.
+
+`npm run test:production` checks all of this against the real cache. It needs `npm run build` first, because the ordinary tests can't run `use cache` or the proxy.
 
 ### Platform admin
 
@@ -73,8 +84,8 @@ Every admin action inside a tenant has to reach `audit_log`. `recordAudit` recor
 
 Staff and the platform admin sign in with a magic link, an emailed code or Google (S-27, S-30). `src/lib/auth` holds Better Auth, with one instance per session type: `/api/auth/staff/*` and `/api/auth/admin/*`. `getTenantContext()` and `getPlatformAdminContext()` read those sessions and check the staff or admin row on every request. Only an existing active staff record or platform admin can get a session, and the lookups go through `SECURITY DEFINER` functions, because RLS hides `staff` before a tenant is known.
 
-`src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher.
+`src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher. It also runs on public pages, but only to refuse methods the cache can't take (S-32).
 
 ### Environment
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine.
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine. A build that needs the local database goes through the wsproxy, which production refuses, so start it with `NODE_ENV=test npx next start` and the variables in the shell: the bundle is still the production build, and `.env.local` isn't read.

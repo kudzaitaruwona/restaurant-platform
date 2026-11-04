@@ -71,6 +71,20 @@
       "when": 1793775088234,
       "tag": "0009_admin_database_login",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793778471433,
+      "tag": "0010_menu_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793778472048,
+      "tag": "0011_public_token_lookup",
+      "breakpoints": true
     }
   ]
 }

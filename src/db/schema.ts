@@ -203,6 +203,75 @@ export const auditLog = pgTable(
 );
 
 /**
+ * The menu (spec 00, 2). Columns arrive with the tickets that use them: photos,
+ * availability, visibility and archiving aren't here yet.
+ */
+export const categories = pgTable(
+  "categories",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    name: text().notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+export const menuItems = pgTable(
+  "menu_items",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    categoryId: uuid("category_id").notNull(),
+    name: text().notNull(),
+    // Blank rather than null when there's nothing to say: spec 00 marks what can
+    // be null, and this isn't one.
+    description: text().notNull().default(""),
+    priceUsd: numeric("price_usd"),
+    // Set means a fixed ZiG price (S-10).
+    priceZig: numeric("price_zig"),
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    // The first key between two tenant tables. Named, because the generated name
+    // is past Postgres's 63-character limit.
+    foreignKey({
+      name: "menu_items_category_fk",
+      columns: [table.restaurantId, table.categoryId],
+      foreignColumns: [categories.restaurantId, categories.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.categoryId),
+    check(
+      "menu_items_has_a_price",
+      sql`${table.priceUsd} is not null or ${table.priceZig} is not null`,
+    ),
+    check(
+      "menu_items_prices_not_negative",
+      sql`${table.priceUsd} >= 0 and ${table.priceZig} >= 0`,
+    ),
+    // numeric takes NaN and Infinity, and both are >= 0. NaN sorts above Infinity,
+    // so this stops the two of them.
+    check(
+      "menu_items_prices_finite",
+      sql`${table.priceUsd} < 'Infinity' and ${table.priceZig} < 'Infinity'`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
  * Better Auth's tables, one set per session type (S-30): a staff session, link
  * or code means nothing to the platform-admin sign-in, and the other way round.
  *

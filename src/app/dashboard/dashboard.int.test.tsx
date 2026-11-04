@@ -96,8 +96,10 @@ describe("the protected page", () => {
   it("links an owner to the owner-only screens, and not staff", async () => {
     expect(await render("a-owner")).toContain('href="/dashboard/staff"');
     expect(await render("a-owner")).toContain('href="/dashboard/settings"');
+    expect(await render("a-owner")).toContain('href="/dashboard/menu"');
     expect(await render("a-staff")).not.toContain("/dashboard/staff");
     expect(await render("a-staff")).not.toContain("/dashboard/settings");
+    expect(await render("a-staff")).not.toContain("/dashboard/menu");
   });
 
   it("refuses no identity with unauthorized(), before any data renders", async () => {

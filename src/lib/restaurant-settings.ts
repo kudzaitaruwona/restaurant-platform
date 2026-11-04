@@ -2,6 +2,7 @@ import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { currencyMode, restaurants } from "@/db/schema";
+import { revalidateMenu } from "@/lib/menu-cache";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
@@ -120,17 +121,17 @@ export async function updateRestaurantSettings(
   ctx: Tenant & Pick<TenantContext, "platformAdminId">,
   settings: RestaurantSettings,
 ): Promise<"saved" | "invalid_timezone"> {
-  return withTenant(ctx, async (tx) => {
+  const outcome = await withTenant(ctx, async (tx) => {
     const [stored] = await tx
       .select({ timezone: restaurants.timezone })
       .from(restaurants)
       .where(eq(restaurants.id, ctx.restaurantId));
     if (stored.timezone !== settings.timezone) {
-      if (!isTimeZone(settings.timezone)) return "invalid_timezone";
+      if (!isTimeZone(settings.timezone)) return "invalid_timezone" as const;
       const { rows } = await tx.execute(
         sql`select 1 from pg_catalog.pg_timezone_names where name = ${settings.timezone}`,
       );
-      if (rows.length === 0) return "invalid_timezone";
+      if (rows.length === 0) return "invalid_timezone" as const;
     }
     await tx
       .update(restaurants)
@@ -141,6 +142,9 @@ export async function updateRestaurantSettings(
       entityType: "restaurant",
       entityId: ctx.restaurantId,
     });
-    return "saved";
+    return "saved" as const;
   });
+  // The public menu page shows the restaurant's name.
+  if (outcome === "saved") revalidateMenu(ctx);
+  return outcome;
 }
