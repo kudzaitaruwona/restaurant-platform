@@ -68,7 +68,7 @@ categories
 
 menu_items
   id, restaurant_id, category_id → categories      -- exactly one category
-  name, description, photo_url null
+  name, description, photo_key null            -- storage key; `-800.webp` and `-320.webp` hang off it, URLs come from getUrl (D-07)
   price_usd             numeric null
   price_zig             numeric null                -- set = fixed ZiG price
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)

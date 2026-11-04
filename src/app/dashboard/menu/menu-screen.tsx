@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { getMenu, type Menu } from "@/lib/menu";
+import { photoUrls } from "@/lib/photo-urls";
 import {
   effectiveUsd,
   effectiveZig,
@@ -14,6 +15,7 @@ import { SortableCategories } from "./sortable-categories";
 import { Field, inputClassName } from "../field";
 import { ExchangeRateStatus } from "../exchange-rate-status";
 import { ItemPriceFields } from "./item-price-fields";
+import { PhotoForm } from "./photo-form";
 
 /**
  * The menu. Owners and staff both see the item list, because the sold-out toggle
@@ -232,6 +234,11 @@ function CategorySection({
                   </Button>
                 </ActionForm>
               </div>
+              <PhotoForm
+                itemId={item.id}
+                itemName={item.name}
+                thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
+              />
               <ItemEditor item={item} categories={all} />
             </li>
           ))}

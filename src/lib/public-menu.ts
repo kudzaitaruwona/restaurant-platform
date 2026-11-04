@@ -3,6 +3,7 @@ import { cacheLife, cacheTag } from "next/cache";
 import { html, trusted } from "@/lib/html";
 import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
+import { photoUrls } from "@/lib/photo-urls";
 import { priceDisplay } from "@/lib/pricing";
 import { type PublicTokenKind, resolvePublicToken } from "@/lib/tenant/public";
 
@@ -28,7 +29,9 @@ main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
 h1{margin:0 0 1rem;font-size:1.75rem;line-height:1.2}
 h2{margin:2rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
 ul{margin:0;padding:0;list-style:none}
-li{padding:.75rem 0;border-bottom:1px solid var(--line)}
+li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom:1px solid var(--line)}
+.text{flex:1;min-width:0}
+.thumb{flex:none;width:64px;height:64px;object-fit:cover;border-radius:.375rem;background:var(--line)}
 .item{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
 .price{white-space:nowrap;text-align:right}
 .sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
@@ -59,9 +62,21 @@ const priceCell = (item: Item, { currencyMode, pricing }: Menu) => {
   return html`<span class="price">${main}${sub && html`<span class="sub">${sub}</span>`}</span>`;
 };
 
+/**
+ * The 320px file, shown at 64px: fixed width and height so the text doesn't move
+ * when it arrives, and lazy so a long menu doesn't fetch every photo up front.
+ * Empty alt, because the name is beside it.
+ */
+const thumbnail = ({ photoKey }: Item) =>
+  photoKey !== null &&
+  html`<img class="thumb" src="${photoUrls(photoKey).thumb}" width="64" height="64" loading="lazy" decoding="async" alt="">`;
+
 const itemRow = (item: Item, menu: Menu) => html`<li class="${item.available ? "" : "sold-out"}">
+<div class="text">
 <div class="item"><span>${item.name}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
 ${item.description && html`<p>${item.description}</p>`}
+</div>
+${thumbnail(item)}
 </li>`;
 
 /** Sold-out items stay on the page, after the rest of their category (spec 02). */

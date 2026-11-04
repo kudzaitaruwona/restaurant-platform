@@ -209,8 +209,8 @@ export const auditLog = pgTable(
 );
 
 /**
- * The menu (spec 00, 2). Columns arrive with the tickets that use them: photos,
- * availability, visibility and archiving aren't here yet.
+ * The menu (spec 00, 2). Columns arrive with the tickets that use them:
+ * visibility isn't here yet.
  */
 export const categories = pgTable(
   "categories",
@@ -247,6 +247,10 @@ export const menuItems = pgTable(
     priceZig: numeric("price_zig"),
     // False while the kitchen has run out (S-26). Staff toggle it from the item list.
     available: boolean().notNull().default(true),
+    // The photo's storage key without its size: `-800.webp` and `-320.webp` are
+    // the two files under it. A key, not a URL, because getUrl owns the domain
+    // (D-07). Each upload gets a new key so the CDN never serves the old one.
+    photoKey: text("photo_key"),
     sortOrder: integer("sort_order").notNull().default(0),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
   },

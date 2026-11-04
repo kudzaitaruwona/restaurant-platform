@@ -181,6 +181,7 @@ export function getMenu(ctx: Tenant) {
         priceZig: menuItems.priceZig,
         available: menuItems.available,
         sortOrder: menuItems.sortOrder,
+        photoKey: menuItems.photoKey,
       })
       .from(menuItems)
       .where(

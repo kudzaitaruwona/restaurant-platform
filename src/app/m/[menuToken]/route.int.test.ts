@@ -24,6 +24,11 @@ const cache = vi.hoisted(() => ({
 }));
 vi.mock("next/cache", () => cache);
 
+// Photo addresses come from the storage interface; nothing here reaches R2.
+vi.mock("@/lib/storage", () => ({
+  getUrl: (key: string) => `https://cdn.example.test/${key}`,
+}));
+
 /**
  * The public menu page, against a real Postgres as app_tenant. That role sees no
  * tenant rows at all until a tenant is set, so a page with items on it is itself
@@ -77,7 +82,7 @@ async function setRate(restaurantId: string, usdToZig: string) {
 const addItem = (
   restaurantId: string,
   categoryId: string,
-  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; sortOrder?: number; available?: boolean; archivedAt?: Date },
+  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; photoKey?: string; sortOrder?: number; available?: boolean; archivedAt?: Date },
 ) => owner.db.insert(menuItems).values({ restaurantId, categoryId, ...item });
 
 const visit = (menuToken: string) =>
@@ -180,6 +185,51 @@ describe("/m/{menu_token}", () => {
 
     const body = await page(menuToken);
 
+    expect(new TextEncoder().encode(body).length).toBeLessThan(100_000);
+  });
+
+  it("shows a lazy thumbnail with fixed dimensions, so the layout doesn't jump", async () => {
+    const { id, menuToken } = await newRestaurant("Photos");
+    await addItem(id, await addCategory(id, "Mains"), {
+      name: "Stew",
+      priceUsd: "8",
+      photoKey: "menu/abc",
+    });
+
+    const body = await page(menuToken);
+
+    const img = /<img [^>]*>/.exec(body)?.[0] ?? "";
+    expect(img).toContain('src="https://cdn.example.test/menu/abc-320.webp"');
+    expect(img).toContain('width="64"');
+    expect(img).toContain('height="64"');
+    expect(img).toContain('loading="lazy"');
+    expect(img).toContain('decoding="async"');
+    // Decorative: the item's name is right beside it.
+    expect(img).toContain('alt=""');
+  });
+
+  it("draws no image for an item without a photo, and no empty box either", async () => {
+    const { id, menuToken } = await newRestaurant("No photos");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", priceUsd: "8" });
+
+    expect(await page(menuToken)).not.toContain("<img");
+  });
+
+  it("stays inside the budget on 30 items with photos, which cost markup but no bytes of image", async () => {
+    const { id, menuToken } = await newRestaurant("Thirty photos");
+    const categoryId = await addCategory(id, "Mains");
+    for (let n = 0; n < 30; n += 1) {
+      await addItem(id, categoryId, {
+        name: `Item ${n}`,
+        description: "A sentence or two about what's in this and how it comes.",
+        priceUsd: "12.50",
+        photoKey: `menu/${crypto.randomUUID()}`,
+      });
+    }
+
+    const body = await page(menuToken);
+
+    expect(body.match(/<img /g)).toHaveLength(30);
     expect(new TextEncoder().encode(body).length).toBeLessThan(100_000);
   });
 
