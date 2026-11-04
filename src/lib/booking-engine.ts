@@ -10,7 +10,9 @@
  * time in UTC".
  *
  * This says what the list should show. Postgres's bookings_no_overlap is what
- * actually prevents a double booking. Closures join `candidateTimes` with #38.
+ * actually prevents a double booking, and closures are the same: a sitting that
+ * runs into one is dropped here, and bookings_within_closure (migration 0019) is
+ * what refuses it.
  */
 
 /** "YYYY-MM-DD" on the restaurant's calendar. */
@@ -34,6 +36,16 @@ export type Period = {
   /** Postgres `time`: "HH:MM:SS" or "HH:MM". */
   opensAt: string;
   lastBookingAt: string;
+};
+
+/**
+ * A time the restaurant is shut (spec 04): half-open like everything here, so a
+ * sitting that ends at the instant a closure starts is not in it. A date-only
+ * closure is already local midnight to the next local midnight when it gets here.
+ */
+export type Closure = {
+  startsAt: Date;
+  endsAt: Date;
 };
 
 export type EngineTable = {
@@ -178,18 +190,38 @@ export function holdFor(rules: Rules, party: number, startsAt: Date) {
 }
 
 /**
+ * Whether a sitting from `startsAt` for `sittingMinutes` runs into a closure,
+ * ignoring the reset buffer *(proposed)*: the engine's "[t, t + sitting) overlaps
+ * any closure", and the same range bookings_within_closure judges (starts_at to
+ * ends_at). Touching isn't overlapping.
+ */
+export function runsIntoClosure(
+  closures: readonly Closure[],
+  startsAt: Date,
+  sittingMinutes: number,
+) {
+  const endsAt = startsAt.getTime() + sittingMinutes * MINUTE;
+  return closures.some(
+    (closure) => closure.startsAt.getTime() < endsAt && startsAt.getTime() < closure.endsAt.getTime(),
+  );
+}
+
+/**
  * Every time a party could start on `date`, ignoring the tables: the grid of each
- * of that weekday's periods, less whatever is inside the lead time. Dates outside
- * the window have none.
+ * of that weekday's periods, less whatever is inside the lead time and whatever
+ * runs into a closure for `sittingMinutes`. Dates outside the window have none.
  */
 export function candidateTimes(input: {
   date: LocalDate;
   rules: Rules;
   periods: readonly Period[];
+  closures: readonly Closure[];
+  /** The party's sitting: a party's list and its confirm both pass `sittingFor`. */
+  sittingMinutes: number;
   timezone: string;
   now: Date;
 }): Candidate[] {
-  const { date, rules, periods, timezone, now } = input;
+  const { date, rules, periods, closures, sittingMinutes, timezone, now } = input;
   const today = localToday(now, timezone);
   if (date < today || date > addDays(today, rules.maxDaysAhead)) return [];
 
@@ -204,7 +236,9 @@ export function candidateTimes(input: {
       for (let at = minutesOf(period.opensAt); at <= last; at += rules.slotIntervalMinutes) {
         const time = clockOf(at);
         const startsAt = instantOf(date, time, timezone);
-        if (startsAt.getTime() >= earliest) times.push({ period: period.name, time, startsAt });
+        if (startsAt.getTime() >= earliest && !runsIntoClosure(closures, startsAt, sittingMinutes)) {
+          times.push({ period: period.name, time, startsAt });
+        }
       }
       return times;
     });
@@ -214,15 +248,26 @@ export function candidateTimes(input: {
  * Every local date a guest may pick, today first, and whether it has any time to
  * offer. Whether tables are free doesn't come into it: a full date stays open and
  * shows no times. Past the lead time a period on the weekday is all it takes, so
- * a year ahead doesn't mean working out a year of slots.
+ * a year ahead doesn't mean working out a year of slots: only a date that a
+ * closure touches is worked out in full, because a closure can leave it nothing
+ * (a partly closed date stays open with fewer times). The sitting is the party's
+ * when it is known, and otherwise the shorter of the two, so no date is greyed
+ * out for a sitting that would have fit.
  */
 export function bookableDates(input: {
   rules: Rules;
   periods: readonly Period[];
+  closures: readonly Closure[];
+  /** The party the page has so far, if any. */
+  party?: number;
   timezone: string;
   now: Date;
 }) {
-  const { rules, periods, timezone, now } = input;
+  const { rules, periods, closures, party, timezone, now } = input;
+  const sittingMinutes =
+    party === undefined
+      ? Math.min(rules.sittingMinutes, rules.largePartySittingMinutes)
+      : sittingFor(rules, party);
   const today = localToday(now, timezone);
   const leadTimeEnds = localToday(
     new Date(now.getTime() + rules.minLeadMinutes * MINUTE + DAY),
@@ -230,10 +275,15 @@ export function bookableDates(input: {
   );
   return Array.from({ length: rules.maxDaysAhead + 1 }, (_, days) => {
     const date = addDays(today, days);
+    const touched = closures.some(
+      (closure) =>
+        closure.startsAt < instantOf(addDays(date, 1), "00:00", timezone) &&
+        instantOf(date, "00:00", timezone) < closure.endsAt,
+    );
     const open =
-      date > leadTimeEnds
+      date > leadTimeEnds && !touched
         ? periods.some((period) => period.weekday === weekdayOf(date))
-        : candidateTimes({ ...input, date }).length > 0;
+        : candidateTimes({ date, rules, periods, closures, sittingMinutes, timezone, now }).length > 0;
     return { date, open };
   });
 }
@@ -266,6 +316,7 @@ export function availableTimes(input: {
   date: LocalDate;
   rules: Rules;
   periods: readonly Period[];
+  closures: readonly Closure[];
   tables: readonly EngineTable[];
   holds: readonly Hold[];
   timezone: string;
@@ -276,7 +327,7 @@ export function availableTimes(input: {
 
   const fitting = tablesFor(tables, party);
   const live = holds.filter(blocks);
-  return candidateTimes(input).flatMap((candidate) => {
+  return candidateTimes({ ...input, sittingMinutes: sittingFor(rules, party) }).flatMap((candidate) => {
     const { holdEndsAt } = holdFor(rules, party, candidate.startsAt);
     const tableIds = fitting
       .filter(

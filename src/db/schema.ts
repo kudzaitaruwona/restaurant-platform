@@ -503,6 +503,44 @@ export const bookings = pgTable(
 );
 
 /**
+ * A time the restaurant is shut: a holiday, a private event (spec 00, 4). The
+ * availability engine drops any sitting that runs into one, and Postgres refuses a
+ * confirmed booking inside one, and a closure over a confirmed booking, whichever
+ * commits first. Those two guards live only in the migration (0019), because
+ * Drizzle can't model triggers: bookings_within_closure and closures_cover_bookings
+ * (see migration 0019 for the lock they meet on).
+ *
+ * A date-only closure is local midnight to the next local midnight, converted with
+ * restaurants.timezone in Postgres (src/lib/booking-closures.ts). Reads start from
+ * an instant (`ends_at` is indexed after the restaurant), so no read walks the
+ * closures of past years.
+ */
+export const closures = pgTable(
+  "closures",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    reason: text(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.endsAt),
+    check("closures_times_ordered", sql`${table.startsAt} < ${table.endsAt}`),
+    check(
+      "closures_reason",
+      sql`${table.reason} is null or (trim(${table.reason}) <> '' and length(${table.reason}) <= 200)`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
  * How many booking submissions one network address has made lately (spec 04,
  * abuse controls, proposed). In Postgres because memory would be per-instance on
  * Vercel, and a limit that each instance counts alone is no limit. Belongs to no

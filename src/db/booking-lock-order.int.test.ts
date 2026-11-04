@@ -5,10 +5,12 @@ import { bookableRestaurant, bookingsOf } from "../../test/integration/bookings"
 import { openOwnerDatabase, openTestDatabase } from "../../test/integration/database";
 
 /**
- * Two rules take advisory locks on one booking insert: the per-phone limit
- * (migration 0017) and the archive guard's shared table lock (migration 0016). An
- * archive takes the table lock exclusively. AFTER triggers fire in name order, so
- * an insert always goes foreign keys, then phone, then table, and the exclusion
+ * Three rules take advisory locks on one booking insert: the per-phone limit
+ * (migration 0017), the archive guard's shared table lock (migration 0016) and the
+ * closure guard's shared restaurant lock (migration 0019). An archive takes the
+ * table lock exclusively, and a closure save the restaurant lock exclusively and
+ * nothing else. AFTER triggers fire in name order, so
+ * an insert always goes foreign keys, then phone, then table, then closure, and the exclusion
  * constraint, checked as the row goes in, comes before all of them. These tests
  * stop real connections at each of those points and say who waits on whom: no
  * party that holds a phone's lock ever waits on something the other side holds
@@ -101,7 +103,7 @@ const hangUp = (...parties: PoolClient[]) => {
 };
 
 describe("the triggers on a booking insert", () => {
-  it("fire phone first, table second, after the foreign keys", async () => {
+  it("fire phone first, table second, closure third, after the foreign keys", async () => {
     const { rows } = await owner.db.execute<{ name: string }>(sql`
       select tgname as name from pg_trigger
       where tgrelid = 'bookings'::regclass and tgtype & 4 <> 0 and tgtype & 2 = 0
@@ -113,6 +115,7 @@ describe("the triggers on a booking insert", () => {
       "RI_ConstraintTrigger",
       "bookings_max_active_per_phone",
       "bookings_table_live_insert",
+      "bookings_within_closure_insert",
     ]);
   });
 });
@@ -154,7 +157,7 @@ describe("a confirm and an archive, one phone and one table", () => {
     const archiver = await anArchive();
     try {
       await insert(first, restaurantId, table, 3);
-      expect(await advisoryLocksOf(first.pid)).toEqual(["has ExclusiveLock", "has ShareLock"]);
+      expect(await advisoryLocksOf(first.pid)).toEqual(["has ExclusiveLock", "has ShareLock", "has ShareLock"]);
 
       const archiving = outcome(archive(archiver, restaurantId, table));
       await waitingOn(archiver.pid, first.pid);
@@ -250,6 +253,106 @@ describe("two confirms, one phone, the same two tables in opposite order", () =>
       expect([await firstResult, await secondResult]).toContain(DEADLOCK);
     } finally {
       hangUp(first, second);
+    }
+  });
+});
+
+/** An owner saving a closure: the same role, with the tenant set and nothing held yet. */
+const saveClosure = (client: Party, restaurantId: string, inDays: number) =>
+  client
+    .query("select set_config('app.restaurant_id', $1, true)", [restaurantId])
+    .then(() =>
+      client.query(
+        `insert into closures (restaurant_id, starts_at, ends_at)
+         values ($1, date_trunc('hour', now()) + $2 * interval '1 day',
+                 date_trunc('hour', now()) + $2 * interval '1 day' + interval '3 hours')`,
+        [restaurantId, inDays],
+      ),
+    );
+
+const COVER = "23514/closures_cover_bookings";
+const INSIDE = "23514/bookings_within_closure";
+
+describe("a confirm and a closure save, the phone and the table in play too", () => {
+  it("a closure save in first: the confirm takes the phone and the table, queues on the closure, and a second confirm queues on the phone; nothing deadlocks", async () => {
+    const { restaurantId, tableIds: [one, two] } = await restaurant();
+    const saver = await anArchive();
+    const first = await aConfirm(restaurantId);
+    const second = await aConfirm(restaurantId);
+    try {
+      await saveClosure(saver, restaurantId, 3);
+      expect(await advisoryLocksOf(saver.pid)).toEqual(["has ExclusiveLock"]);
+
+      const firstResult = outcome(insert(first, restaurantId, one, 3));
+      await waitingOn(first.pid, saver.pid);
+      // The firing order, seen on the wire: phone and table taken, the closure's still wanted.
+      expect(await advisoryLocksOf(first.pid)).toEqual(["has ExclusiveLock", "has ShareLock", "wants ShareLock"]);
+
+      const secondResult = outcome(insert(second, restaurantId, two, 4));
+      await waitingOn(second.pid, first.pid);
+      expect(await advisoryLocksOf(second.pid)).toEqual(["wants ExclusiveLock"]);
+
+      await saver.query("commit");
+
+      expect(await firstResult).toBe(INSIDE);
+      await first.query("rollback");
+      expect(await secondResult).toBe("passed");
+      await second.query("commit");
+      expect((await bookingsOf(owner.db, restaurantId)).map(({ tableId }) => tableId)).toEqual([two]);
+    } finally {
+      hangUp(saver, first, second);
+    }
+  });
+
+  it("a confirm in first: the closure save waits for its closure lock only, a second confirm queues on the phone, and the save is refused", async () => {
+    const { restaurantId, tableIds: [one, two] } = await restaurant();
+    const first = await aConfirm(restaurantId);
+    const second = await aConfirm(restaurantId);
+    const saver = await anArchive();
+    try {
+      await insert(first, restaurantId, one, 3);
+      expect(await advisoryLocksOf(first.pid)).toEqual(["has ExclusiveLock", "has ShareLock", "has ShareLock"]);
+
+      const saving = outcome(saveClosure(saver, restaurantId, 3));
+      await waitingOn(saver.pid, first.pid);
+      expect(await advisoryLocksOf(saver.pid)).toEqual(["wants ExclusiveLock"]);
+      const secondResult = outcome(insert(second, restaurantId, two, 4));
+      await waitingOn(second.pid, first.pid);
+
+      await first.query("commit");
+
+      expect(await saving).toBe(COVER);
+      await saver.query("rollback");
+      expect(await secondResult).toBe("passed");
+      await second.query("commit");
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(2);
+    } finally {
+      hangUp(first, second, saver);
+    }
+  });
+
+  it("an archive of the table the confirm holds, and a closure save, both wait on the confirm and not on each other", async () => {
+    const { restaurantId, tableIds: [table] } = await restaurant();
+    const first = await aConfirm(restaurantId);
+    const archiver = await anArchive();
+    const saver = await anArchive();
+    try {
+      await insert(first, restaurantId, table, 3);
+
+      const archiving = outcome(archive(archiver, restaurantId, table));
+      await waitingOn(archiver.pid, first.pid);
+      const saving = outcome(saveClosure(saver, restaurantId, 5));
+      await waitingOn(saver.pid, first.pid);
+      expect(await advisoryLocksOf(saver.pid)).toEqual(["wants ExclusiveLock"]);
+
+      await first.query("commit");
+
+      expect(await archiving).toBe(GUARD);
+      expect(await saving).toBe("passed");
+      await archiver.query("rollback");
+      await saver.query("commit");
+    } finally {
+      hangUp(first, archiver, saver);
     }
   });
 });

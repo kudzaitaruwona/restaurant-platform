@@ -19,6 +19,7 @@ import {
   bookings,
   bookingSettings,
   categories,
+  closures,
   diningTables,
   menuItems,
   restaurants,
@@ -175,6 +176,47 @@ const plantPeriod = async (restaurantId: string) => {
   return id;
 };
 const periodParams = (periodId: string) => ({ params: Promise.resolve({ periodId }) });
+/**
+ * Closures the delete route is aimed at, and the ones the add route makes: all far
+ * ahead (about 600 days, inside the two years a closure may be saved for, and
+ * before any booking another file makes) and at 03:00, so no closure here is ever
+ * over another file's booking or in the way of one. They are removed at the end.
+ */
+const plantedClosureReason = "Harness planted closure";
+const addedClosureReason = "Harness added closure";
+const farDate = (extraDays: number) =>
+  addDays(localToday(new Date(), "Africa/Harare"), 600 + extraDays);
+const plantedClosures: { id: string; restaurantId: string }[] = [];
+const plantClosure = async (restaurantId: string) => {
+  const id = crypto.randomUUID();
+  const day = farDate(1);
+  await owner.db.insert(closures).values({
+    id,
+    restaurantId,
+    // 03:00 to 03:30 in Harare, which is UTC+2.
+    startsAt: new Date(`${day}T01:00:00Z`),
+    endsAt: new Date(`${day}T01:30:00Z`),
+    reason: plantedClosureReason,
+  });
+  plantedClosures.push({ id, restaurantId });
+  return id;
+};
+const closureParams = (closureId: string) => ({ params: Promise.resolve({ closureId }) });
+const closuresIn = (restaurantId: string, reason: string) =>
+  owner.db
+    .select({ id: closures.id })
+    .from(closures)
+    .where(and(eq(closures.restaurantId, restaurantId), eq(closures.reason, reason)));
+/** Whether the closures planted since `mark` in a restaurant are all still there. */
+const closuresUnremoved = async (restaurantId: string, mark: number) =>
+  (
+    await Promise.all(
+      plantedClosures
+        .slice(mark)
+        .filter((closure) => closure.restaurantId === restaurantId)
+        .map(async ({ id }) => (await owner.db.select().from(closures).where(eq(closures.id, id))).length),
+    )
+  ).every((found) => found === 1);
 /**
  * Bookings the day view actions are aimed at. Each call plants one of its own, in
  * the target's restaurant and on its fixture table: an action can be taken once,
@@ -411,6 +453,21 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  {
+    // Removing can't be undone, so it takes a closure planted in the target's
+    // restaurant for the purpose.
+    name: "POST /api/bookings/closures/[closureId]/delete",
+    ownerOnly: true,
+    call: async (target) => {
+      const closureId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantClosure(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/closures/[closureId]/delete/route")).POST(
+        request(`/api/bookings/closures/${closureId}/delete`, { method: "POST" }),
+        closureParams(closureId),
+      );
+    },
+  },
   bookingAction("seat", "confirmed"),
   bookingAction("finish", "seated"),
   bookingAction("no-show", "confirmed"),
@@ -590,6 +647,24 @@ const sessionRoutes: SessionRoute[] = [
         }),
       );
     },
+  },
+  {
+    // Each call adds a closure of its own, far ahead and at 03:00 (see plantClosure).
+    name: "POST /api/bookings/closures",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/closures/route")).POST(
+        request(init?.path ?? "/api/bookings/closures", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            startDate: farDate(2),
+            startTime: "03:00",
+            endTime: "03:30",
+            reason: addedClosureReason,
+            ...fields,
+          }),
+        }),
+      ),
   },
 ];
 
@@ -904,6 +979,9 @@ afterAll(async () => {
       ),
     );
   await owner.db
+    .delete(closures)
+    .where(inArray(closures.reason, [plantedClosureReason, addedClosureReason]));
+  await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
   // Restaurants created here stay behind: one with an owner can't lose it (S-26).
@@ -1100,6 +1178,8 @@ describe("cross-tenant access", () => {
       const mark = planted.length;
       const periodMark = plantedPeriods.length;
       const bookingMark = plantedBookings.length;
+      const closureMark = plantedClosures.length;
+      const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1113,6 +1193,8 @@ describe("cross-tenant access", () => {
       expect(await periodStanding(fixtures.b.periodId)).toEqual(bPeriod);
       expect(await unremoved(fixtures.b.restaurantId, periodMark)).toBe(true);
       expect(await bookingsAsPlanted(fixtures.b.restaurantId, bookingMark)).toBe(true);
+      expect(await closuresUnremoved(fixtures.b.restaurantId, closureMark)).toBe(true);
+      expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
     },
   );
 
@@ -1247,6 +1329,7 @@ describe("owner-only routes", () => {
       const aPeriod = await periodStanding(fixtures.a.periodId);
       const mark = planted.length;
       const periodMark = plantedPeriods.length;
+      const closureMark = plantedClosures.length;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
@@ -1256,6 +1339,7 @@ describe("owner-only routes", () => {
       expect(await unarchived(fixtures.a.restaurantId, mark)).toBe(true);
       expect(await periodStanding(fixtures.a.periodId)).toEqual(aPeriod);
       expect(await unremoved(fixtures.a.restaurantId, periodMark)).toBe(true);
+      expect(await closuresUnremoved(fixtures.a.restaurantId, closureMark)).toBe(true);
     },
   );
 
@@ -1543,7 +1627,7 @@ describe("the tables route", () => {
 });
 
 describe("the booking routes", () => {
-  const [saveRules, enable, addPeriod] = sessionRoutes.slice(4);
+  const [saveRules, enable, addPeriod, addClosure] = sessionRoutes.slice(4);
   const smuggledB = () => {
     const id = fixtures.b.restaurantId;
     return {
@@ -1615,6 +1699,94 @@ describe("the booking routes", () => {
     expect(await statusOf(() => addPeriod.call())).toBe(403);
 
     expect(await periodsNamed(fixtures.a.restaurantId, addedPeriodPrefix)).toHaveLength(before);
+  });
+
+  it("a new closure joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const reason = `${addedClosureReason} smuggled`;
+    const before = (await closuresIn(fixtures.a.restaurantId, reason)).length;
+
+    const response = await addClosure.call({ ...fields, reason }, init("/api/bookings/closures"));
+
+    expect(response.status).toBeLessThan(400);
+    expect(await closuresIn(fixtures.b.restaurantId, reason)).toEqual([]);
+    expect(await closuresIn(fixtures.a.restaurantId, reason)).toHaveLength(before + 1);
+    await owner.db.delete(closures).where(eq(closures.reason, reason));
+  });
+
+  it("a staff context adds no closure", async () => {
+    session.identity = aStaff.key;
+    const before = (await closuresIn(fixtures.a.restaurantId, addedClosureReason)).length;
+
+    expect(await statusOf(() => addClosure.call())).toBe(403);
+
+    expect(await closuresIn(fixtures.a.restaurantId, addedClosureReason)).toHaveLength(before);
+  });
+
+  it("restaurant B's closure can't be removed with B's id in the request either: a 404", async () => {
+    session.identity = aOwner.key;
+    const id = await plantClosure(fixtures.b.restaurantId);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/closures/[closureId]/delete/route")).POST(
+        request(`/api/bookings/closures/${id}/delete?restaurantId=${fixtures.b.restaurantId}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": fixtures.b.restaurantId },
+          body: form({ restaurantId: fixtures.b.restaurantId }),
+        }),
+        closureParams(id),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await closuresUnremoved(fixtures.b.restaurantId, plantedClosures.length - 1)).toBe(true);
+  });
+
+  it.each([
+    ["a date that isn't one", { startDate: "2026-02-31" }],
+    ["the year 0000", { startDate: "0000-01-01" }],
+    ["the last date there is", { startDate: "9999-12-31" }],
+    ["an end past the limit", { endDate: "9999-12-31" }],
+    ["a NUL in the reason", { reason: "a\0b" }],
+    ["a reason over 200 characters", { reason: "x".repeat(201) }],
+    ["half the times", { endTime: "" }],
+    ["no date", { startDate: "" }],
+  ])("a crafted closure (%s) is a 400, not an error, and saves nothing", async (_label, fields) => {
+    session.identity = aOwner.key;
+    const before = (await owner.db.select().from(closures).where(eq(closures.restaurantId, fixtures.a.restaurantId))).length;
+
+    const response = await addClosure.call(fields);
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/\w/);
+    expect((await owner.db.select().from(closures).where(eq(closures.restaurantId, fixtures.a.restaurantId))).length).toBe(before);
+  });
+
+  it("a closure over a confirmed booking is a 409 that lists it by name, time and party, never a phone", async () => {
+    session.identity = aOwner.key;
+    const day = farDate(40);
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    const phone = "+263779998888";
+    await owner.db.insert(bookings).values({
+      ...aBooking(fixtures.a.restaurantId, tableId, `${day}T17:00:00Z`, `${day}T18:30:00Z`),
+      guestName: `${plantedBookingPrefix}Closure ${crypto.randomUUID()}`,
+      guestPhone: phone,
+      partySize: 3,
+    });
+
+    const response = await addClosure.call({ startDate: day, startTime: "19:00", endTime: "22:00" });
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.bookings).toHaveLength(1);
+    expect(body.bookings[0]).toMatchObject({ partySize: 3, summary: expect.stringContaining("19:00 · Harness booking Closure") });
+    expect(JSON.stringify(body)).not.toContain(phone);
+    const onThatDay = await owner.db
+      .select({ id: closures.id })
+      .from(closures)
+      .where(and(eq(closures.restaurantId, fixtures.a.restaurantId), eq(closures.startsAt, new Date(`${day}T17:00:00Z`))));
+    expect(onThatDay).toEqual([]);
   });
 
   it("an edit with restaurant B's id in the request still can't reach B's period", async () => {

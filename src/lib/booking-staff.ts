@@ -12,6 +12,7 @@ import {
   isLocalDate,
   type LocalDate,
   localToday,
+  sittingFor,
   staffRules,
   tablesFor,
   type EngineTable,
@@ -20,6 +21,7 @@ import {
   dbErrorOf,
   E164,
   firstTableToTake,
+  isInsideClosure,
   MAX_HOLD_MS,
   noNul,
   readDayInputs,
@@ -143,12 +145,22 @@ export async function addStaffBooking(
         return { outcome: "date_unavailable" };
       }
       const staffView = staffRules(rules);
-      const slot = candidateTimes({ date, rules: staffView, periods, timezone, now }).find(
-        (candidate) => candidate.time === time,
-      );
+      const { tables, holds, closures } = await readDayInputs(tx, actor, date, timezone);
+      // Closures are the owner's word that the restaurant is shut, and staff
+      // bookings keep to them *(proposed)*: staffRules lists exactly what staff
+      // override, and a closure isn't there. A time inside one is one the date
+      // doesn't have, so it is "time_unavailable" like any time off the grid.
+      const slot = candidateTimes({
+        date,
+        rules: staffView,
+        periods,
+        closures,
+        sittingMinutes: sittingFor(rules, party),
+        timezone,
+        now,
+      }).find((candidate) => candidate.time === time);
       if (!slot) return { outcome: "time_unavailable" };
 
-      const { tables, holds } = await readDayInputs(tx, actor, date, timezone);
       let offered: readonly EngineTable[] = tables;
       let handPicked: EngineTable | undefined;
       if (request.tableId) {
@@ -162,7 +174,7 @@ export async function addStaffBooking(
         return { outcome: "no_fit" };
       }
 
-      const free = availableTimes({ party, date, rules: staffView, periods, tables: offered, holds, timezone, now })
+      const free = availableTimes({ party, date, rules: staffView, periods, closures, tables: offered, holds, timezone, now })
         .find((candidate) => candidate.time === time);
       const booked = free
         ? await firstTableToTake(tx, free.tableIds, async (attempt, tableId) => {
@@ -200,6 +212,8 @@ export async function addStaffBooking(
     if (cause?.code === "23514" && cause.constraint === "bookings_hold_capped") {
       return { outcome: "hold_too_long" };
     }
+    // A closure saved between the form and the insert: the time is gone.
+    if (isInsideClosure(error)) return { outcome: "time_unavailable" };
     // A Drizzle error's message quotes the statement's parameters: the guest's name and phone.
     throw new Error(`adding a booking failed: ${cause?.code ?? "unknown"}`);
   }
@@ -246,7 +260,15 @@ export function getStaffBookingForm(
       const free = new Set(
         availableTimes({ party, date, rules: staffView, periods, ...day, timezone, now }).map(({ time }) => time),
       );
-      times = candidateTimes({ date, rules: staffView, periods, timezone, now }).map(({ time, period }) => ({
+      times = candidateTimes({
+        date,
+        rules: staffView,
+        periods,
+        closures: day.closures,
+        sittingMinutes: sittingFor(rules, party),
+        timezone,
+        now,
+      }).map(({ time, period }) => ({
         time,
         period,
         open: free.has(time),

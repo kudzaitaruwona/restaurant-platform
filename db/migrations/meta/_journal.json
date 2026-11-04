@@ -134,6 +134,13 @@
       "when": 1793806959844,
       "tag": "0018_booking_manage_token_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793816410511,
+      "tag": "0019_closures",
+      "breakpoints": true
     }
   ]
 }

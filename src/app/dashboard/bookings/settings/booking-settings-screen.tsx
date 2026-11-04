@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { listClosures } from "@/lib/booking-closures";
+import { localToday } from "@/lib/booking-engine";
 import {
   gateMessages,
   getBookingReadiness,
@@ -21,16 +23,18 @@ import { CopyLinkButton } from "./copy-link-button";
  * Booking settings: owner only (S-26). Switch online booking on or off, set the
  * service periods for each day, and the rules. Spec 04 puts this at
  * /admin/bookings/settings; D-10 (proposed) puts staff pages under /dashboard.
- * Closures are a separate ticket.
+ * Closures (holidays, private events) sit below the periods.
  */
 export async function BookingSettingsScreen() {
   const tenant = await getTenantContext();
   requireOwner(tenant);
-  const [settings, periods, readiness] = await Promise.all([
+  const [settings, periods, readiness, closures] = await Promise.all([
     getBookingSettings(tenant),
     listServicePeriods(tenant),
     getBookingReadiness(tenant),
+    listClosures(tenant),
   ]);
+  const today = localToday(new Date(), readiness.timezone);
   const missing = missingForBooking({
     periods: periods.length,
     bookableTables: readiness.bookableTables,
@@ -170,6 +174,64 @@ export async function BookingSettingsScreen() {
             </div>
           );
         })}
+      </section>
+
+      <section className="flex flex-col gap-4" aria-labelledby="closures">
+        <div>
+          <h2 id="closures" className="text-xl font-semibold">
+            Closures
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Holidays and private events, in {readiness.timezone} time. Leave the times empty to
+            close whole days, from the start date to the end date; give both times to close part
+            of a day. Guests can&apos;t book any time whose sitting would run into a closure. A
+            closure can&apos;t be saved over a confirmed booking: you&apos;ll see the bookings
+            first, and move or cancel each one on the bookings page.
+          </p>
+        </div>
+        {closures.length === 0 && <p className="text-sm text-muted-foreground">No upcoming closures.</p>}
+        {closures.map((closure) => (
+          <ActionForm
+            key={closure.id}
+            action={`/api/bookings/closures/${closure.id}/delete`}
+            confirmation={`Remove the closure on ${closure.label}? Guests will be able to book those times again.`}
+            savedMessage="Removed."
+            className="flex flex-wrap items-center gap-3"
+          >
+            <p>
+              <span className="font-medium">{closure.label}</span>
+              {closure.reason && <span className="text-muted-foreground"> · {closure.reason}</span>}
+            </p>
+            <Button type="submit" size="sm" variant="outline">
+              Remove
+            </Button>
+          </ActionForm>
+        ))}
+        <ActionForm
+          action="/api/bookings/closures"
+          resetOnSuccess
+          savedMessage="Closure saved."
+          className="flex flex-wrap items-end gap-3"
+        >
+          <Field label="From date">
+            <input name="startDate" type="date" min={today} required className={inputClassName} />
+          </Field>
+          <Field label="To date (optional)">
+            <input name="endDate" type="date" min={today} className={inputClassName} />
+          </Field>
+          <Field label="From time (optional)">
+            <input name="startTime" type="time" className={inputClassName} />
+          </Field>
+          <Field label="To time (optional)">
+            <input name="endTime" type="time" className={inputClassName} />
+          </Field>
+          <Field label="Reason (optional)">
+            <input name="reason" maxLength={200} placeholder="Independence Day" className={inputClassName} />
+          </Field>
+          <Button type="submit" size="sm" variant="outline">
+            Add closure
+          </Button>
+        </ActionForm>
       </section>
 
       <section className="flex flex-col gap-3" aria-labelledby="booking-rules">

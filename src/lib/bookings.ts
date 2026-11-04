@@ -1,9 +1,10 @@
 import "server-only";
-import { and, count, eq, gt, isNull, lt, max, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, isNull, lt, max, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   bookings,
   bookingSettings,
+  closures,
   diningTables,
   restaurants,
   servicePeriods,
@@ -13,6 +14,7 @@ import {
   availableTimes,
   bookableDates,
   type AvailableTime,
+  type Closure,
   dateLabel,
   holdFor,
   instantOf,
@@ -120,8 +122,33 @@ const contactOf = (phone: string | null) => ({
 });
 
 /**
- * The tables and the holds that can reach into `date`: what the engine needs
- * besides the rules. Staff booking reads them through here too.
+ * The closures that touch [from, to), soonest end first. The lower bound is the
+ * read's own: a closure that ended before `from` is never read, so past years'
+ * closures cost nothing (the index is on restaurant_id and ends_at, migration
+ * 0019). Closures are never changed behind a read, and what Postgres refuses at
+ * the insert is bookings_within_closure, whatever this saw.
+ */
+export async function readClosures(
+  tx: TenantTransaction,
+  { restaurantId }: Tenant,
+  window: { from: Date; to: Date },
+): Promise<Closure[]> {
+  return tx
+    .select({ startsAt: closures.startsAt, endsAt: closures.endsAt })
+    .from(closures)
+    .where(
+      and(
+        eq(closures.restaurantId, restaurantId),
+        gt(closures.endsAt, window.from),
+        lt(closures.startsAt, window.to),
+      ),
+    )
+    .orderBy(asc(closures.endsAt));
+}
+
+/**
+ * The tables, the holds and the closures that can reach into `date`: what the
+ * engine needs besides the rules. Staff booking reads them through here too.
  */
 export async function readDayInputs(
   tx: TenantTransaction,
@@ -157,7 +184,13 @@ export async function readDayInputs(
         gt(bookings.holdEndsAt, dayStarts),
       ),
     );
-  return { tables, holds };
+  // A sitting that starts on the date can run past midnight, into a closure that
+  // starts the next day: a sitting is at most 720 minutes, so MAX_HOLD_MS is plenty.
+  const dayClosures = await readClosures(tx, { restaurantId }, {
+    from: dayStarts,
+    to: new Date(dayEnds.getTime() + MAX_HOLD_MS),
+  });
+  return { tables, holds, closures: dayClosures };
 }
 
 /** The one path to what can be seated: the guest's list and confirm both come here. */
@@ -167,8 +200,18 @@ async function timesOn(
   { rules, periods, restaurant: { timezone } }: ReadRules,
   { party, date, now }: { party: number; date: LocalDate; now: Date },
 ) {
-  const { tables, holds } = await readDayInputs(tx, tenant, date, timezone);
-  return availableTimes({ party, date, rules, periods, tables, holds, timezone, now });
+  const { tables, holds, closures: dayClosures } = await readDayInputs(tx, tenant, date, timezone);
+  return availableTimes({
+    party,
+    date,
+    rules,
+    periods,
+    closures: dayClosures,
+    tables,
+    holds,
+    timezone,
+    now,
+  });
 }
 
 // --- the guest's page -------------------------------------------------------
@@ -186,16 +229,32 @@ export function getBookingPage(
     const read = await readRules(tx, tenant);
     const { restaurant, rules, periods } = read;
     const { timezone } = restaurant;
-    const dates = bookableDates({ rules, periods, timezone, now }).map((day) => ({
-      ...day,
-      label: dateLabel(day.date),
-    }));
 
     const party = /^[0-9]{1,3}$/.test(choice.party ?? "") ? Number(choice.party) : undefined;
     const threshold = await contactThreshold(tx, tenant, rules);
     const requestedParty = party && party >= 1 ? party : undefined;
     const tooLarge = requestedParty !== undefined && requestedParty >= threshold;
     const chosenParty = requestedParty && !tooLarge ? requestedParty : undefined;
+
+    // From now, not from the start of time: a closure already over can't take a
+    // date away. A sitting on the last date can run on into a closure after it.
+    const lastDate = addDays(localToday(now, timezone), rules.maxDaysAhead);
+    const windowClosures = await readClosures(tx, tenant, {
+      from: now,
+      to: new Date(instantOf(addDays(lastDate, 1), "00:00", timezone).getTime() + MAX_HOLD_MS),
+    });
+    const dates = bookableDates({
+      rules,
+      periods,
+      closures: windowClosures,
+      party: chosenParty,
+      timezone,
+      now,
+    }).map((day) => ({
+      ...day,
+      label: dateLabel(day.date),
+    }));
+
     const chosenDate = dates.find((day) => day.open && day.date === choice.date);
     const times =
       rules.enabled && chosenParty && chosenDate
@@ -382,6 +441,12 @@ export type ConfirmOutcome =
     }
   | { outcome: "closed" };
 
+/** The trigger in migration 0019 saying a closure now covers the time. */
+export const isInsideClosure = (error: unknown) => {
+  const cause = dbErrorOf(error);
+  return cause?.code === "23514" && cause.constraint === "bookings_within_closure";
+};
+
 /** The trigger in migration 0017 saying this phone is at its limit. */
 const isPhoneLimit = (error: unknown) => {
   const cause = dbErrorOf(error);
@@ -480,12 +545,17 @@ export async function confirmBooking(
               .returning({ id: bookings.id }),
           ));
       } catch (error) {
-        if (!isPhoneLimit(error)) throw error;
-        // Lost the race for this phone's last place. The attempt's savepoint is
-        // rolled back, so the transaction is whole, and a new statement now sees
-        // whoever won.
-        const heldNow = await upcomingFor(tx, tenant, guest.phone, now);
-        return { outcome: "phone_limit", held: Math.max(heldNow, rules.maxActiveBookingsPerPhone) };
+        // A closure saved between the list and the insert (bookings_within_closure,
+        // migration 0019) has taken the time away, for every table alike: the time is
+        // gone, which is the race-lost answer. The attempt's savepoint is rolled back.
+        if (isInsideClosure(error)) booked = undefined;
+        else if (isPhoneLimit(error)) {
+          // Lost the race for this phone's last place. The attempt's savepoint is
+          // rolled back, so the transaction is whole, and a new statement now sees
+          // whoever won.
+          const heldNow = await upcomingFor(tx, tenant, guest.phone, now);
+          return { outcome: "phone_limit", held: Math.max(heldNow, rules.maxActiveBookingsPerPhone) };
+        } else throw error;
       }
 
       if (booked) {

@@ -4,6 +4,7 @@ import {
   availableTimes,
   bookableDates,
   candidateTimes,
+  type Closure,
   dateLabel,
   type EngineTable,
   freeTables,
@@ -62,6 +63,7 @@ const input = {
   date,
   rules,
   periods,
+  closures: [] as Closure[],
   tables: [table("t1", 2)],
   holds: [] as Hold[],
   timezone: HARARE,
@@ -142,7 +144,7 @@ describe.each(["UTC", HARARE, "Pacific/Auckland", "America/Los_Angeles"])(
       const onlyFridays = [{ name: "Friday", weekday: 5, opensAt: "18:00", lastBookingAt: "18:00" }];
       const today = localToday(justAfterMidnight, HARARE);
       expect(
-        candidateTimes({ date: today, rules, periods: onlyFridays, timezone: HARARE, now: justAfterMidnight })
+        candidateTimes({ date: today, rules, periods: onlyFridays, closures: [], sittingMinutes: 90, timezone: HARARE, now: justAfterMidnight })
           .map((slot) => slot.time),
       ).toEqual(["18:00"]);
     });
@@ -227,7 +229,7 @@ describe("candidate times", () => {
 
 describe("bookable dates", () => {
   const dates = (overrides: Partial<Parameters<typeof bookableDates>[0]> = {}) =>
-    bookableDates({ rules, periods, timezone: HARARE, now, ...overrides });
+    bookableDates({ rules, periods, closures: [], timezone: HARARE, now, ...overrides });
 
   it("runs from local today to max_days_ahead, inclusive", () => {
     const all = dates();
@@ -374,6 +376,163 @@ describe("what's available", () => {
 
   it.each([0, -1, 9])("has nothing for a party of %i", (party) => {
     expect(shown({ party, tables: [table("t1", 20)] })).toEqual([]);
+  });
+});
+
+describe("closures", () => {
+  // Dinner from 17:00 to 21:00 every 30 minutes, a closure 19:00 to 22:00 on 6 Nov in Harare.
+  const dinner = everyDay("Dinner", "17:00", "21:00");
+  const sevenToTen: Closure = {
+    startsAt: instantOf(date, "19:00", HARARE),
+    endsAt: instantOf(date, "22:00", HARARE),
+  };
+  const withClosure = (overrides: Partial<typeof input> = {}) =>
+    shown({ periods: dinner, closures: [sevenToTen], ...overrides });
+
+  it("removes the closed times and the sittings that would run into them", () => {
+    // 17:30 + 90 minutes ends at 19:00 exactly: touching isn't running into it. 18:00 ends 19:30.
+    expect(withClosure()).toEqual(["17:00", "17:30"]);
+  });
+
+  it("is judged on the party's own sitting: a large party loses the time a couple keeps", () => {
+    const tables = [table("t1", 8)];
+    expect(withClosure({ party: 2, tables })).toContain("17:30");
+    // 17:30 + 120 minutes ends at 19:30.
+    expect(withClosure({ party: 5, tables })).toEqual(["17:00"]);
+  });
+
+  it("doesn't count the reset buffer: a hold may run into the closure, the sitting may not", () => {
+    // 17:30's hold ends at 19:15, inside the closure, and the time is still offered.
+    expect(withClosure()).toContain("17:30");
+  });
+
+  it("lets a time start exactly as the closure ends", () => {
+    const earlier: Closure = { startsAt: instantOf(date, "17:00", HARARE), endsAt: instantOf(date, "19:00", HARARE) };
+    expect(shown({ periods: dinner, closures: [earlier] })).toEqual(["19:00", "19:30", "20:00", "20:30", "21:00"]);
+  });
+
+  it("only touches the date it covers", () => {
+    expect(shown({ periods: dinner, closures: [sevenToTen], date: "2026-11-07" })).toHaveLength(9);
+    expect(shown({ periods: dinner, closures: [sevenToTen], date: "2026-11-05", now: new Date("2026-11-05T03:00:00Z") })).toHaveLength(9);
+  });
+
+  it("has nothing at all when the closure takes the whole day", () => {
+    const wholeDay: Closure = { startsAt: instantOf(date, "00:00", HARARE), endsAt: instantOf("2026-11-07", "00:00", HARARE) };
+    expect(shown({ periods: dinner, closures: [wholeDay] })).toEqual([]);
+  });
+
+  it("applies several closures, and one that runs over more than a day", () => {
+    const lunchtime: Closure = { startsAt: instantOf(date, "11:00", HARARE), endsAt: instantOf(date, "17:15", HARARE) };
+    const longer: Closure = { startsAt: instantOf("2026-11-06", "20:30", HARARE), endsAt: instantOf("2026-11-08", "09:00", HARARE) };
+    expect(shown({ periods: dinner, closures: [lunchtime, longer] })).toEqual(["17:30", "18:00", "18:30", "19:00"]);
+    expect(shown({ periods: dinner, closures: [longer], date: "2026-11-07" })).toEqual([]);
+    expect(shown({ periods: dinner, closures: [longer], date: "2026-11-08" })).toHaveLength(9);
+  });
+
+  describe("on the dates a guest may pick", () => {
+    const datesWith = (closures: Closure[], overrides: Partial<Parameters<typeof bookableDates>[0]> = {}) =>
+      bookableDates({ rules, periods: dinner, closures, timezone: HARARE, now, ...overrides });
+    const open = (days: ReturnType<typeof bookableDates>, day: string) => days.find((d) => d.date === day)?.open;
+
+    it("disables a date every time of which is closed, far past the lead time too", () => {
+      const wholeDay: Closure = { startsAt: instantOf("2026-11-20", "00:00", HARARE), endsAt: instantOf("2026-11-21", "00:00", HARARE) };
+      const days = datesWith([wholeDay]);
+
+      expect(open(days, "2026-11-20")).toBe(false);
+      expect(open(days, "2026-11-19")).toBe(true);
+      expect(open(days, "2026-11-21")).toBe(true);
+    });
+
+    it("keeps a partly closed date open: it shows fewer times, not none", () => {
+      const eveningClosed: Closure = { startsAt: instantOf("2026-11-20", "19:00", HARARE), endsAt: instantOf("2026-11-20", "22:00", HARARE) };
+
+      expect(open(datesWith([eveningClosed]), "2026-11-20")).toBe(true);
+    });
+
+    it("disables a date when the closure leaves only times whose sittings run into it", () => {
+      // 17:00's sitting ends at 18:30, so a closure from 18:00 takes it, and 17:00 is the first slot.
+      const lateOnly = everyDay("Dinner", "18:00", "21:00");
+      const days = datesWith(
+        [{ startsAt: instantOf("2026-11-20", "17:00", HARARE), endsAt: instantOf("2026-11-20", "23:00", HARARE) }],
+        { periods: lateOnly },
+      );
+
+      expect(open(days, "2026-11-20")).toBe(false);
+    });
+
+    it("uses the party's sitting when it is known: a large party's date can close while a couple's stays open", () => {
+      // Only 17:00 would be left for a couple; a party of five (120 minutes) loses it too.
+      const closure: Closure = { startsAt: instantOf("2026-11-20", "18:45", HARARE), endsAt: instantOf("2026-11-20", "23:00", HARARE) };
+      const onlyEarly = everyDay("Early", "17:00", "17:00");
+
+      expect(open(datesWith([closure], { periods: onlyEarly, party: 2 }), "2026-11-20")).toBe(true);
+      expect(open(datesWith([closure], { periods: onlyEarly, party: 5 }), "2026-11-20")).toBe(false);
+      // With no party yet, the shorter sitting decides, so no date is greyed for a sitting that fits.
+      expect(open(datesWith([closure], { periods: onlyEarly }), "2026-11-20")).toBe(true);
+    });
+
+    it("closes today when a closure takes the rest of it", () => {
+      const rest: Closure = { startsAt: instantOf("2026-11-05", "00:00", HARARE), endsAt: instantOf("2026-11-06", "00:00", HARARE) };
+      const [today, tomorrow] = datesWith([rest], { now: new Date("2026-11-05T06:00:00Z") });
+
+      expect(today.open).toBe(false);
+      expect(tomorrow.open).toBe(true);
+    });
+  });
+
+  // A date-only closure is local midnight to the next local midnight, so on a day of
+  // 23 or 25 hours it is that long: the engine finds the day's own edges, never +24h.
+  describe.each([
+    ["a 23-hour day in London (clocks forward)", "Europe/London", "2026-03-29"],
+    ["a 25-hour day in London (clocks back)", "Europe/London", "2026-10-25"],
+    ["a 23-hour day in New York", "America/New_York", "2026-03-08"],
+    ["a 25-hour day in New York", "America/New_York", "2026-11-01"],
+  ])("%s", (_label, timezone, closedDate) => {
+    const before = addDays(closedDate, -1);
+    const after = addDays(closedDate, 1);
+    const longDay = everyDay("Dinner", "00:00", "23:30");
+    const wholeDate: Closure = {
+      startsAt: instantOf(closedDate, "00:00", timezone),
+      endsAt: instantOf(after, "00:00", timezone),
+    };
+    const early = new Date(Date.UTC(2026, 0, 10));
+    const onDate = (day: string) =>
+      availableTimes({
+        ...input,
+        party: 2,
+        date: day,
+        periods: longDay,
+        closures: [wholeDate],
+        rules: { ...rules, maxDaysAhead: 365, minLeadMinutes: 0 },
+        timezone,
+        now: early,
+      });
+
+    it("closes that date's every time and neither neighbour's", () => {
+      expect(onDate(closedDate)).toEqual([]);
+      // The day before keeps every sitting that ends by the closure's start (22:30 + 90 minutes
+      // is midnight) and loses the ones that run into it; the day after opens with 00:00.
+      const dayBefore = onDate(before).map((slot) => slot.time);
+      expect(dayBefore).toContain("22:30");
+      expect(dayBefore).not.toContain("23:00");
+      expect(onDate(after).map((slot) => slot.time)).toContain("00:00");
+    });
+
+    it("is the length of the day it covers", () => {
+      const hours = (wholeDate.endsAt.getTime() - wholeDate.startsAt.getTime()) / 3_600_000;
+      expect(hours).toBe(closedDate.endsWith("03-29") || closedDate.endsWith("03-08") ? 23 : 25);
+    });
+
+    it("disables the date on the guest's calendar and no other", () => {
+      const days = bookableDates({
+        rules: { ...rules, maxDaysAhead: 365, minLeadMinutes: 0 },
+        periods: longDay,
+        closures: [wholeDate],
+        timezone,
+        now: early,
+      });
+      expect(days.filter((day) => !day.open).map((day) => day.date)).toEqual([closedDate]);
+    });
   });
 });
 

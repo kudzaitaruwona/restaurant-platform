@@ -3,10 +3,13 @@ import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as savePeriod } from "@/app/api/bookings/periods/[periodId]/route";
+import { POST as removeClosure } from "@/app/api/bookings/closures/[closureId]/delete/route";
+import { POST as addClosure } from "@/app/api/bookings/closures/route";
 import { POST as addPeriod } from "@/app/api/bookings/periods/route";
 import { POST as saveRules } from "@/app/api/bookings/settings/route";
 import { POST as setEnabled } from "@/app/api/bookings/settings/enabled/route";
-import { bookingSettings, diningTables, restaurants, servicePeriods, staff } from "@/db/schema";
+import { addDays, localToday } from "@/lib/booking-engine";
+import { bookingSettings, closures, diningTables, restaurants, servicePeriods, staff } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
@@ -58,6 +61,7 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  await owner.db.delete(closures).where(inArray(closures.restaurantId, created));
   await owner.db.delete(servicePeriods).where(inArray(servicePeriods.restaurantId, created));
   await owner.db.delete(diningTables).where(inArray(diningTables.restaurantId, created));
   // The restaurants stay behind: one with an owner can't lose it (S-26).
@@ -383,5 +387,74 @@ describe("the booking routes", () => {
         await statusOf(() => savePeriod(post(`/api/bookings/periods/${id}`, lunch), periodParams(id))),
       ).toBe(404);
     }
+  });
+});
+
+describe("closures on the settings screen", () => {
+  const day = (inDays: number) => addDays(localToday(new Date(), "Africa/Harare"), inDays);
+  const closuresOf = () =>
+    owner.db.select().from(closures).where(eq(closures.restaurantId, tenant.restaurantId));
+  const removeParams = (closureId: string) => ({ params: Promise.resolve({ closureId }) });
+
+  it("starts with none, and an add form that says what the dates and times mean", async () => {
+    const html = await screen();
+
+    expect(html).toContain("No upcoming closures.");
+    expect(html).toContain('action="/api/bookings/closures"');
+    expect(html).toContain('name="startDate"');
+    expect(html).toContain('name="endDate"');
+    expect(html).toContain('name="startTime"');
+    expect(html).toContain('name="endTime"');
+    expect(html).toContain('name="reason"');
+    expect(html).toContain("Africa/Harare");
+    // A plain post still works without script, like every other form here.
+    expect(html).toMatch(/<form action="\/api\/bookings\/closures" method="post"/);
+  });
+
+  it("adds a whole-day closure and a part-day one, and lists them with their reasons on the restaurant's clock", async () => {
+    const whole = await addClosure(post("/api/bookings/closures", { startDate: day(10), reason: "Independence Day" }));
+    const part = await addClosure(
+      post("/api/bookings/closures", { startDate: day(5), startTime: "19:00", endTime: "22:00" }, { [FORM_FETCH_HEADER]: "1" }),
+    );
+    expect(whole.status).toBe(303);
+    expect(whole.headers.get("location")).toBe("/dashboard/bookings/settings");
+    expect(part.status).toBe(204);
+
+    const html = await screen();
+
+    expect(html).toContain("19:00 to 22:00");
+    expect(html).toContain("Independence Day");
+    // Soonest first.
+    expect(html.indexOf("19:00 to 22:00")).toBeLessThan(html.indexOf("Independence Day"));
+    expect(html.match(/closures\/[0-9a-f-]{36}\/delete/g)).toHaveLength(2);
+  });
+
+  it("asks before removing one, and removing it takes it off the list", async () => {
+    await addClosure(post("/api/bookings/closures", { startDate: day(10), reason: "Holiday" }));
+    const [closure] = await closuresOf();
+
+    const html = await screen();
+    expect(html).toMatch(new RegExp(`data-confirmation="Remove the closure on [^"]*Guests will be able to book those times again\\."><form[^>]*action="/api/bookings/closures/${closure.id}/delete"`));
+
+    expect((await removeClosure(post(`/api/bookings/closures/${closure.id}/delete`), removeParams(closure.id))).status).toBe(303);
+    expect(await closuresOf()).toEqual([]);
+    expect(await screen()).toContain("No upcoming closures.");
+  });
+
+  it("refuses staff before reading the body, and a malformed or unknown id is a 404", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => addClosure(post("/api/bookings/closures", { startDate: day(3) })))).toBe(403);
+    expect(await statusOf(() => removeClosure(post("/x"), removeParams(crypto.randomUUID())))).toBe(403);
+    session.tenant = tenant;
+
+    expect(await statusOf(() => removeClosure(post("/x"), removeParams("not-a-uuid")))).toBe(404);
+    expect(await statusOf(() => removeClosure(post("/x"), removeParams(crypto.randomUUID())))).toBe(404);
+    expect(await closuresOf()).toEqual([]);
+  });
+
+  it("refuses a closure that can't be, with a 400, and saves nothing", async () => {
+    expect((await addClosure(post("/api/bookings/closures", { startDate: "" }))).status).toBe(400);
+    expect((await addClosure(post("/api/bookings/closures", { startDate: "9999-12-31" }))).status).toBe(400);
+    expect(await closuresOf()).toEqual([]);
   });
 });

@@ -185,6 +185,11 @@ closures                                    -- holidays, private events
   id, restaurant_id, starts_at, ends_at, reason text null
   -- a date-only closure is stored as local midnight → next local midnight,
   -- converted with restaurants.timezone
+  -- (proposed, #38) UNIQUE (restaurant_id, id); CHECK (starts_at < ends_at); CHECK a reason is
+  -- non-blank and at most 200 characters; an index on (restaurant_id, ends_at), so a read that
+  -- starts from an instant never walks past closures. The two guards are triggers in migration
+  -- 0019: closures_cover_bookings refuses a closure over a confirmed booking's sitting, and
+  -- bookings_within_closure refuses a confirmed booking inside one (spec 04 › Settings).
 
 bookings
   id, restaurant_id
@@ -295,6 +300,7 @@ order_items
 
 ### Enforced in the database
 - **Table lock:** a partial unique index allows only one open session per table.
+- *(Proposed, #38)* **Booking closures:** a closure can't be saved over a confirmed booking whose sitting runs into it, and a confirmed booking can't be made inside a closure, whichever commits first (migration 0019; one advisory lock per restaurant, as the archive guard's is per table).
 - **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path.
 - **Force-close:** one transaction voids the remaining items with a reason, then closes the session.
 - **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.
