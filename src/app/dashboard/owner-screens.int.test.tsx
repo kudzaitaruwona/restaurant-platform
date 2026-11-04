@@ -1,14 +1,17 @@
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import sharp from "sharp";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as addCategory } from "@/app/api/menu/categories/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
+import { POST as removePhoto } from "@/app/api/menu/items/[itemId]/photo/remove/route";
+import { POST as setPhoto } from "@/app/api/menu/items/[itemId]/photo/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { categories, restaurants, staff } from "@/db/schema";
+import { categories, menuItems, restaurants, staff } from "@/db/schema";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -36,6 +39,13 @@ vi.mock("@/lib/tenant", async (original) => ({
 vi.mock("next/navigation", async (original) => ({
   ...(await original<typeof import("next/navigation")>()),
   useRouter: () => ({ refresh() {} }),
+}));
+
+// Photos go through the storage interface, faked so nothing reaches R2.
+vi.mock("@/lib/storage", () => ({
+  uploadImage: async (key: string) => ({ key, url: `https://cdn.example.test/${key}` }),
+  deleteImage: async () => {},
+  getUrl: (key: string) => `https://cdn.example.test/${key}`,
 }));
 
 // Only a real request has a cache to revalidate.
@@ -115,6 +125,33 @@ const item = (categoryId: string) => ({
   categoryId,
 });
 
+/** An item made through the route, and its id. */
+const newItem = async () => {
+  await addItem(post("/api/menu/items", item(await newCategory())));
+  const [{ id }] = await owner.db
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(eq(menuItems.restaurantId, tenant.restaurantId));
+  return id;
+};
+
+const itemParams = (itemId: string) => ({ params: Promise.resolve({ itemId }) });
+
+const photoPost = async (path: string, headers: Record<string, string> = {}) => {
+  const jpeg = await sharp({
+    create: { width: 64, height: 48, channels: 3, background: "#c33" },
+  })
+    .jpeg()
+    .toBuffer();
+  const body = new FormData();
+  body.set("photo", new File([new Uint8Array(jpeg)], "dish.jpg", { type: "image/jpeg" }));
+  return new NextRequest(new URL(path, "http://localhost:3000"), {
+    method: "POST",
+    body,
+    headers,
+  });
+};
+
 const settings = {
   name: "Mama's Kitchen",
   contactPhone: "",
@@ -185,6 +222,25 @@ describe("how a saved form is answered", () => {
         return addItem(post("/api/menu/items", item(categoryId), headers));
       },
     ],
+    [
+      "POST /api/menu/items/[itemId]/photo",
+      "/dashboard/menu",
+      async (headers) => {
+        const id = await newItem();
+        return setPhoto(await photoPost(`/api/menu/items/${id}/photo`, headers), itemParams(id));
+      },
+    ],
+    [
+      "POST /api/menu/items/[itemId]/photo/remove",
+      "/dashboard/menu",
+      async (headers) => {
+        const id = await newItem();
+        return removePhoto(
+          post(`/api/menu/items/${id}/photo/remove`, {}, headers),
+          itemParams(id),
+        );
+      },
+    ],
   ];
 
   it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
@@ -239,6 +295,35 @@ describe("/dashboard/menu", () => {
     const html = await screen(MenuScreen);
     expect(html).toContain("Add a category first");
     expect(html).not.toContain('action="/api/menu/items"');
+  });
+
+  it("offers a photo picker for an item with none, and no remove button", async () => {
+    const id = await newItem();
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain('aria-label="Add photo for Beef stew"');
+    expect(html).toContain('accept="image/*"');
+    expect(html).not.toContain("Remove photo");
+    expect(html).not.toContain("<img");
+    expect(id).toBeTruthy();
+  });
+
+  it("shows an item's 320px thumbnail, from the storage interface, once it has a photo", async () => {
+    const id = await newItem();
+    await setPhoto(await photoPost(`/api/menu/items/${id}/photo`), itemParams(id));
+    const [{ photoKey }] = await owner.db
+      .select({ photoKey: menuItems.photoKey })
+      .from(menuItems)
+      .where(eq(menuItems.id, id));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain(`src="https://cdn.example.test/${photoKey}-320.webp"`);
+    expect(html).toContain('width="64"');
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('aria-label="Change photo for Beef stew"');
+    expect(html).toContain("Remove photo");
   });
 
   it("refuses staff with forbidden(), before any data renders", async () => {

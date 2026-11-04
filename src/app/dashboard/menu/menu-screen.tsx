@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { formatUsd, getMenu } from "@/lib/menu";
+import { photoUrls } from "@/lib/photo-urls";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
 import { Field, inputClassName } from "../field";
+import { PhotoForm } from "./photo-form";
 
 /**
  * The menu editor: owner only (S-26). The sold-out toggle, for staff too, will
@@ -45,6 +47,11 @@ export async function MenuScreen() {
                       {item.description}
                     </span>
                   )}
+                  <PhotoForm
+                    itemId={item.id}
+                    itemName={item.name}
+                    thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
+                  />
                 </li>
               ))}
             </ul>

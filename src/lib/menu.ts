@@ -101,6 +101,7 @@ export function getMenu(ctx: Tenant) {
         description: menuItems.description,
         priceUsd: menuItems.priceUsd,
         priceZig: menuItems.priceZig,
+        photoKey: menuItems.photoKey,
       })
       .from(menuItems)
       .where(eq(menuItems.restaurantId, restaurantId))

@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { and, eq, inArray, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import sharp from "sharp";
 import {
   afterAll,
   afterEach,
@@ -64,6 +65,20 @@ vi.mock("next/server", async (importOriginal) => ({
   after: (task: Promise<unknown>) => task,
 }));
 
+// Photos are stored through the app's storage interface, which is faked here so
+// nothing reaches R2. `calls` counts what a route asked it to store or delete.
+const storage = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("@/lib/storage", () => ({
+  uploadImage: async (key: string) => {
+    storage.calls++;
+    return { key, url: `https://cdn.example.test/${key}` };
+  },
+  deleteImage: async () => {
+    storage.calls++;
+  },
+  getUrl: (key: string) => `https://cdn.example.test/${key}`,
+}));
+
 // Only a real request has a cache to revalidate.
 vi.mock("next/cache", () => ({
   cacheLife: () => {},
@@ -72,7 +87,7 @@ vi.mock("next/cache", () => ({
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string; categoryId: string };
+type Target = { staffId: string; categoryId: string; itemId: string };
 
 type TenantRoute = {
   name: string;
@@ -81,6 +96,8 @@ type TenantRoute = {
 };
 
 const harnessItem = "Harness item";
+/** Every fixture item starts with this photo, so removing it is a real change. */
+const fixturePhoto = "restaurants/harness/fixture-photo";
 const harnessCategory = "Harness category";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
@@ -92,6 +109,17 @@ const form = (fields: Record<string, string>) => {
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
   return body;
 };
+const photoForm = async () => {
+  const jpeg = await sharp({
+    create: { width: 64, height: 48, channels: 3, background: "#c33" },
+  })
+    .jpeg()
+    .toBuffer();
+  const body = new FormData();
+  body.set("photo", new File([new Uint8Array(jpeg)], "dish.jpg", { type: "image/jpeg" }));
+  return body;
+};
+const itemParams = ({ itemId }: Target) => ({ params: Promise.resolve({ itemId }) });
 const request = (path: string, init?: ConstructorParameters<typeof NextRequest>[1]) =>
   new NextRequest(new URL(path, "http://localhost:3000"), init);
 
@@ -153,6 +181,27 @@ const routes: TenantRoute[] = [
             categoryId: target.categoryId,
           }),
         }),
+      ),
+  },
+  {
+    name: "POST /api/menu/items/[itemId]/photo",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/photo/route")).POST(
+        request(`/api/menu/items/${target.itemId}/photo`, {
+          method: "POST",
+          body: await photoForm(),
+        }),
+        itemParams(target),
+      ),
+  },
+  {
+    name: "POST /api/menu/items/[itemId]/photo/remove",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/photo/remove/route")).POST(
+        request(`/api/menu/items/${target.itemId}/photo/remove`, { method: "POST" }),
+        itemParams(target),
       ),
   },
 ];
@@ -314,11 +363,13 @@ const fixtures = {
   a: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    itemId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    itemId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -351,9 +402,23 @@ beforeAll(async () => {
       name: fixtureName,
     })),
   );
+  await owner.db.insert(menuItems).values(
+    Object.values(fixtures).map(({ itemId, categoryId, restaurantId }) => ({
+      id: itemId,
+      restaurantId,
+      categoryId,
+      name: fixtureName,
+      priceUsd: "1.00",
+      photoKey: fixturePhoto,
+    })),
+  );
 });
 
 afterEach(async () => {
+  await owner.db
+    .update(menuItems)
+    .set({ photoKey: fixturePhoto })
+    .where(inArray(menuItems.id, [fixtures.a.itemId, fixtures.b.itemId]));
   await owner.db
     .update(staff)
     .set({ displayName: fixtureName, role: "staff", active: true })
@@ -364,7 +429,9 @@ afterAll(async () => {
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
-  await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
+  await owner.db
+    .delete(menuItems)
+    .where(inArray(menuItems.name, [harnessItem, fixtureName]));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -457,6 +524,9 @@ const harnessCategories = (restaurantId: string) =>
       ),
     );
 
+const photoOf = async (itemId: string) =>
+  (await owner.db.select().from(menuItems).where(eq(menuItems.id, itemId)))[0].photoKey;
+
 const addedStaff = () =>
   owner.db
     .select({ restaurantId: staff.restaurantId, displayName: staff.displayName })
@@ -474,10 +544,13 @@ describe("cross-tenant access", () => {
     async (_name, key, route) => {
       session.identity = key;
       const itemsInA = (await harnessItems(fixtures.a.restaurantId)).length;
+      const stored = storage.calls;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
       expect([403, 404]).toContain(status);
+      expect(storage.calls).toBe(stored);
+      expect(await photoOf(fixtures.b.itemId)).toBe(fixturePhoto);
       expect(await displayName(fixtures.b.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.b.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.b.restaurantId)).toEqual([]);
@@ -559,8 +632,11 @@ describe("owner-only routes", () => {
     async (_name, route) => {
       session.identity = aStaff.key;
       const items = (await harnessItems(fixtures.a.restaurantId)).length;
+      const stored = storage.calls;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
+      expect(storage.calls).toBe(stored);
+      expect(await photoOf(fixtures.a.itemId)).toBe(fixturePhoto);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.a.staffId)).toEqual(untouched);
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(items);
@@ -715,6 +791,75 @@ describe("the menu routes", () => {
   });
 });
 
+describe("the photo route", () => {
+  const upload = async (body: FormData) => {
+    session.identity = aOwner.key;
+    const { POST } = await import("@/app/api/menu/items/[itemId]/photo/route");
+    const target = fixtures.a;
+    return POST(
+      request(`/api/menu/items/${target.itemId}/photo`, { method: "POST", body }),
+      itemParams(target),
+    );
+  };
+  const file = (bytes: Uint8Array | string) =>
+    new File([bytes as BlobPart], "x.jpg", { type: "image/jpeg" });
+
+  it.each([
+    ["no file", async () => form({}), "Choose a photo."],
+    [
+      "a file that isn't a photo",
+      async () => {
+        const body = new FormData();
+        body.set("photo", file("<svg onload=alert(1)/>"));
+        return body;
+      },
+      "That file couldn't be read as a photo. Try another.",
+    ],
+  ])("%s is a 400 the form can show", async (_name, makeBody, error) => {
+    const stored = storage.calls;
+    const response = await upload(await makeBody());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error });
+    expect(storage.calls).toBe(stored);
+    expect(await photoOf(fixtures.a.itemId)).toBe(fixturePhoto);
+  });
+
+  it("a photo over the limit is a 413 before anything is decoded or stored", async () => {
+    const body = new FormData();
+    body.set("photo", file(new Uint8Array(4 * 1024 * 1024 + 1)));
+    const stored = storage.calls;
+
+    const response = await upload(body);
+
+    expect(response.status).toBe(413);
+    expect(storage.calls).toBe(stored);
+  });
+
+  it("a restaurant id in the form can't move a photo to another restaurant's item", async () => {
+    const body = await photoForm();
+    body.set("restaurantId", fixtures.b.restaurantId);
+    const stored = storage.calls;
+
+    session.identity = aOwner.key;
+    const { POST } = await import("@/app/api/menu/items/[itemId]/photo/route");
+    const status = await statusOf(() =>
+      POST(
+        request(`/api/menu/items/${fixtures.b.itemId}/photo?restaurantId=${fixtures.b.restaurantId}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": fixtures.b.restaurantId },
+          body,
+        }),
+        itemParams(fixtures.b),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(storage.calls).toBe(stored);
+    expect(await photoOf(fixtures.b.itemId)).toBe(fixturePhoto);
+  });
+});
+
 describe("public routes", () => {
   const tokenOf = (restaurant: "a" | "b") => `dev-menu-restaurant-${restaurant}`;
   const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
@@ -788,7 +933,7 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        expect(await statusOf(() => route.call({ staffId, categoryId }))).toBe(404);
+        expect(await statusOf(() => route.call({ staffId, categoryId, itemId: categoryId }))).toBe(404);
       }
     },
   );
