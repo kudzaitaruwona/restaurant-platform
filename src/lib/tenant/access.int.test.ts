@@ -20,6 +20,7 @@ import {
   exchangeRates,
   menuItems,
   restaurants,
+  specials,
   staff,
   staffAuthUser,
 } from "@/db/schema";
@@ -94,6 +95,8 @@ type Target = {
   /** A second live category: where archiving a category moves its items. */
   spareCategoryId: string;
   itemId: string;
+  /** A promotion on `itemId`, active, in a window long past. */
+  specialId: string;
 };
 
 type TenantRoute = {
@@ -108,6 +111,7 @@ const fixturePhoto = "restaurants/harness/fixture-photo";
 const harnessCategory = "Harness category";
 const harnessRate = "31.5";
 const renamedByHarness = "Renamed by the harness";
+const harnessSpecial = "Harness special";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -268,6 +272,37 @@ const routes: TenantRoute[] = [
       (await import("@/app/api/menu/items/[itemId]/archive/route")).POST(
         request(`/api/menu/items/${target.itemId}/archive`, { method: "POST" }),
         { params: Promise.resolve({ itemId: target.itemId }) },
+      ),
+  },
+  {
+    // The item is in the form, like the item's category. The window is clear of
+    // the fixture special's, so an owner's call is not an overlap.
+    name: "POST /api/menu/specials",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/specials/route")).POST(
+        request("/api/menu/specials", {
+          method: "POST",
+          body: form({
+            menuItemId: target.itemId,
+            title: harnessSpecial,
+            priceUsd: "6",
+            startDate: "2031-01-01",
+            endDate: "2031-01-02",
+          }),
+        }),
+      ),
+  },
+  {
+    name: "POST /api/menu/specials/[specialId]/active",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/specials/[specialId]/active/route")).POST(
+        request(`/api/menu/specials/${target.specialId}/active`, {
+          method: "POST",
+          body: form({ active: "false" }),
+        }),
+        { params: Promise.resolve({ specialId: target.specialId }) },
       ),
   },
   {
@@ -464,6 +499,7 @@ const fixtures = {
     categoryId: crypto.randomUUID(),
     spareCategoryId: crypto.randomUUID(),
     itemId: crypto.randomUUID(),
+    specialId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
@@ -471,6 +507,7 @@ const fixtures = {
     categoryId: crypto.randomUUID(),
     spareCategoryId: crypto.randomUUID(),
     itemId: crypto.randomUUID(),
+    specialId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -517,6 +554,17 @@ beforeAll(async () => {
       photoKey: fixturePhoto,
     })),
   );
+  await owner.db.insert(specials).values(
+    Object.values(fixtures).map(({ specialId, itemId, restaurantId }) => ({
+      id: specialId,
+      restaurantId,
+      menuItemId: itemId,
+      title: fixtureName,
+      specialPriceUsd: "6",
+      startsAt: new Date("2020-01-01T00:00:00Z"),
+      endsAt: new Date("2020-01-02T00:00:00Z"),
+    })),
+  );
   pristine.a = await menuFixtureState(fixtures.a);
   pristine.b = await menuFixtureState(fixtures.b);
 });
@@ -534,6 +582,9 @@ afterAll(async () => {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
   await owner.db.delete(exchangeRates).where(eq(exchangeRates.usdToZig, harnessRate));
+  await owner.db
+    .delete(specials)
+    .where(inArray(specials.title, [harnessSpecial, fixtureName]));
   await owner.db
     .delete(menuItems)
     .where(inArray(menuItems.name, [harnessItem, fixtureName]));
@@ -558,10 +609,15 @@ afterAll(async () => {
 
 /**
  * Puts the menu fixtures back as they were: the routes rename, archive, reprice
- * and mark them sold out, and change their photo.
+ * and mark them sold out, change their photo, and add and switch promotions.
  */
 async function resetMenuFixtures() {
   const all = Object.values(fixtures);
+  await owner.db.delete(specials).where(eq(specials.title, harnessSpecial));
+  await owner.db
+    .update(specials)
+    .set({ active: true })
+    .where(inArray(specials.id, all.map((f) => f.specialId)));
   await owner.db
     .update(categories)
     .set({ name: fixtureName, archivedAt: null, sortOrder: 0 })
@@ -584,6 +640,10 @@ async function resetMenuFixtures() {
 
 /** What the menu routes would change in a fixture's restaurant. */
 const menuFixtureState = async ({ categoryId, spareCategoryId, itemId }: Target) => {
+  const promotions = await owner.db
+    .select({ id: specials.id, title: specials.title, active: specials.active })
+    .from(specials)
+    .where(eq(specials.menuItemId, itemId));
   const rows = await owner.db
     .select({ id: categories.id, name: categories.name, archivedAt: categories.archivedAt, sortOrder: categories.sortOrder })
     .from(categories)
@@ -600,7 +660,11 @@ const menuFixtureState = async ({ categoryId, spareCategoryId, itemId }: Target)
     })
     .from(menuItems)
     .where(eq(menuItems.id, itemId));
-  return { categories: rows.sort((x, y) => x.id.localeCompare(y.id)), item };
+  return {
+    categories: rows.sort((x, y) => x.id.localeCompare(y.id)),
+    item,
+    specials: promotions.sort((x, y) => x.id.localeCompare(y.id)),
+  };
 };
 
 const displayName = async (staffId: string) => {
@@ -990,6 +1054,50 @@ describe("the menu routes", () => {
   });
 });
 
+describe("the specials routes", () => {
+  const harnessSpecials = (restaurantId: string) =>
+    owner.db
+      .select({ id: specials.id })
+      .from(specials)
+      .where(and(eq(specials.restaurantId, restaurantId), eq(specials.title, harnessSpecial)));
+
+  it("a new special is the session's restaurant's, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.b.restaurantId;
+    const { POST } = await import("@/app/api/menu/specials/route");
+
+    const response = await POST(
+      request(`/api/menu/specials?restaurantId=${id}`, {
+        method: "POST",
+        headers: { "x-restaurant-id": id },
+        body: form({
+          menuItemId: fixtures.a.itemId,
+          title: harnessSpecial,
+          priceUsd: "6",
+          startDate: "2031-01-01",
+          restaurantId: id,
+          restaurant_id: id,
+        }),
+      }),
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await harnessSpecials(fixtures.b.restaurantId)).toEqual([]);
+    expect(await harnessSpecials(fixtures.a.restaurantId)).toHaveLength(1);
+  });
+
+  it("a second special in the same dates is a 409 that says why", async () => {
+    session.identity = aOwner.key;
+    const create = routes.find((route) => route.name === "POST /api/menu/specials")!;
+    expect(await statusOf(() => create.call(fixtures.a))).toBeLessThan(400);
+
+    const again = await create.call(fixtures.a);
+
+    expect(again.status).toBe(409);
+    expect(await harnessSpecials(fixtures.a.restaurantId)).toHaveLength(1);
+  });
+});
+
 describe("marking an item sold out", () => {
   const availability = async (itemId: string) =>
     (
@@ -1171,7 +1279,13 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        const target = { staffId, categoryId, spareCategoryId: `${categoryId}-spare`, itemId: categoryId };
+        const target = {
+          staffId,
+          categoryId,
+          spareCategoryId: `${categoryId}-spare`,
+          itemId: categoryId,
+          specialId: categoryId,
+        };
         expect(await statusOf(() => route.call(target))).toBe(404);
       }
     },

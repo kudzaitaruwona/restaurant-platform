@@ -106,8 +106,12 @@ Proposed: one reminder 3 hours before the booking, skipped if the booking was ma
 ### D-04: Recurring specials ("every Tuesday 5–9pm")
 Proposed: add `days_of_week` and a daily time-window column now, and build the recurring logic only once a restaurant asks for it.
 
+Built in ticket #24 (2.6): `days_of_week`, `daily_start` and `daily_end` exist on `specials`, with no UI and nothing reading them.
+
 ### D-05: Overlapping specials on one item
 Proposed: the database rejects a second active special that overlaps on the same item.
+
+Built in ticket #24 (2.6) as the exclusion constraint `specials_no_overlap`, still proposed until Kudzai confirms it. Details in spec 00 (specials): it is per restaurant and item, ignores specials that are off, treats a missing start or end as unbounded, and lets specials that meet at midnight sit side by side. If this is rejected, drop the constraint in a migration and the app's 409 answer goes with it.
 
 ### D-06: Guest phone number retention
 A booking needs a WhatsApp number. Proposed: null the number 30 days after the booking date, keeping only the name and the booking outcome for no-show stats.

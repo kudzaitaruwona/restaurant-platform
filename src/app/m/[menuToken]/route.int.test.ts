@@ -8,7 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { categories, exchangeRates, menuItems, restaurants, staff } from "@/db/schema";
+import { categories, exchangeRates, menuItems, restaurants, specials, staff } from "@/db/schema";
 import { BUILD_SAMPLE_TOKEN } from "@/lib/public-menu";
 import { menuTag } from "@/lib/menu-cache";
 import {
@@ -102,6 +102,7 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  await owner.db.delete(specials).where(inArray(specials.restaurantId, created));
   await owner.db.delete(exchangeRates).where(inArray(exchangeRates.restaurantId, created));
   await owner.db.delete(staff).where(inArray(staff.restaurantId, created));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, created));
@@ -510,5 +511,249 @@ describe("a sold-out item", () => {
 
     expect(body).not.toContain("Sold out");
     expect(body).not.toContain('class="sold-out"');
+  });
+});
+
+describe("specials", () => {
+  const HOUR = 60 * 60 * 1000;
+  const ago = (hours: number) => new Date(Date.now() - hours * HOUR);
+  const ahead = (hours: number) => new Date(Date.now() + hours * HOUR);
+
+  /** A $8 stew, and the special on it (any fields), in a restaurant at 26.2 ZiG to the dollar. */
+  async function stewWith(
+    fields: Partial<typeof specials.$inferInsert> | null,
+    mode: "usd_only" | "zig_only" | "usd_primary" | "zig_primary" | "both" = "usd_only",
+    item: { priceUsd?: string; priceZig?: string; available?: boolean; archivedAt?: Date } = { priceUsd: "8" },
+    rate: string | null = "26.2",
+  ) {
+    const { id, menuToken } = await newRestaurant(`Promo ${mode}`, mode);
+    if (rate !== null) await setRate(id, rate);
+    const mains = await addCategory(id, "Mains");
+    const [{ id: itemId }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId: mains, name: "Stew", ...item })
+      .returning({ id: menuItems.id });
+    if (fields !== null) {
+      await owner.db
+        .insert(specials)
+        .values({ restaurantId: id, menuItemId: itemId, specialPriceUsd: "6", ...fields });
+    }
+    return { id, menuToken, itemId, mains };
+  }
+
+  const specialsSection = (body: string) =>
+    /<section id="specials">[\s\S]*?<\/section>/.exec(body)?.[0] ?? "";
+
+  it("shows no Specials section when no special is active", async () => {
+    const { menuToken } = await stewWith(null);
+    const body = await page(menuToken);
+    expect(body).not.toContain("Specials");
+    expect(body).not.toContain("<s>");
+  });
+
+  it("shows a Specials section above the categories, with the normal price struck through", async () => {
+    const { menuToken } = await stewWith({ title: "Taco Tuesday", startsAt: ago(1), endsAt: ahead(1) });
+
+    const body = await page(menuToken);
+
+    const section = specialsSection(body);
+    expect(section).toContain("<h2>Specials</h2>");
+    expect(section).toContain("Stew");
+    expect(section).toContain("Taco Tuesday");
+    expect(section).toContain("<s>$8.00</s>");
+    expect(section).toContain("$6.00");
+    expect(body.indexOf("<h2>Specials</h2>")).toBeLessThan(body.indexOf("<h2>Mains</h2>"));
+  });
+
+  it("shows the same special price on the item in its category, so the two never disagree", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) });
+
+    const body = await page(menuToken);
+
+    const category = body.slice(body.indexOf("<h2>Mains</h2>"));
+    expect(category).toContain("<s>$8.00</s>");
+    expect(category).toContain("$6.00");
+  });
+
+  it("shows the special in both currencies under usd_primary: ZiG underneath, struck too", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "usd_primary");
+
+    const body = await page(menuToken);
+
+    // 6 * 26.2 = 157.2 -> 160. The normal price is 8 * 26.2 = 209.6 -> 210.
+    expect(specialsSection(body)).toContain(
+      '<span class="price"><s>$8.00</s> $6.00<span class="sub"><s>ZiG 210</s> ZiG 160</span></span>',
+    );
+  });
+
+  it("discounts a fixed ZiG price too, when only the dollar price is set (spec 00)", async () => {
+    const { menuToken } = await stewWith(
+      { endsAt: ahead(1) },
+      "zig_only",
+      { priceUsd: "8", priceZig: "250" },
+    );
+
+    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+  });
+
+  it("puts a one-line struck price under both", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "both");
+
+    expect(specialsSection(await page(menuToken))).toContain("<s>$8.00 · ZiG 210</s> $6.00 · ZiG 160");
+  });
+
+  it("shows a badge-only special with the normal price and nothing struck", async () => {
+    const { menuToken } = await stewWith({ title: "Chef's pick", specialPriceUsd: null });
+
+    const body = await page(menuToken);
+
+    expect(specialsSection(body)).toContain("Chef&#39;s pick");
+    expect(specialsSection(body)).toContain("$8.00");
+    expect(body).not.toContain("<s>");
+  });
+
+  it("badges a special that has a price and no title", async () => {
+    const { menuToken } = await stewWith({ title: null });
+
+    expect(specialsSection(await page(menuToken))).toContain(">Special</em>");
+  });
+
+  it("shows a special with no end date, until it is turned off", async () => {
+    const { id, menuToken } = await stewWith({ startsAt: ago(24 * 400), endsAt: null });
+
+    expect(specialsSection(await page(menuToken))).toContain("$6.00");
+
+    await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, id));
+    expect(await page(menuToken)).not.toContain("Specials");
+  });
+
+  it.each([
+    ["has not started", () => ({ startsAt: ahead(1), endsAt: ahead(2) })],
+    ["has ended", () => ({ startsAt: ago(2), endsAt: ago(1) })],
+    ["is turned off", () => ({ active: false })],
+  ])("shows nothing for a special that %s: the normal price stands", async (_name, window) => {
+    const { menuToken } = await stewWith(window());
+
+    const body = await page(menuToken);
+
+    expect(body).not.toContain("Specials");
+    expect(body).not.toContain("<s>");
+    expect(body).toContain("$8.00");
+    expect(body).not.toContain("$6.00");
+  });
+
+  it("shows nothing for a special on an archived item", async () => {
+    const { menuToken } = await stewWith(
+      { title: "Hidden deal" },
+      "usd_only",
+      { priceUsd: "8", archivedAt: new Date() },
+    );
+
+    const body = await page(menuToken);
+
+    expect(body).not.toContain("Specials");
+    expect(body).not.toContain("Hidden deal");
+    expect(body).not.toContain("Stew");
+  });
+
+  it("shows a special on a sold-out item, greyed and labelled, after the others", async () => {
+    const { id, menuToken, mains } = await stewWith({ title: "Gone deal" }, "usd_only", {
+      priceUsd: "8",
+      available: false,
+    });
+    const [{ id: pieId }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId: mains, name: "Pie", priceUsd: "5", sortOrder: 5 })
+      .returning({ id: menuItems.id });
+    await owner.db
+      .insert(specials)
+      .values({ restaurantId: id, menuItemId: pieId, title: "Pie deal", specialPriceUsd: "4" });
+
+    const section = specialsSection(await page(menuToken));
+
+    expect(section.indexOf("Pie")).toBeLessThan(section.indexOf("Stew"));
+    expect(section).toMatch(/class="sold-out"[\s\S]*Stew[\s\S]*Sold out/);
+    expect(section.match(/Sold out/g)).toHaveLength(1);
+  });
+
+  it("with no rate yet, strikes only what it can work out", async () => {
+    // A ZiG special on a dollar-only item can't become dollars without a rate.
+    const { menuToken } = await stewWith(
+      { specialPriceUsd: null, specialPriceZig: "150" },
+      "usd_primary",
+      { priceUsd: "8" },
+      null,
+    );
+
+    const body = await page(menuToken);
+
+    expect(specialsSection(body)).toContain("ZiG 150");
+    expect(specialsSection(body)).toContain("$8.00");
+    expect(specialsSection(body)).not.toContain("<s>");
+  });
+
+  it("with no rate yet, a dollar special on a ZiG-only item keeps showing the item's ZiG price", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "zig_only", { priceZig: "250" }, null);
+
+    const body = await page(menuToken);
+
+    expect(specialsSection(body)).toContain("ZiG 250");
+    expect(specialsSection(body)).not.toContain("<s>");
+  });
+
+  it("for a ZiG-only item with a rate, shows the dollar special as ZiG, calculated", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "zig_only", { priceZig: "250" });
+
+    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+  });
+
+  it("escapes a badge an owner typed", async () => {
+    const { menuToken } = await stewWith({ title: "<img src=x onerror=alert(1)>" });
+
+    const body = await page(menuToken);
+
+    expect(body).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(body).not.toMatch(/<img src=x/);
+  });
+
+  it("keeps its own restaurant's specials: another's never show", async () => {
+    const other = await stewWith({ title: "Their secret deal" });
+    const { menuToken } = await stewWith(null);
+
+    const body = await page(menuToken);
+
+    expect(body).not.toContain("Their secret deal");
+    expect(await page(other.menuToken)).toContain("Their secret deal");
+  });
+
+  it("stays inside the budget with 30 items on special, each shown twice", async () => {
+    const { id, menuToken } = await newRestaurant("Thirty specials", "both");
+    await setRate(id, "26.2");
+    const categoryId = await addCategory(id, "Mains");
+    for (let n = 0; n < 30; n += 1) {
+      const [{ id: itemId }] = await owner.db
+        .insert(menuItems)
+        .values({
+          restaurantId: id,
+          categoryId,
+          name: `Item ${n}`,
+          description: "A sentence or two about what's in this and how it comes.",
+          priceUsd: "12.50",
+          photoKey: `menu/${crypto.randomUUID()}`,
+        })
+        .returning({ id: menuItems.id });
+      await owner.db.insert(specials).values({
+        restaurantId: id,
+        menuItemId: itemId,
+        title: "Taco Tuesday",
+        specialPriceUsd: "9.50",
+      });
+    }
+
+    const body = await page(menuToken);
+
+    expect(body.match(/<s>/g)).toHaveLength(60);
+    expect(new TextEncoder().encode(body).length).toBeLessThan(100_000);
+    expect(body).not.toMatch(/<script|\son\w+=|javascript:/i);
   });
 });

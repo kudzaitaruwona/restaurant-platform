@@ -120,6 +120,13 @@
       "when": 1793798013665,
       "tag": "0016_exchange_rates_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793798987538,
+      "tag": "0017_specials",
+      "breakpoints": true
     }
   ]
 }

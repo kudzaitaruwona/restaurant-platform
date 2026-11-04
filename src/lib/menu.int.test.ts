@@ -80,6 +80,7 @@ describe("a menu", () => {
       restaurantName: "Mama's Kitchen",
       menuToken: `menu-${tenant.restaurantId}`,
       currencyMode: "usd_only",
+      timezone: "Africa/Harare",
       // No rate yet, and the restaurant's default steps.
       pricing: { rate: null, zigStep: "10", usdStep: "0.01" },
       rateSetAt: null,

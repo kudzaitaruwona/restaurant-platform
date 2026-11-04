@@ -4,7 +4,7 @@ import { html, trusted } from "@/lib/html";
 import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
 import { photoUrls } from "@/lib/photo-urls";
-import { priceDisplay } from "@/lib/pricing";
+import { type PromotionSlot, priceDisplay, promotionDisplay } from "@/lib/pricing";
 import { type PublicTokenKind, resolvePublicToken } from "@/lib/tenant/public";
 
 /**
@@ -37,6 +37,7 @@ li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom
 .sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
 .sold-out{color:var(--muted)}
 .sold-out .thumb{opacity:.5}
+s{font-weight:400;color:var(--muted)}
 .tag{margin-left:.5rem;padding:0 .3rem;border:1px solid currentColor;border-radius:.25rem;font-size:.75rem;font-style:normal;font-weight:600;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle}
 p{margin:.25rem 0 0;color:var(--muted)}
 `;
@@ -58,7 +59,14 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 
 type Item = Menu["categories"][number]["items"][number];
 
+/** The struck-through normal price, when this line has one, then the price now. */
+const slot = ({ was, now }: PromotionSlot) => html`${was !== undefined && html`<s>${was}</s> `}${now}`;
+
 const priceCell = (item: Item, { currencyMode, pricing }: Menu) => {
+  if (item.special) {
+    const { main, sub } = promotionDisplay(item, item.special, currencyMode, pricing);
+    return html`<span class="price">${slot(main)}${sub && html`<span class="sub">${slot(sub)}</span>`}</span>`;
+  }
   const { main, sub } = priceDisplay(item, currencyMode, pricing);
   return html`<span class="price">${main}${sub && html`<span class="sub">${sub}</span>`}</span>`;
 };
@@ -74,7 +82,7 @@ const thumbnail = ({ photoKey }: Item) =>
 
 const itemRow = (item: Item, menu: Menu) => html`<li class="${item.available ? "" : "sold-out"}">
 <div class="text">
-<div class="item"><span>${item.name}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
+<div class="item"><span>${item.name}${item.special && html`<em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
 ${item.description && html`<p>${item.description}</p>`}
 </div>
 ${thumbnail(item)}
@@ -83,6 +91,21 @@ ${thumbnail(item)}
 /** Sold-out items stay on the page, after the rest of their category (spec 02). */
 const availableFirst = (items: Item[]) =>
   [...items].sort((a, b) => Number(!a.available) - Number(!b.available));
+
+/**
+ * Whatever is on special now, at the top (spec 02). Each item is also in its own
+ * category, with the same price, so the two never disagree.
+ */
+function specialsSection(menu: Menu) {
+  const onSpecial = availableFirst(
+    menu.categories.flatMap((category) => category.items).filter((item) => item.special),
+  );
+  if (onSpecial.length === 0) return null;
+  return html`<section id="specials">
+<h2>Specials</h2>
+<ul>${onSpecial.map((item) => itemRow(item, menu))}</ul>
+</section>`;
+}
 
 function menuPage(menu: Menu) {
   const sections = menu.categories
@@ -97,6 +120,7 @@ function menuPage(menu: Menu) {
   return page(
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
+${specialsSection(menu)}
 ${sections.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }

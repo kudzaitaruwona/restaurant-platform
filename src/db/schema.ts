@@ -12,6 +12,7 @@ import {
   pgPolicy,
   pgTable,
   text,
+  time,
   timestamp,
   unique,
   uniqueIndex,
@@ -281,6 +282,72 @@ export const menuItems = pgTable(
     check(
       "menu_items_prices_finite",
       sql`${table.priceUsd} < 'Infinity' and ${table.priceZig} < 'Infinity'`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * A promotion (spec 02, Specials): an existing item at a special price, or just a
+ * badge. The item's own prices never change. The window is half-open, [starts_at,
+ * ends_at): a null start has no lower end and a null end runs until turned off.
+ * The owner picks dates, which the app turns into instants in the restaurant's
+ * timezone: a start date opens at that day's midnight, and an end date is
+ * inclusive, so it closes at midnight after it.
+ *
+ * D-05: the exclusion constraint `specials_no_overlap` (see 0017_specials) stops
+ * two active specials on one item from overlapping. Drizzle can't model it, so
+ * it lives in the migration only.
+ */
+export const specials = pgTable(
+  "specials",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    menuItemId: uuid("menu_item_id").notNull(),
+    // The badge text: "Taco Tuesday".
+    title: text(),
+    // Null keeps the item's normal price, by the precedence in spec 00.
+    specialPriceUsd: numeric("special_price_usd"),
+    specialPriceZig: numeric("special_price_zig"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    // D-04: the columns exist and nothing reads them yet.
+    daysOfWeek: integer("days_of_week").array(),
+    dailyStart: time("daily_start"),
+    dailyEnd: time("daily_end"),
+    active: boolean().notNull().default(true),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "specials_menu_item_fk",
+      columns: [table.restaurantId, table.menuItemId],
+      foreignColumns: [menuItems.restaurantId, menuItems.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.menuItemId),
+    check(
+      "specials_prices_not_negative",
+      sql`${table.specialPriceUsd} >= 0 and ${table.specialPriceZig} >= 0`,
+    ),
+    // Finite only together with the lower bound above: NaN sorts above Infinity.
+    check(
+      "specials_prices_finite",
+      sql`${table.specialPriceUsd} < 'Infinity' and ${table.specialPriceZig} < 'Infinity'`,
+    ),
+    // Proposed: a special that changes nothing and says nothing is no special.
+    check(
+      "specials_does_something",
+      sql`${table.title} is not null or ${table.specialPriceUsd} is not null or ${table.specialPriceZig} is not null`,
+    ),
+    // Proposed: an empty or backwards window would never be live.
+    check(
+      "specials_window_ordered",
+      sql`${table.startsAt} is null or ${table.endsAt} is null or ${table.endsAt} > ${table.startsAt}`,
     ),
     tenantPolicy("restaurant_id"),
   ],

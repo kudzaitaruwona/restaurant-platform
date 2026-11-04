@@ -86,11 +86,18 @@ specials
   special_price_zig     numeric null       -- same fallback-to-rate rule as items
   CHECK (special_price_usd >= 0 AND special_price_zig >= 0)  -- (proposed) lower bound, so a special cannot make a negative bill
   CHECK (special_price_usd < 'Infinity' AND special_price_zig < 'Infinity')  -- specials_prices_finite: finite only together with the >= 0 above
-  starts_at, ends_at    timestamptz null   -- null ends_at = until turned off
+  CHECK (title IS NOT NULL OR special_price_usd IS NOT NULL OR special_price_zig IS NOT NULL)  -- specials_does_something (proposed): a special with no badge and no price would change nothing
+  starts_at, ends_at    timestamptz null   -- null ends_at = until turned off; null starts_at = no lower end (proposed). Half-open: [starts_at, ends_at)
+  CHECK (starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at)  -- specials_window_ordered (proposed)
   days_of_week          int[] null         -- D-04: column now, logic later
   daily_start, daily_end time null         -- D-04
-  active                bool
-  -- D-05 (proposed): exclusion constraint, no two active overlapping specials per item
+  active                bool default true
+  FOREIGN KEY (restaurant_id, menu_item_id) → menu_items  -- specials_menu_item_fk, composite like every tenant FK
+  -- D-05 (proposed): specials_no_overlap, written in migration 0017_specials because Drizzle can't model it:
+  --   EXCLUDE USING gist (restaurant_id WITH =, menu_item_id WITH =, tstzrange(starts_at, ends_at) WITH &&) WHERE (active)
+  -- needs btree_gist (migration 0000; Neon supports it). A null bound is unbounded in tstzrange, which is what
+  -- "no end date" and "no start date" mean; a special that is off holds no time; one that ends where the next
+  -- begins does not overlap. Turning a special back on re-runs the check, so it can be refused too.
 
 exchange_rates                              -- history; the current rate is the latest row
   id, restaurant_id
@@ -119,6 +126,10 @@ special_usd = coalesce(special_price_usd,
 ```
 
 Setting a discount in one currency therefore discounts both, even when the item has a fixed ZiG price.
+
+Where a currency can't be worked out (no rate set yet), the formula falls through to the item's normal price in that currency, so a ZiG-only special on a USD-only item shows the normal USD price until there is a rate. `src/lib/pricing.ts` (`specialZig`, `specialUsd`) holds this, in BigInt like the effective prices.
+
+**A special's dates are dates in `restaurants.timezone` *(proposed)*.** The owner picks a start date and an end date, never a time. A start date is that day's 00:00 in the restaurant's zone; an end date is inclusive, so `ends_at` is the 00:00 after it. Postgres does the conversion (`date::timestamp AT TIME ZONE restaurants.timezone`), so it uses the zone's rules for that day, not the server's. "Until Sunday" in Harare is `ends_at = Sunday 22:00 UTC`.
 
 ## 3. Tables
 

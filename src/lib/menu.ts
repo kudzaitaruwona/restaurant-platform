@@ -1,7 +1,7 @@
 import "server-only";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { categories, menuItems, restaurants } from "@/db/schema";
+import { categories, menuItems, restaurants, specials } from "@/db/schema";
 import { latestRate } from "@/lib/exchange-rate";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { recordAdminAction } from "@/lib/tenant/audit";
@@ -57,7 +57,7 @@ const newAvailability = z.object({
 
 // A price field left blank is no price. Postgres would also take 1e3, NaN and
 // Infinity as numeric, so the spelling is checked here.
-const optionalPrice = (pattern: RegExp, message: string) =>
+export const optionalPrice = (pattern: RegExp, message: string) =>
   z.preprocess(
     (value) => (value === undefined ? "" : value),
     z
@@ -143,9 +143,12 @@ export type Menu = Awaited<ReturnType<typeof getMenu>>;
 
 /**
  * A restaurant's whole menu, with empty categories, for the editor and the page.
- * Archived categories and items are in neither (spec 02).
+ * Archived categories and items are in neither (spec 02). An item's `special` is
+ * the one live at `now`, if any: the window is [starts_at, ends_at), a null start
+ * has no lower end and a null end has no upper one. The page is cached, so `now`
+ * is when it was rendered (see FRESH_FOR_SECONDS in public-menu.ts).
  */
-export function getMenu(ctx: Tenant) {
+export function getMenu(ctx: Tenant, now = new Date()) {
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
     const [restaurant] = await tx
@@ -153,6 +156,7 @@ export function getMenu(ctx: Tenant) {
         name: restaurants.name,
         menuToken: restaurants.menuToken,
         currencyMode: restaurants.currencyMode,
+        timezone: restaurants.timezone,
         zigStep: restaurants.zigRoundingStep,
         usdStep: restaurants.usdRoundingStep,
       })
@@ -185,11 +189,35 @@ export function getMenu(ctx: Tenant) {
 
     const rate = await latestRate(tx, restaurantId);
 
-    const itemsByCategory = Map.groupBy(items, (item) => item.categoryId);
+    // D-05 means at most one of these per item. A special on an archived item
+    // matches no item below, so it never shows.
+    const live = await tx
+      .select({
+        menuItemId: specials.menuItemId,
+        title: specials.title,
+        priceUsd: specials.specialPriceUsd,
+        priceZig: specials.specialPriceZig,
+      })
+      .from(specials)
+      .where(
+        and(
+          eq(specials.restaurantId, restaurantId),
+          eq(specials.active, true),
+          or(isNull(specials.startsAt), lte(specials.startsAt, now)),
+          or(isNull(specials.endsAt), gt(specials.endsAt, now)),
+        ),
+      );
+    const specialOf = new Map(live.map(({ menuItemId, ...rest }) => [menuItemId, rest]));
+
+    const itemsByCategory = Map.groupBy(
+      items.map((item) => ({ ...item, special: specialOf.get(item.id) ?? null })),
+      (item) => item.categoryId,
+    );
     return {
       restaurantName: restaurant.name,
       menuToken: restaurant.menuToken,
       currencyMode: restaurant.currencyMode,
+      timezone: restaurant.timezone,
       // Everything an effective price is computed from (spec 00): see "@/lib/pricing".
       pricing: {
         rate: rate?.usdToZig ?? null,

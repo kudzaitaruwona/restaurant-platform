@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { getMenu, type Menu } from "@/lib/menu";
+import { listSpecials } from "@/lib/specials";
 import { photoUrls } from "@/lib/photo-urls";
 import {
   effectiveUsd,
@@ -16,6 +17,7 @@ import { SortableCategories } from "./sortable-categories";
 import { Field, inputClassName } from "../field";
 import { ExchangeRateStatus } from "../exchange-rate-status";
 import { ItemPriceFields } from "./item-price-fields";
+import { SpecialsSection } from "./specials-section";
 import { PhotoForm } from "./photo-form";
 
 /**
@@ -28,6 +30,7 @@ export async function MenuScreen() {
   const tenant = await getTenantContext();
   const menu = await getMenu(tenant);
   const isOwner = tenant.role === "owner";
+  const specials = isOwner ? await listSpecials(tenant) : [];
   const sections = menu.categories.map((category) => ({
     id: category.id,
     name: category.name,
@@ -78,6 +81,14 @@ export async function MenuScreen() {
             </Button>
           </ActionForm>
         </section>
+      )}
+
+      {isOwner && (
+        <SpecialsSection
+          specials={specials}
+          items={menu.categories.flatMap((category) => category.items)}
+          timezone={menu.timezone}
+        />
       )}
 
       {isOwner ? (

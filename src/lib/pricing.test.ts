@@ -6,8 +6,11 @@ import {
   formatUsd,
   formatZig,
   priceDisplay,
+  promotionDisplay,
   rateAge,
   rateAgeLabel,
+  specialUsd,
+  specialZig,
 } from "./pricing";
 
 const pricing = { rate: "26.2", zigStep: "10", usdStep: "0.01" };
@@ -210,5 +213,108 @@ describe("rateAge", () => {
     [5, "5 days ago"],
   ])("labels %i days as %s", (days, label) => {
     expect(rateAgeLabel(days)).toBe(label);
+  });
+});
+
+describe("special prices (spec 00 precedence)", () => {
+  const stew = { priceUsd: "8", priceZig: null };
+  const fixedZig = { priceUsd: "8", priceZig: "250" };
+  const badge = { priceUsd: null, priceZig: null };
+
+  it("a special USD price discounts both currencies, even beside a fixed ZiG price", () => {
+    const special = { priceUsd: "6", priceZig: null };
+    // 6 * 26.2 = 157.2 -> 160, not the item's fixed 250.
+    expect(specialZig(fixedZig, special, pricing)).toEqual({
+      amount: "160",
+      source: "calculated",
+    });
+    expect(specialUsd(fixedZig, special, pricing)).toBe("6");
+  });
+
+  it("a special ZiG price wins over a special USD price for ZiG, and sets USD from the rate", () => {
+    const special = { priceUsd: "6", priceZig: "150" };
+    expect(specialZig(stew, special, pricing)).toEqual({ amount: "150", source: "fixed" });
+    expect(specialUsd(stew, special, pricing)).toBe("6");
+  });
+
+  it("a special ZiG price alone sets USD rounded up to the USD step", () => {
+    // 150 / 26.2 = 5.7251..., up to 5.73
+    expect(specialUsd(stew, { priceUsd: null, priceZig: "150" }, pricing)).toBe("5.73");
+    expect(specialUsd(stew, { priceUsd: null, priceZig: "150" }, { ...pricing, usdStep: "0.5" })).toBe("6");
+  });
+
+  it("is exact where floating point is not", () => {
+    // 1.1 * 10 is 11.000000000000002 in floating point, which would round up to 12.
+    expect(
+      specialZig(stew, { priceUsd: "1.1", priceZig: null }, { ...pricing, rate: "10", zigStep: "1" }),
+    ).toMatchObject({ amount: "11" });
+  });
+
+  it("a badge-only special keeps the normal price in both currencies", () => {
+    expect(specialZig(fixedZig, badge, pricing)).toEqual({ amount: "250", source: "fixed" });
+    expect(specialUsd(fixedZig, badge, pricing)).toBe("8");
+    expect(specialZig(stew, badge, pricing)).toEqual({ amount: "210", source: "calculated" });
+  });
+
+  it("with no rate, a currency that needs one falls back to the normal price", () => {
+    expect(specialZig({ priceUsd: "8", priceZig: "250" }, { priceUsd: "6", priceZig: null }, noRate)).toEqual({
+      amount: "250",
+      source: "fixed",
+    });
+    expect(specialUsd({ priceUsd: "8", priceZig: null }, { priceUsd: null, priceZig: "150" }, noRate)).toBe("8");
+    expect(specialZig(stew, { priceUsd: "6", priceZig: null }, noRate)).toBeNull();
+  });
+
+  it("works for an item that has only a ZiG price", () => {
+    const zigOnly = { priceUsd: null, priceZig: "250" };
+    const special = { priceUsd: "6", priceZig: null };
+    expect(specialUsd(zigOnly, special, pricing)).toBe("6");
+    expect(specialZig(zigOnly, special, pricing)).toMatchObject({ amount: "160" });
+  });
+});
+
+describe("promotionDisplay", () => {
+  const stew = { priceUsd: "8", priceZig: null };
+
+  it("strikes the normal price next to the special one", () => {
+    expect(
+      promotionDisplay(stew, { priceUsd: "6", priceZig: null }, "usd_only", pricing),
+    ).toEqual({ main: { was: "$8.00", now: "$6.00" } });
+  });
+
+  it("strikes each line that changed, under usd_primary", () => {
+    expect(
+      promotionDisplay(stew, { priceUsd: "6", priceZig: null }, "usd_primary", pricing),
+    ).toEqual({
+      main: { was: "$8.00", now: "$6.00" },
+      sub: { was: "ZiG 210", now: "ZiG 160" },
+    });
+  });
+
+  it("under both, the one line is struck whole", () => {
+    expect(
+      promotionDisplay(stew, { priceUsd: "6", priceZig: null }, "both", pricing),
+    ).toEqual({ main: { was: "$8.00 · ZiG 210", now: "$6.00 · ZiG 160" } });
+  });
+
+  it("strikes nothing for a badge-only special", () => {
+    expect(
+      promotionDisplay(stew, { priceUsd: null, priceZig: null }, "usd_primary", pricing),
+    ).toEqual({ main: { now: "$8.00" }, sub: { now: "ZiG 210" } });
+  });
+
+  it("a ZiG discount strikes the dollar price too: it discounts both", () => {
+    // 200 / 26.2 = 7.6336, up to 7.64
+    const fixed = { priceUsd: "8", priceZig: "250" };
+    expect(
+      promotionDisplay(fixed, { priceUsd: null, priceZig: "200" }, "usd_primary", pricing),
+    ).toEqual({ main: { was: "$8.00", now: "$7.64" }, sub: { was: "ZiG 250", now: "ZiG 200" } });
+  });
+
+  it("with no rate, shows what can be worked out and strikes only that", () => {
+    // A ZiG special on a USD item cannot be turned into USD without a rate.
+    expect(
+      promotionDisplay(stew, { priceUsd: null, priceZig: "150" }, "usd_primary", noRate),
+    ).toEqual({ main: { now: "$8.00" }, sub: { now: "ZiG 150" } });
   });
 });

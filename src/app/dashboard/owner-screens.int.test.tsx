@@ -13,11 +13,13 @@ import { POST as setRate } from "@/app/api/menu/exchange-rate/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as removePhoto } from "@/app/api/menu/items/[itemId]/photo/remove/route";
 import { POST as setPhoto } from "@/app/api/menu/items/[itemId]/photo/route";
+import { POST as switchSpecial } from "@/app/api/menu/specials/[specialId]/active/route";
+import { POST as addSpecial } from "@/app/api/menu/specials/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { auditLog, categories, exchangeRates, menuItems, restaurants, staff } from "@/db/schema";
+import { auditLog, categories, exchangeRates, menuItems, restaurants, specials, staff } from "@/db/schema";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -141,6 +143,14 @@ const newItem = async () => {
     .where(eq(menuItems.restaurantId, tenant.restaurantId));
   return id;
 };
+
+const specialIdOf = async (menuItemId: string) =>
+  (
+    await owner.db
+      .select({ id: specials.id })
+      .from(specials)
+      .where(eq(specials.menuItemId, menuItemId))
+  )[0].id;
 
 const itemParams = (itemId: string) => ({ params: Promise.resolve({ itemId }) });
 
@@ -369,6 +379,8 @@ describe("/dashboard/menu", () => {
     await setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId));
     await newCategory("Sides");
     await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, title: "Taco Tuesday", priceUsd: "6" }));
+    const specialId = await specialIdOf(itemId);
     const asOwner = await screen(MenuScreen);
     session.tenant = { ...tenant, role: "staff" };
 
@@ -398,6 +410,19 @@ describe("/dashboard/menu", () => {
       'type="file"',
       "Remove photo",
       "Change photo",
+      // Specials (S-26): the list, its switch, and the form that adds one.
+      "Specials",
+      "Taco Tuesday",
+      "On now",
+      "Turn off",
+      `/api/menu/specials/${specialId}/active`,
+      'action="/api/menu/specials"',
+      "Add a special",
+      'name="menuItemId"',
+      'name="startDate"',
+      'name="endDate"',
+      'name="title"',
+      'name="active"',
     ];
     for (const control of owners) {
       // So a control that's renamed fails here, rather than this passing on nothing.
@@ -1011,5 +1036,151 @@ describe("/dashboard/settings", () => {
   it("refuses staff with forbidden(), so they never receive the Wi-Fi password", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => SettingsScreen())).toBe(403);
+  });
+});
+
+describe("/dashboard/menu specials", () => {
+  const specialParams = (specialId: string) => ({ params: Promise.resolve({ specialId }) });
+
+  it("offers an owner the list and a form to add one, and none of it to staff", async () => {
+    await newItem();
+
+    const asOwner = await screen(MenuScreen);
+    session.tenant = { ...tenant, role: "staff" };
+    const asStaff = await screen(MenuScreen);
+
+    expect(asOwner).toContain("No specials yet.");
+    expect(asOwner).toContain('action="/api/menu/specials"');
+    expect(asOwner).toContain("Africa/Harare time");
+    expect(asStaff).not.toContain("Specials");
+    expect(asStaff).not.toContain("/api/menu/specials");
+  });
+
+  it("asks for an item first, since a special needs one", async () => {
+    const html = await screen(MenuScreen);
+    expect(html).toContain("Add an item first.");
+    expect(html).not.toContain('action="/api/menu/specials"');
+  });
+
+  it("adds a promotion, lists it with its dates and state, and switches it off and on", async () => {
+    const itemId = await newItem();
+
+    const added = await addSpecial(
+      post("/api/menu/specials", {
+        menuItemId: itemId,
+        title: "Taco Tuesday",
+        priceUsd: "6",
+        priceZig: "",
+        startDate: "2020-01-01",
+        endDate: "2099-12-31",
+      }),
+    );
+    expect(added.status).toBe(303);
+    const listed = await screen(MenuScreen);
+    expect(listed).toContain("Beef stew");
+    expect(listed).toContain("Taco Tuesday");
+    expect(listed).toContain("$6.00");
+    expect(listed).toContain("2020-01-01 to 2099-12-31");
+    expect(listed).toContain("On now");
+
+    const specialId = await specialIdOf(itemId);
+    const off = await switchSpecial(
+      post(`/api/menu/specials/${specialId}/active`, { active: "false" }, { [FORM_FETCH_HEADER]: "1" }),
+      specialParams(specialId),
+    );
+    expect(off.status).toBe(204);
+    const turnedOff = await screen(MenuScreen);
+    expect(turnedOff).toContain("Turned off");
+    expect(turnedOff).toContain("Turn on");
+
+    await switchSpecial(
+      post(`/api/menu/specials/${specialId}/active`, { active: "true" }),
+      specialParams(specialId),
+    );
+    expect(await screen(MenuScreen)).toContain("On now");
+  });
+
+  it("lists a badge alone at the normal price, with no end as until turned off", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, title: "Chef's pick" }));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("Normal price");
+    expect(html).toContain("Until turned off");
+  });
+
+  it("refuses a second special in the same dates with a 409 that says why, and adds nothing", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "6", endDate: "2099-12-31" }));
+
+    const response = await addSpecial(
+      post("/api/menu/specials", { menuItemId: itemId, priceUsd: "5", startDate: "2099-12-31" }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error:
+        "That item already has an active special in some of those dates. Turn the other off, or change the dates.",
+    });
+    expect(await owner.db.select().from(specials).where(eq(specials.menuItemId, itemId))).toHaveLength(1);
+  });
+
+  it("answers turning an overlapping special back on with the same 409", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "6" }));
+    const firstId = await specialIdOf(itemId);
+    await switchSpecial(post(`/api/menu/specials/${firstId}/active`, { active: "false" }), specialParams(firstId));
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "5" }));
+
+    const response = await switchSpecial(
+      post(`/api/menu/specials/${firstId}/active`, { active: "true" }),
+      specialParams(firstId),
+    );
+
+    expect(response.status).toBe(409);
+  });
+
+  it.each([
+    ["no item", {}, "Choose an item."],
+    ["nothing to show", { menuItemId: "x" }, "Enter a badge, a special price, or both."],
+    ["a bad price", { menuItemId: "x", priceUsd: "abc" }, "Enter the special USD price as a number, like 6.50."],
+    ["a backwards window", { menuItemId: "x", title: "t", startDate: "2030-02-02", endDate: "2030-02-01" }, "The end date can't be before the start date."],
+  ])("refuses %s with a reason the form can show", async (_name, fields, error) => {
+    const response = await addSpecial(post("/api/menu/specials", fields));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error });
+  });
+
+  it("refuses a switch that is neither on nor off", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "6" }));
+    const specialId = await specialIdOf(itemId);
+
+    const response = await switchSpecial(
+      post(`/api/menu/specials/${specialId}/active`, { active: "maybe" }),
+      specialParams(specialId),
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("drops a special from the list when its item is archived", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, title: "Doomed deal", priceUsd: "6" }));
+    expect(await screen(MenuScreen)).toContain("Doomed deal");
+
+    await archiveItem(post(`/api/menu/items/${itemId}/archive`), itemParams(itemId));
+
+    expect(await screen(MenuScreen)).not.toContain("Doomed deal");
+  });
+
+  it("changes nothing about the item's own price", async () => {
+    const itemId = await newItem();
+    await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "1" }));
+
+    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, itemId));
+
+    expect(row.priceUsd).toBe("8.50");
   });
 });

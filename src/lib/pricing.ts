@@ -109,23 +109,11 @@ export function formatZig(amount: string) {
 
 export type PriceDisplay = { main: string; sub?: string };
 
-/**
- * What a menu shows for an item under `currency_mode`. A currency that can't be
- * worked out yet, because no rate is set, falls back to the other one rather
- * than showing no price.
- */
-export function priceDisplay(
-  item: ItemPrices,
+/** Lays out the formatted prices a mode shows. Null is a currency that can't be worked out. */
+function arranged(
+  shown: { usd: string | null; zig: string | null },
   mode: CurrencyMode,
-  pricing: Pricing,
 ): PriceDisplay {
-  const usd = effectiveUsd(item, pricing);
-  const zig = effectiveZig(item, pricing);
-  const shown = {
-    usd: usd === null ? null : formatUsd(usd),
-    zig: zig === null ? null : formatZig(zig.amount),
-  };
-
   const wanted =
     mode === "usd_only"
       ? [shown.usd]
@@ -139,6 +127,93 @@ export function priceDisplay(
 
   if (mode === "both") return { main: parts.join(" · ") };
   return parts.length > 1 ? { main: parts[0], sub: parts[1] } : { main: parts[0] };
+}
+
+const formatted = (usd: string | null, zig: string | null) => ({
+  usd: usd === null ? null : formatUsd(usd),
+  zig: zig === null ? null : formatZig(zig),
+});
+
+/**
+ * What a menu shows for an item under `currency_mode`. A currency that can't be
+ * worked out yet, because no rate is set, falls back to the other one rather
+ * than showing no price.
+ */
+export function priceDisplay(
+  item: ItemPrices,
+  mode: CurrencyMode,
+  pricing: Pricing,
+): PriceDisplay {
+  return arranged(
+    formatted(effectiveUsd(item, pricing), effectiveZig(item, pricing)?.amount ?? null),
+    mode,
+  );
+}
+
+/** A special's own prices (spec 00, specials): either, both or neither (badge only). */
+export type SpecialPrices = { priceUsd: string | null; priceZig: string | null };
+
+/**
+ * The ZiG price during a special, in spec 00's order: the special's fixed ZiG
+ * price, else its USD price converted at the rate and rounded up, else the item's
+ * normal price (a badge-only special, or a USD special before any rate is set).
+ */
+export function specialZig(
+  item: ItemPrices,
+  { priceUsd, priceZig }: SpecialPrices,
+  pricing: Pricing,
+): EffectiveZig | null {
+  if (priceZig !== null) return { amount: toText(decimal(priceZig)), source: "fixed" };
+  if (priceUsd !== null && pricing.rate !== null) {
+    const amount = roundedUp(priceUsd, pricing.rate, "1", pricing.zigStep);
+    if (amount !== null) return { amount, source: "calculated" };
+  }
+  return effectiveZig(item, pricing);
+}
+
+/** The USD price during a special: the mirror of `specialZig`. */
+export function specialUsd(
+  item: ItemPrices,
+  { priceUsd, priceZig }: SpecialPrices,
+  pricing: Pricing,
+): string | null {
+  if (priceUsd !== null) return priceUsd;
+  if (priceZig !== null && pricing.rate !== null) {
+    const amount = roundedUp(priceZig, "1", pricing.rate, pricing.usdStep);
+    if (amount !== null) return amount;
+  }
+  return effectiveUsd(item, pricing);
+}
+
+/** `was` is the normal price to strike through: absent where the line didn't change. */
+export type PromotionSlot = { was?: string; now: string };
+export type PromotionDisplay = { main: PromotionSlot; sub?: PromotionSlot };
+
+/**
+ * What a menu shows for an item during a promotion (spec 02, pricing display
+ * rules): the same layout as `priceDisplay`, with the normal price to strike
+ * through beside each line the special changes.
+ */
+export function promotionDisplay(
+  item: ItemPrices,
+  special: SpecialPrices,
+  mode: CurrencyMode,
+  pricing: Pricing,
+): PromotionDisplay {
+  const normal = priceDisplay(item, mode, pricing);
+  const now = arranged(
+    formatted(
+      specialUsd(item, special, pricing),
+      specialZig(item, special, pricing)?.amount ?? null,
+    ),
+    mode,
+  );
+  const slot = (was: string | undefined, current: string): PromotionSlot =>
+    was !== undefined && was !== current ? { was, now: current } : { now: current };
+  return {
+    main: slot(normal.main, now.main),
+    ...(now.sub !== undefined && { sub: slot(normal.sub, now.sub) }),
+  };
 }
 
 const PRICE_TEXT = /^[0-9]{1,6}(\.[0-9]{1,2})?$/;
