@@ -5,7 +5,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
 import { Field, inputClassName } from "../field";
 
-/** The table manager: owner only (S-26). Adding, so far; the rest of spec 03 follows. */
+/** The table manager: owner only (S-26). Add, edit, reorder and archive; regenerating a code follows. */
 export async function TablesScreen() {
   const tenant = await getTenantContext();
   requireOwner(tenant);
@@ -29,13 +29,74 @@ export async function TablesScreen() {
         <p className="text-sm text-muted-foreground">No tables yet.</p>
       ) : (
         <ul className="flex flex-col divide-y">
-          {tables.map((table) => (
-            <li key={table.id} className="flex justify-between gap-4 py-2">
-              <span className="font-medium">{table.label}</span>
-              <span className="text-sm text-muted-foreground">
-                Seats {table.capacity}
-                {!table.bookable && ", walk-ins only"}
-              </span>
+          {tables.map((table, index) => (
+            <li key={table.id} className="flex flex-col gap-2 py-3">
+              <ActionForm
+                action={`/api/tables/${table.id}`}
+                savedMessage="Saved. Capacity changes apply to bookings made from now on."
+                className="flex flex-wrap items-end gap-3"
+              >
+                <span className="w-6 pb-2 text-sm text-muted-foreground" title="Position in the list">
+                  {index + 1}
+                </span>
+                <Field label="Label">
+                  <input
+                    name="label"
+                    defaultValue={table.label}
+                    required
+                    maxLength={50}
+                    className={inputClassName}
+                  />
+                </Field>
+                <Field label="Seats">
+                  <input
+                    name="capacity"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={100}
+                    defaultValue={table.capacity}
+                    required
+                    className={inputClassName}
+                  />
+                </Field>
+                <input type="hidden" name="bookable" value="false" />
+                <label className="flex items-center gap-2 pb-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    name="bookable"
+                    value="true"
+                    defaultChecked={table.bookable}
+                  />
+                  Bookable online
+                </label>
+                <Button type="submit" size="sm">
+                  Save
+                </Button>
+              </ActionForm>
+              <div className="flex gap-2">
+                {(["up", "down"] as const).map((direction) => (
+                  <ActionForm key={direction} action={`/api/tables/${table.id}/move`}>
+                    <input type="hidden" name="direction" value={direction} />
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="outline"
+                      disabled={direction === "up" ? index === 0 : index === tables.length - 1}
+                    >
+                      Move {direction}
+                    </Button>
+                  </ActionForm>
+                ))}
+                <ActionForm
+                  action={`/api/tables/${table.id}/archive`}
+                  confirmation={`Archive table ${table.label}? Its printed QR code will stop working.`}
+                >
+                  <Button type="submit" size="sm" variant="outline">
+                    Archive
+                  </Button>
+                </ActionForm>
+              </div>
             </li>
           ))}
         </ul>
