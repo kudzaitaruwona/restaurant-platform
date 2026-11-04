@@ -74,7 +74,7 @@ menu_items
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)
   CHECK (price_usd >= 0 AND price_zig >= 0)
   CHECK (price_usd < 'Infinity' AND price_zig < 'Infinity')  -- menu_items_prices_finite: a column is finite only with a lower bound and `< 'Infinity'` together. NaN and +Infinity both pass >= 0 and > 0 in Postgres numeric (NaN sorts above Infinity, so `< 'Infinity'` rejects both), and `< 'Infinity'` alone still admits -Infinity and any negative value. Here the adjacent >= 0 supplies the lower bound. Every money column needs both
-  visibility            enum(regular, special_only) default 'regular'
+  visibility            enum(regular, special_only) default 'regular' NOT NULL  -- menu_visibility. special_only = a bundle (spec 02): shown only while one of its specials is live, and in no category. Set when the item is made; no edit changes it. Built in ticket #25 (2.7)
   available             bool default true           -- "kitchen ran out"
   sort_order
   archived_at           null

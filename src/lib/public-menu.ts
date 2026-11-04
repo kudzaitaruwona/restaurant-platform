@@ -93,12 +93,16 @@ const availableFirst = (items: Item[]) =>
   [...items].sort((a, b) => Number(!a.available) - Number(!b.available));
 
 /**
- * Whatever is on special now, at the top (spec 02). Each item is also in its own
- * category, with the same price, so the two never disagree.
+ * Whatever is on special now, at the top (spec 02). Each promoted item is also in
+ * its own category, with the same price, so the two never disagree. A bundle is
+ * only here: it has no category on the page.
  */
 function specialsSection(menu: Menu) {
   const onSpecial = availableFirst(
-    menu.categories.flatMap((category) => category.items).filter((item) => item.special),
+    [
+      ...menu.categories.flatMap((category) => category.items).filter((item) => item.special),
+      ...menu.bundles,
+    ],
   );
   if (onSpecial.length === 0) return null;
   return html`<section id="specials">
@@ -121,7 +125,7 @@ function menuPage(menu: Menu) {
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
 ${specialsSection(menu)}
-${sections.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
+${sections.length > 0 || menu.bundles.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }
 

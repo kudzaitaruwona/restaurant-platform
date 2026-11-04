@@ -78,6 +78,9 @@ export const auditActorType = pgEnum("audit_actor_type", [
 
 export const staffRole = pgEnum("staff_role", ["owner", "staff"]);
 
+// special_only is a bundle (spec 02): it shows only while one of its specials is on.
+export const menuVisibility = pgEnum("menu_visibility", ["regular", "special_only"]);
+
 export const restaurants = pgTable(
   "restaurants",
   {
@@ -210,8 +213,7 @@ export const auditLog = pgTable(
 );
 
 /**
- * The menu (spec 00, 2). Columns arrive with the tickets that use them:
- * visibility isn't here yet.
+ * The menu (spec 00, 2). Columns arrive with the tickets that use them.
  */
 export const categories = pgTable(
   "categories",
@@ -248,6 +250,10 @@ export const menuItems = pgTable(
     priceZig: numeric("price_zig"),
     // False while the kitchen has run out (S-26). Staff toggle it from the item list.
     available: boolean().notNull().default(true),
+    // special_only is a bundle: the customer's page shows it only while one of
+    // its specials is live (spec 02). It is set when the item is made and no
+    // edit changes it.
+    visibility: menuVisibility().notNull().default("regular"),
     // The photo's storage key without its size: `-800.webp` and `-320.webp` are
     // the two files under it. A key, not a URL, because getUrl owns the domain
     // (D-07). Each upload gets a new key so the CDN never serves the old one.

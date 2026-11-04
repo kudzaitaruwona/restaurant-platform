@@ -42,13 +42,23 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 - Create a promotion by picking an item, then optionally setting a special price and a badge title, a start date, and an end date. A special needs a badge, a price, or both *(proposed)*.
 - **Dates, not times** *(proposed)*. A start date opens the special at 00:00 that day in `restaurants.timezone`. An end date is included: the special runs to the end of that day, so it closes at 00:00 the day after. A blank start means it is on from the moment it is saved, and a blank end means it stays on until turned off. A blank start with an end date already past is refused, because that leaves no window. See spec 00 for the stored form.
 - A special can be priced in USD, in ZiG, or both. A price in one currency discounts both (spec 00, special price precedence).
-- Create a bundle in one form: it creates a `special_only` item and its special at the same time.
+- **No edit or delete in v1** *(proposed)*. A special is added, and turned on or off. To change its dates or price, turn it off and add another. Bundles inherit this.
+- Create a bundle in one form: it creates a `special_only` item and its special at the same time, in one transaction *(proposed)*: if the special is refused, no item is left behind. The form takes the same rules a promotion does for dates (blank start is the moment of saving, an end date already past is refused with 400). Bundle rules *(proposed)*:
+  - **Fields.** Name, description, price USD, price ZiG (at least one, as for any item), category, badge, first and last day. The description is required, because it lists what's included.
+  - **Category.** An item has exactly one category, so the owner picks one, as for any item. It decides only where the bundle sits in the editor and where it lands in Specials order: a bundle is never listed under that category on the public page, and a category holding only bundles shows no section.
+  - **Badge.** A special needs a badge or a price, and the form has no special price (the bundle's own price is its price), so a blank badge is stored as "Bundle".
+  - **Visibility is set when it is made.** Nothing edits it. Editing a bundle (name, description, prices, category, sort order) leaves it `special_only`.
+  - **Where it shows.** The public page lists a bundle only in the Specials section, only while one of its specials is live (on, and inside its window). Before the window, after it, with its special off, or with no special, it is on no public path. The owner's editor lists every bundle in its category whatever its state, marked "Bundle", with a note when it isn't on the menu now.
+  - **Turning its special off** hides the bundle at once. The item stays in the editor. **Archiving** a bundle hides it everywhere, as for any item; its special stays in the table and shows nowhere.
+  - **Sold out.** The toggle works on a bundle like on any item, for staff too. A sold-out live bundle stays in Specials, greyed and labelled, after the available ones.
+  - **More windows.** A bundle can be given another special from the Specials form, which is a promotion on it. D-05 applies, so overlapping windows are refused with a 409.
+  - **The list.** A bundle's specials are in the Specials list with the same 20-latest limit as any other. The limit counts specials, not items, so a bundle whose special has dropped off the list is still in the item list and can be given a new special.
+  - **Order.** Live bundles come after promoted items in Specials, in their categories' order, then by sort order. Reordering categories reorders them.
 - Active specials list with an on/off toggle. The list shows every special of a live item that is on now or still to start, plus the 20 latest that are over or turned off, counted together, each with its dates and its state *(proposed)*. Nothing deletes a special, so without that limit the list would only grow. A special that is over simply stops showing on the page; nobody has to turn it off.
 - *(Proposed, D-05)*: reject a second active special for the same item when the date ranges overlap. Postgres holds it (`specials_no_overlap`), and the form says so with a 409. Turning a special back on can be refused for the same reason. Specials that meet at midnight (one ends Sunday, the next starts Monday) don't overlap.
 - Recurring specials (D-04): the columns exist, but no UI in v1.
 - A special on an item that is archived afterwards stays in the table and shows nowhere: not on the page, not in the list *(proposed)*. A sold-out item with a special still shows in Specials, greyed and labelled, after the available ones *(proposed)*.
 - The editor's controls for specials are owner only (S-26). Staff see none of them.
-- *(Proposed)*: bundles are not built yet (they need `visibility`); this section covers promotions only.
 
 ## Customer: public menu page
 
@@ -56,7 +66,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 
 ### Layout
 1. Restaurant name, plus the Wi-Fi details if set
-2. **Specials** section at the top, shown only when specials are active. It lists each item on special now, with its badge and prices, and the same item stays in its own category with the same special price *(proposed)*. A special with a price but no badge is labelled "Special" *(proposed)*
+2. **Specials** section at the top, shown only when specials are active. It lists each item on special now, with its badge and prices, and a promoted item stays in its own category with the same special price *(proposed)*. A live bundle is listed here and nowhere else *(proposed)*. A special with a price but no badge is labelled "Special" *(proposed)*
 3. Categories as a sticky horizontal jump bar, then items grouped by category
 4. Each item shows name, description, price(s) per `currency_mode`, a lazy-loaded thumbnail, and a "Sold out" label when unavailable. Sold-out items stay visible but greyed out and sorted last *(proposed)*.
 
