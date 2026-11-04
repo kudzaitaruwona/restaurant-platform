@@ -154,6 +154,8 @@ export function getMenu(ctx: Tenant, now = new Date()) {
     const [restaurant] = await tx
       .select({
         name: restaurants.name,
+        // The network's name only: the password isn't for a public page.
+        wifiName: restaurants.wifiName,
         menuToken: restaurants.menuToken,
         currencyMode: restaurants.currencyMode,
         timezone: restaurants.timezone,
@@ -215,6 +217,7 @@ export function getMenu(ctx: Tenant, now = new Date()) {
     );
     return {
       restaurantName: restaurant.name,
+      wifiName: restaurant.wifiName,
       menuToken: restaurant.menuToken,
       currencyMode: restaurant.currencyMode,
       timezone: restaurant.timezone,
