@@ -1,8 +1,11 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   foreignKey,
+  index,
+  integer,
   jsonb,
   numeric,
   pgEnum,
@@ -11,6 +14,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -89,7 +93,7 @@ export const restaurants = pgTable(
 
 /**
  * A trigger in the migrations keeps every restaurant at least one active owner
- * (S-26): see 0004_last_owner_and_contact_phone. Drizzle doesn't model triggers.
+ * (S-26): see 0005_last_owner_and_contact_phone. Drizzle doesn't model triggers.
  */
 export const staff = pgTable(
   "staff",
@@ -111,6 +115,9 @@ export const staff = pgTable(
       foreignColumns: [restaurants.id],
     }),
     unique().on(table.restaurantId, table.id),
+    // Sign-in compares emails without case, so uniqueness has to as well: one
+    // email must resolve to one person and so to one restaurant (S-30).
+    uniqueIndex("staff_email_lower_unique").on(sql`lower(${table.email})`),
     check(
       "staff_email_required",
       sql`${table.kind} = 'platform_admin' or ${table.email} is not null`,
@@ -125,13 +132,21 @@ export const staff = pgTable(
  * migration), so only the system and admin paths can read it. RLS is on with
  * no policy as a second lock.
  */
-export const platformAdmins = pgTable("platform_admins", {
-  id: uuid().primaryKey().defaultRandom(),
-  email: text().notNull().unique(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-}).enableRLS();
+export const platformAdmins = pgTable(
+  "platform_admins",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    email: text().notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("platform_admins_email_lower_unique").on(
+      sql`lower(${table.email})`,
+    ),
+  ],
+).enableRLS();
 
 /**
  * Append-only: app_tenant is granted SELECT and INSERT only (see the
@@ -163,3 +178,122 @@ export const auditLog = pgTable(
     tenantPolicy("restaurant_id"),
   ],
 );
+
+/**
+ * Better Auth's tables, one set per session type (S-30): a staff session, link
+ * or code means nothing to the platform-admin sign-in, and the other way round.
+ *
+ * Better Auth runs as app_tenant before any tenant is known, so these can't
+ * have a tenant policy. They get the reverse: visible only outside a tenant, so
+ * nothing inside withTenant() can read or change a credential. Same nullif as
+ * tenantPolicy, for the same reason.
+ *
+ * No password column and no OAuth token columns: S-27 stores no passwords, and
+ * Google is only asked who someone is (src/lib/auth).
+ */
+function authTables(prefix: "staff" | "admin") {
+  const name = (model: string) => `${prefix}_auth_${model}`;
+  const outsideTenantOnly = () => {
+    const noTenant = sql`nullif(current_setting('app.restaurant_id', true), '') is null`;
+    return pgPolicy("outside_tenant_only", {
+      for: "all",
+      using: noTenant,
+      withCheck: noTenant,
+    });
+  };
+  const at = (column: string) => timestamp(column, { withTimezone: true });
+
+  const user = pgTable(
+    name("user"),
+    {
+      id: text().primaryKey(),
+      name: text().notNull(),
+      email: text().notNull().unique(),
+      emailVerified: boolean("email_verified").notNull().default(false),
+      image: text(),
+      createdAt: at("created_at").notNull().defaultNow(),
+      updatedAt: at("updated_at").notNull().defaultNow(),
+    },
+    () => [outsideTenantOnly()],
+  );
+
+  const session = pgTable(
+    name("session"),
+    {
+      id: text().primaryKey(),
+      token: text().notNull().unique(),
+      userId: text("user_id")
+        .notNull()
+        .references(() => user.id, { onDelete: "cascade" }),
+      expiresAt: at("expires_at").notNull(),
+      ipAddress: text("ip_address"),
+      userAgent: text("user_agent"),
+      createdAt: at("created_at").notNull().defaultNow(),
+      updatedAt: at("updated_at").notNull().defaultNow(),
+    },
+    (table) => [index().on(table.userId), outsideTenantOnly()],
+  );
+
+  const account = pgTable(
+    name("account"),
+    {
+      id: text().primaryKey(),
+      accountId: text("account_id").notNull(),
+      providerId: text("provider_id").notNull(),
+      userId: text("user_id")
+        .notNull()
+        .references(() => user.id, { onDelete: "cascade" }),
+      scope: text(),
+      createdAt: at("created_at").notNull().defaultNow(),
+      updatedAt: at("updated_at").notNull().defaultNow(),
+    },
+    (table) => [
+      unique().on(table.providerId, table.accountId),
+      index().on(table.userId),
+      outsideTenantOnly(),
+    ],
+  );
+
+  const verification = pgTable(
+    name("verification"),
+    {
+      id: text().primaryKey(),
+      identifier: text().notNull(),
+      value: text().notNull(),
+      expiresAt: at("expires_at").notNull(),
+      createdAt: at("created_at").notNull().defaultNow(),
+      updatedAt: at("updated_at").notNull().defaultNow(),
+    },
+    (table) => [index().on(table.identifier), outsideTenantOnly()],
+  );
+
+  const rateLimit = pgTable(
+    name("rate_limit"),
+    {
+      id: text().primaryKey(),
+      key: text().notNull().unique(),
+      count: integer().notNull(),
+      lastRequest: bigint("last_request", { mode: "number" }).notNull(),
+    },
+    () => [outsideTenantOnly()],
+  );
+
+  return { user, session, account, verification, rateLimit };
+}
+
+// Named exports, because drizzle-kit only looks at top-level tables.
+export const {
+  user: staffAuthUser,
+  session: staffAuthSession,
+  account: staffAuthAccount,
+  verification: staffAuthVerification,
+  rateLimit: staffAuthRateLimit,
+} = authTables("staff");
+
+export const {
+  user: adminAuthUser,
+  session: adminAuthSession,
+  account: adminAuthAccount,
+  verification: adminAuthVerification,
+  rateLimit: adminAuthRateLimit,
+} = authTables("admin");

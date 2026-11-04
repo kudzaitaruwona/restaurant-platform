@@ -43,6 +43,13 @@
       "when": 1793760100965,
       "tag": "0005_last_owner_and_contact_phone",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793760251366,
+      "tag": "0006_staff_login",
+      "breakpoints": true
     }
   ]
 }

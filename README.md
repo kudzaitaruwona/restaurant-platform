@@ -36,6 +36,8 @@ npm run dev
 
 Open http://localhost:3000, or http://localhost:3000/dashboard for the staff side. With `DEV_AUTH_BYPASS` set, the dev switcher on that page swaps between the five seeded identities: an owner and a staff member in each restaurant, and the platform admin, who lands on http://localhost:3000/admin. Owners also get `/dashboard/settings` and `/dashboard/staff`.
 
+With `DEV_AUTH_BYPASS` blank, sign in for real at http://localhost:3000/login (platform admin: `/login/admin`) with a seeded email such as `a-owner@dev.example.test`. This needs `AUTH_SECRET`. With `RESEND_API_KEY` blank, the link or code is printed to the server console. Google needs its own client.
+
 The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Against a plain local Postgres that needs Neon's wsproxy, which `NEON_WS_PROXY` points at. Leave `NEON_WS_PROXY` unset against Neon.
 
 | Command | What it does |
@@ -63,6 +65,12 @@ Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, co
 
 The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
 
+### Sign-in
+
+Staff and the platform admin sign in with a magic link, an emailed code or Google (S-27, S-30). `src/lib/auth` holds Better Auth, with one instance per session type: `/api/auth/staff/*` and `/api/auth/admin/*`. `getTenantContext()` and `getPlatformAdminContext()` read those sessions and check the staff or admin row on every request. Only an existing active staff record or platform admin can get a session, and the lookups go through `SECURITY DEFINER` functions, because RLS hides `staff` before a tenant is known.
+
+`src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher.
+
 ### Environment
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, which includes a local `npm run start`: leave both blank to run a production build on your machine.
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine.

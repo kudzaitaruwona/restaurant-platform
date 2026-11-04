@@ -11,6 +11,7 @@ import { statusOf } from "../../../test/integration/http";
 const session = vi.hoisted(() => ({ identity: "" }));
 
 vi.mock("next/headers", () => ({
+  headers: async () => new Headers(),
   cookies: async () => ({
     get: (name: string) => ({ name, value: session.identity }),
   }),

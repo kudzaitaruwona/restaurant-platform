@@ -13,6 +13,7 @@ import { devIdentities } from "./dev-identities";
 const request = vi.hoisted(() => ({ identity: undefined as string | undefined }));
 
 vi.mock("next/headers", () => ({
+  headers: async () => new Headers(),
   cookies: async () => ({
     get: (name: string) =>
       request.identity === undefined
@@ -123,7 +124,7 @@ describe("getTenantContext with DEV_AUTH_BYPASS", () => {
 });
 
 describe("getTenantContext without the bypass", () => {
-  it("refuses everyone when DEV_AUTH_BYPASS is unset: no login exists yet", async () => {
+  it("ignores the dev cookie when DEV_AUTH_BYPASS is unset: only a session counts", async () => {
     vi.stubEnv("DEV_AUTH_BYPASS", "");
     request.identity = aOwner.key;
     const { getTenantContext } = await seam();

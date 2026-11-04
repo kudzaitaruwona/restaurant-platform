@@ -1,9 +1,13 @@
 import "server-only";
 import { sql, type SQL } from "drizzle-orm";
+import { headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
 import { getDb } from "@/db";
 import type { currencyMode } from "@/db/schema";
-import { currentIdentity } from "./index";
+import { sessionEmail } from "@/lib/auth";
+import { findStaffIdentity } from "@/lib/auth/identity";
+import { devAuthBypassEnabled } from "@/lib/env";
+import { currentIdentity, sessionPlatformAdminId } from "./index";
 
 /**
  * The platform-admin seam: who the admin is, and the only code that calls the
@@ -19,14 +23,26 @@ export type CurrencyMode = (typeof currencyMode.enumValues)[number];
 /**
  * The only source of platform-admin identity, as getTenantContext() is for
  * tenants. Ends the request with a 401 for anyone without an identity, and a 403
- * for restaurant staff.
+ * for restaurant staff. A separate session from staff (D-07), and the admin row
+ * is checked every time, so removing it ends the session on the next request.
  */
 export async function getPlatformAdminContext(): Promise<PlatformAdminContext> {
-  const identity = await currentIdentity();
-  if (!identity) unauthorized();
-  if (!("platformAdminId" in identity)) forbidden();
+  if (devAuthBypassEnabled()) {
+    const identity = await currentIdentity();
+    if (!identity) unauthorized();
+    if (!("platformAdminId" in identity)) forbidden();
 
-  return { platformAdminId: identity.platformAdminId };
+    return { platformAdminId: identity.platformAdminId };
+  }
+
+  const requestHeaders = await headers();
+
+  const platformAdminId = await sessionPlatformAdminId(requestHeaders);
+  if (platformAdminId) return { platformAdminId };
+
+  const staffEmail = await sessionEmail("staff", requestHeaders);
+  if (staffEmail && (await findStaffIdentity(staffEmail))) forbidden();
+  unauthorized();
 }
 
 export const DEFAULT_TIMEZONE = "Africa/Harare";

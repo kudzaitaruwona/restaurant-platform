@@ -327,9 +327,13 @@ describe("every SECURITY DEFINER function", () => {
   it("exists, so this suite tests something", async () => {
     expect((await definers()).map(({ name }) => name).sort()).toEqual(
       expect.arrayContaining([
+        "end_staff_sessions",
+        "platform_admin_id_by_email",
         "platform_create_first_owner",
         "platform_create_restaurant",
         "platform_list_restaurants",
+        "staff_identity_by_email",
+        "staff_keep_last_owner",
       ]),
     );
   });

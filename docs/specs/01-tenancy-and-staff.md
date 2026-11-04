@@ -35,6 +35,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ### Tenant isolation
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
 - **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept.
+- **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
 - **System routes** (the scheduled job and the Meta webhook, spec 05) work across all tenants. They use a separate database role with `BYPASSRLS`, whose credentials only those two route handlers load. They must still filter by `restaurant_id` explicitly whenever they act on one booking.
 - Postgres RLS policies on every tenant table use `current_setting('app.restaurant_id')`, set per transaction.
 - Composite foreign keys (see spec 00) are the backstop.
@@ -46,6 +47,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - Sign-in only succeeds for an email that already belongs to an active staff record (or a platform admin). There is no self sign-up, including through Google.
 - Session cookie: httpOnly, secure, SameSite=Lax. Sessions expire after 30 days idle *(proposed)*, because restaurant tablets stay logged in.
 - Deactivating a staff member (`active = false`) kills their sessions immediately.
+- How it's built, including the lookup before a tenant exists, where Better Auth's tables sit and the Origin check on writes: S-30. Email provider: D-09 *(proposed)*.
 
 ### Platform admin and onboarding
 - Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26).

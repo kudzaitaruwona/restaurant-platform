@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { eq, like } from "drizzle-orm";
+import { eq, inArray, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
@@ -11,11 +11,13 @@ import {
   it,
   vi,
 } from "vitest";
-import { restaurants, staff } from "@/db/schema";
+import { adminAuthUser, restaurants, staff, staffAuthUser } from "@/db/schema";
+import { signIn } from "../../../test/integration/auth";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
+import { installFakeServices } from "../../../test/integration/fake-services";
 import { statusOf } from "../../../test/integration/http";
 import {
   devIdentities,
@@ -31,15 +33,24 @@ import {
  * the coverage test, so a new one can't skip the harness. Platform-admin routes
  * go in `adminRoutes`: no restaurant identity gets past them, on anyone's IDs.
  *
- * Handlers run for real against Postgres, as the RLS-bound role. Only the
- * cookie jar is faked: that's the session, and it's the input under test.
+ * Handlers run for real against Postgres, as the RLS-bound role, and every
+ * identity below is a real session: signed in through the real endpoints with
+ * the dev bypass off. `next/headers` is faked only to hand a handler the request
+ * that identity's browser would send.
  */
-const session = vi.hoisted(() => ({ identity: "" }));
+const session = vi.hoisted(() => ({
+  identity: "",
+  signedIn: new Map<string, string>(),
+}));
 
 vi.mock("next/headers", () => ({
-  cookies: async () => ({
-    get: (name: string) => ({ name, value: session.identity }),
-  }),
+  headers: async () =>
+    new Headers({ cookie: session.signedIn.get(session.identity) ?? "" }),
+}));
+
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (task: Promise<unknown>) => task,
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
@@ -198,7 +209,12 @@ const adminRoutes: AdminRoute[] = [
 ];
 
 /** Holds no tenant data: tested in src/app/api/dev/identity/route.int.test.ts. */
-const outsideTheHarness = ["POST /api/dev/identity"];
+const outsideTheHarness = [
+  "POST /api/dev/identity",
+  // Sign-in itself, before any tenant: src/lib/auth/auth.int.test.ts.
+  "GET /api/auth/[audience]/[...all]",
+  "POST /api/auth/[audience]/[...all]",
+];
 
 const [aOwner, aStaff, bOwner, bStaff] = devIdentities;
 const restaurantAIdentities = [aOwner, aStaff];
@@ -211,10 +227,19 @@ const fixtures = {
   b: { staffId: crypto.randomUUID(), restaurantId: bOwner.restaurantId },
 };
 const fixtureName = "Harness fixture";
+const emailOf = (key: string) => `${key}@dev.example.test`;
 
 beforeAll(async () => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
-  vi.stubEnv("DEV_AUTH_BYPASS", "1");
+  vi.stubEnv("DEV_AUTH_BYPASS", "");
+  const services = installFakeServices();
+  for (const { key } of devIdentities) {
+    session.signedIn.set(key, await signIn(services, "staff", emailOf(key)));
+  }
+  session.signedIn.set(
+    devPlatformAdmin.key,
+    await signIn(services, "admin", devPlatformAdmin.email),
+  );
   await owner.db.insert(staff).values(
     Object.values(fixtures).map(({ staffId, restaurantId }) => ({
       id: staffId,
@@ -238,8 +263,18 @@ afterAll(async () => {
   }
   // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await owner.db.delete(staff).where(like(staff.email, `${addedEmailPrefix}%`));
+  await owner.db.delete(staffAuthUser).where(
+    inArray(
+      staffAuthUser.email,
+      devIdentities.map(({ key }) => emailOf(key)),
+    ),
+  );
+  await owner.db
+    .delete(adminAuthUser)
+    .where(eq(adminAuthUser.email, devPlatformAdmin.email));
   await owner.pool.end();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 const displayName = async (staffId: string) => {
@@ -338,6 +373,17 @@ describe("cross-tenant access", () => {
       }
     }
   });
+});
+
+describe("no session", () => {
+  it.each(routes.map((route) => [route.name, route] as const))(
+    "%s: is a 401 and changes nothing",
+    async (_name, route) => {
+      session.identity = "";
+      expect(await statusOf(() => route.call(fixtures.a))).toBe(401);
+      expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
+    },
+  );
 });
 
 describe("request input can't choose the tenant", () => {

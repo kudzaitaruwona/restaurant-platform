@@ -42,6 +42,11 @@ jobs:
           R2_SECRET_ACCESS_KEY: ci
           R2_BUCKET: ci
           R2_PUBLIC_BASE_URL: https://images.example.test
+          AUTH_SECRET: ci-stand-in-of-at-least-32-characters
+          GOOGLE_CLIENT_ID: ci
+          GOOGLE_CLIENT_SECRET: ci
+          RESEND_API_KEY: ci
+          EMAIL_FROM: ci@example.test
         run: |
           status=0
           timeout 30 npx next start > start.log 2>&1 || status=$?

@@ -1,10 +1,13 @@
 import "server-only";
+import { cache } from "react";
 import { and, eq, sql } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
 import { getDb } from "@/db";
 import type { Database } from "@/db/client";
 import { staff } from "@/db/schema";
+import { sessionEmail } from "@/lib/auth";
+import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
 import {
   defaultDevIdentity,
@@ -45,9 +48,31 @@ export function withTenant<T>(
   });
 }
 
+/** The platform admin a real admin session belongs to, if any. */
+export async function sessionPlatformAdminId(requestHeaders: Headers) {
+  const email = await sessionEmail("admin", requestHeaders);
+  return email ? findPlatformAdminId(email) : undefined;
+}
+
 /**
- * Who is signed in. Real login (ticket 1.6) replaces this function and nothing
- * else. Until then, the only identities are the dev bypass's.
+ * Who the real session says this is. findStaffIdentity runs on every request,
+ * not just at sign-in, so deactivating someone logs them out on their next one.
+ * A platform admin has no tenant, so gets the 403 the dev bypass gives them
+ * rather than being told they're signed out.
+ */
+async function sessionIdentity() {
+  // First, because reading headers is what keeps pages that call this out of
+  // `next build`, which has no secrets to build a session with.
+  const requestHeaders = await headers();
+  const email = await sessionEmail("staff", requestHeaders);
+  const member = email ? await findStaffIdentity(email) : undefined;
+  if (!member && (await sessionPlatformAdminId(requestHeaders))) forbidden();
+  return member;
+}
+
+/**
+ * The dev bypass's identity (S-25), if it's on. `next build` compiles this out
+ * of production.
  */
 export async function currentIdentity() {
   if (!devAuthBypassEnabled()) return undefined;
@@ -62,7 +87,13 @@ export async function currentIdentity() {
  * active staff record, and a 403 for a platform admin, who has no tenant until
  * entering a restaurant (ticket 1.3).
  */
-export async function getTenantContext(): Promise<TenantContext> {
+export const getTenantContext = cache(async (): Promise<TenantContext> => {
+  if (!devAuthBypassEnabled()) {
+    const member = await sessionIdentity();
+    if (!member) unauthorized();
+    return member;
+  }
+
   const identity = await currentIdentity();
   if (!identity) unauthorized();
   if ("platformAdminId" in identity) forbidden();
@@ -83,7 +114,7 @@ export async function getTenantContext(): Promise<TenantContext> {
   if (!member) unauthorized();
 
   return { restaurantId, staffId, role: member.role };
-}
+});
 
 /** Guards owner-only actions (S-26). RLS is tenant-only, so roles live here. */
 export function requireOwner(ctx: TenantContext) {

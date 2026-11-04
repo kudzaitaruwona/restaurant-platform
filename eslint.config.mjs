@@ -4,9 +4,16 @@ import nextTs from "eslint-config-next/typescript";
 
 const appCode = ["**/*.{js,jsx,mjs,ts,tsx,mts}"];
 const storageModule = ["src/lib/storage/**"];
-// src/db, the tenant seam, and the tooling that runs outside any request:
-// migrations, seeds and the tests' own connections.
-const databaseSeam = ["src/db/**", "src/lib/tenant/**", "scripts/**", "test/**"];
+// src/db, the tenant seam, sign-in (which runs before any tenant exists), and
+// the tooling that runs outside any request: migrations, seeds and the tests'
+// own connections.
+const databaseSeam = [
+  "src/db/**",
+  "src/lib/tenant/**",
+  "src/lib/auth/**",
+  "scripts/**",
+  "test/**",
+];
 
 // Photo storage boundary (D-07): app code touches storage only through
 // uploadImage / deleteImage / getUrl from "@/lib/storage".

@@ -8,6 +8,11 @@ const validEnv = {
   R2_SECRET_ACCESS_KEY: "secret",
   R2_BUCKET: "photos",
   R2_PUBLIC_BASE_URL: "https://images.example.test",
+  AUTH_SECRET: "a-secret-of-at-least-thirty-two-characters",
+  GOOGLE_CLIENT_ID: "client-id",
+  GOOGLE_CLIENT_SECRET: "client-secret",
+  RESEND_API_KEY: "re_key",
+  EMAIL_FROM: "Sign-in <sign-in@example.test>",
 };
 
 async function register() {
