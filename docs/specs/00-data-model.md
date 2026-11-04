@@ -72,6 +72,7 @@ menu_items
   price_zig             numeric null                -- set = fixed ZiG price
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)
   CHECK (price_usd >= 0 AND price_zig >= 0)
+  CHECK (price_usd < 'Infinity' AND price_zig < 'Infinity')  -- menu_items_prices_finite: every money column needs this finite check, because NaN and Infinity pass > 0 in Postgres numeric
   visibility            enum(regular, special_only) default 'regular'
   is_available          bool default true           -- "kitchen ran out"
   sort_order
