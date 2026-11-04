@@ -28,7 +28,7 @@ The token identifies the table on the server. The URL never contains the table l
 - `bookable = false` keeps a table out of online booking, for walk-in-only or bar tables.
 
 ## Print sheet
-- One page, `/admin/tables/print`, prints with the browser's print function (no PDF library).
+- One page, `/dashboard/tables/print` (staff pages live under `/dashboard/*`, see S-33), prints with the browser's print function (no PDF library).
 - A4 layout with 2×3 cards per page *(proposed)*. Each card shows the restaurant name, the table label in large type, the QR code (SVG, at least 3cm wide), a short instruction, and the Wi-Fi details if set.
 - Options: print all tables, print selected tables, and include the generic menu QR card (for the door or the counter).
 - QR codes are generated server-side as SVG with error-correction level M, using the `qrcode` npm package.
@@ -37,6 +37,8 @@ The token identifies the table on the server. The URL never contains the table l
 - At least 128 bits of randomness, base62-encoded (about 22 characters)
 - Unique across the whole platform, so a token on its own identifies the table and the restaurant
 - An unknown or regenerated token shows a friendly "This code is out of date — ask staff" page with a link to the restaurant's generic menu if it can be resolved. No 500 error.
+- An archived table's code is treated the same way: it shows the out-of-date page *(proposed)*. The lookup returns nothing for an archived table, so the generic-menu link can't appear for it. Whether it should is open (#4, #28).
+- A label is 1 to 50 characters and a capacity is a whole number from 1 to 100 *(proposed)*. The spec only asks for a unique label and a capacity above 0; the upper limits keep a typo off the print sheet.
 - Scans are not logged with any customer data. Phase 6 only bumps the session's `last_activity_at`.
 
 ## Out of scope (v1)

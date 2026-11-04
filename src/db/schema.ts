@@ -274,7 +274,8 @@ export const menuItems = pgTable(
 /**
  * Tables (spec 00, 3). `qr_token` is unique across the platform, so a token on
  * its own names the table and the restaurant (spec 03). Archiving frees the
- * label but the table keeps its token, which stops working (see the lookup).
+ * label but the table keeps its token, which stops working (see the lookup;
+ * spec 03 › Token rules records that as proposed).
  */
 export const diningTables = pgTable(
   "tables",

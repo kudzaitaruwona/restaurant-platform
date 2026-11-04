@@ -332,9 +332,6 @@ describe("the tables route", () => {
 });
 
 describe("/dashboard/tables/print", () => {
-  const scanned = (html: string) =>
-    [...html.matchAll(/\/t\/([0-9A-Za-z]{22})/g)].map((match) => match[1]);
-
   it("has a card for a table the moment it is added: restaurant, label, instruction and Wi-Fi", async () => {
     await newTable("Patio 1");
 
@@ -399,7 +396,9 @@ describe("/dashboard/tables/print", () => {
 
       expect(html).toContain("Mine");
       expect(html).not.toContain("Theirs");
-      expect(scanned(html)).not.toContain("T".repeat(22));
+      // The URL is only in the QR's path data, so look for the whole picture.
+      const theirCode = await qrSvg(tableCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, "T".repeat(22)));
+      expect(html).not.toContain(theirCode.trim());
     } finally {
       await owner.db.delete(diningTables).where(eq(diningTables.restaurantId, otherId));
       await owner.db.delete(restaurants).where(eq(restaurants.id, otherId));

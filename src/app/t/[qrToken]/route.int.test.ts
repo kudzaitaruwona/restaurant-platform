@@ -131,6 +131,14 @@ describe("/t/{qr_token}", () => {
     }
   });
 
+  it("answers a NUL in the token with the out-of-date page, not a 500", async () => {
+    // /t/%00 decodes to a NUL, which Postgres can't store in text.
+    const response = await scan("\0");
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain("This code is out of date");
+  });
+
   it("doesn't take a restaurant's menu token for a table's", async () => {
     const { menuToken } = await newRestaurant("Menu token", "Stew");
     expect((await scan(menuToken)).status).toBe(404);

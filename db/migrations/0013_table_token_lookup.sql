@@ -4,7 +4,7 @@
 -- else about the table leaves it, so a printed code can't be used to read one.
 --
 -- An archived table's code resolves to nothing: the "out of date" page, same as
--- a regenerated one (spec 03 › Token rules).
+-- a regenerated one. The spec's Token rules record this as proposed.
 CREATE FUNCTION public.restaurant_id_by_table_token(p_token text)
 RETURNS uuid
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
