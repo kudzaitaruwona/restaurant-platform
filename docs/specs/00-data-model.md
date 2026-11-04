@@ -50,6 +50,10 @@ staff
 platform_admins                               -- Kudzai, for hand-onboarding
   id, email unique, created_at                -- case-insensitive; passwordless sign-in (S-27)
 
+onboarding_checklist                          -- S-33: admin only (app_tenant has no privilege); a row means "QR codes printed" is ticked
+  restaurant_id         pk → restaurants    -- cascade; the other checklist items are derived, not stored
+  qr_codes_printed_at, qr_codes_printed_by → platform_admins
+
 audit_log
   id, restaurant_id
   actor_type            enum(staff, platform_admin, system)

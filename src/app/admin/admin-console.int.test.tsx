@@ -58,6 +58,27 @@ describe("the admin screen", () => {
     expect(html).toContain("Enter restaurant");
   });
 
+  it("shows each restaurant's onboarding checklist, all seven items", async () => {
+    const html = await render();
+    for (const label of [
+      "Menu entered",
+      "Photos",
+      "Exchange rate set",
+      "Tables added",
+      "QR codes printed",
+      "Booking hours set",
+      "Booking enabled",
+    ]) {
+      expect(html.split(label).length - 1).toBeGreaterThanOrEqual(devRestaurants.length);
+    }
+  });
+
+  it("lets the admin tick QR codes printed, as an unticked box to start", async () => {
+    const html = await render();
+    expect(html).toContain("Tick as printed");
+    expect(html).toContain('<input type="hidden" name="printed" value="true"/>');
+  });
+
   it("doesn't offer a first owner to a restaurant that has one", async () => {
     const html = await render();
     expect(html).not.toContain(`${devRestaurants[0].id}/owner`);

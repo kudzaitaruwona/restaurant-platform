@@ -194,6 +194,37 @@ export const platformAdmins = pgTable(
 ).enableRLS();
 
 /**
+ * The one onboarding item that can't be derived from the restaurant's data
+ * (spec 01): that its QR codes have been printed, ticked by the platform admin.
+ * A row means ticked and unticking deletes it. Admin only: app_tenant is
+ * granted nothing on it (see 0027), so the checklist never reaches an owner,
+ * and app_admin touches it through platform_set_qr_codes_printed alone.
+ * `qr_codes_printed_by` is a platform admin, who belongs to no restaurant, so it
+ * is not a composite key into staff.
+ */
+export const onboardingChecklist = pgTable(
+  "onboarding_checklist",
+  {
+    restaurantId: uuid("restaurant_id").primaryKey(),
+    id: uuid().notNull().defaultRandom(),
+    qrCodesPrintedAt: timestamp("qr_codes_printed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    qrCodesPrintedBy: uuid("qr_codes_printed_by")
+      .notNull()
+      .references(() => platformAdmins.id),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }).onDelete("cascade"),
+    unique().on(table.restaurantId, table.id),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
  * Append-only: app_tenant is granted SELECT and INSERT only (see the
  * migration), so no tenant code can alter or remove an entry. `actor_id` has no
  * foreign key because it points at staff, a platform admin or nothing,

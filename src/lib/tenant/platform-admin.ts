@@ -154,3 +154,76 @@ export async function listRestaurants(admin: Admin) {
     hasOwner: has_owner,
   }));
 }
+
+/** The items on a restaurant's onboarding checklist (spec 01), in display order. */
+export const onboardingItems = [
+  { key: "menuEntered", label: "Menu entered" },
+  { key: "photos", label: "Photos" },
+  { key: "exchangeRateSet", label: "Exchange rate set" },
+  { key: "tablesAdded", label: "Tables added" },
+  { key: "qrCodesPrinted", label: "QR codes printed" },
+  { key: "bookingHoursSet", label: "Booking hours set" },
+  { key: "bookingEnabled", label: "Booking enabled" },
+] as const;
+
+export type OnboardingChecklist = Record<(typeof onboardingItems)[number]["key"], boolean> & {
+  /** When "QR codes printed" was ticked; null while it isn't. */
+  qrCodesPrintedAt: Date | null;
+};
+
+/**
+ * Every restaurant's onboarding checklist, by restaurant id. Admin only: the
+ * function is the one place that reads across tenants, and tenants get nothing
+ * on the table behind the manual tick. Everything but "QR codes printed" is
+ * derived from the restaurant's data.
+ */
+export async function onboardingChecklists(admin: Admin) {
+  const { rows } = await getAdminDb().execute<{
+    restaurant_id: string;
+    menu_entered: boolean;
+    photos: boolean;
+    exchange_rate_set: boolean;
+    tables_added: boolean;
+    qr_codes_printed: boolean;
+    qr_codes_printed_at: string | null;
+    booking_hours_set: boolean;
+    booking_enabled: boolean;
+  }>(sql`select * from platform_onboarding_checklist(${admin.platformAdminId})`);
+  return new Map<string, OnboardingChecklist>(
+    rows.map((row) => [
+      row.restaurant_id,
+      {
+        menuEntered: row.menu_entered,
+        photos: row.photos,
+        exchangeRateSet: row.exchange_rate_set,
+        tablesAdded: row.tables_added,
+        qrCodesPrinted: row.qr_codes_printed,
+        qrCodesPrintedAt: row.qr_codes_printed_at ? new Date(row.qr_codes_printed_at) : null,
+        bookingHoursSet: row.booking_hours_set,
+        bookingEnabled: row.booking_enabled,
+      },
+    ]),
+  );
+}
+
+/**
+ * Ticks or unticks "QR codes printed", the one item nothing in the database can
+ * show, and audits the change. The restaurant id is the admin's choice of
+ * tenant, as for entering one.
+ */
+export async function setQrCodesPrinted(
+  admin: Admin,
+  restaurantId: string,
+  printed: boolean,
+): Promise<{ problem: "no_restaurant" } | { problem?: undefined }> {
+  try {
+    await getAdminDb().execute(
+      sql`select platform_set_qr_codes_printed(${admin.platformAdminId}, ${restaurantId}, ${printed})`,
+    );
+    return {};
+  } catch (error) {
+    const { code } = (error as { cause?: { code?: string } }).cause ?? {};
+    if (code === NO_DATA_FOUND) return { problem: "no_restaurant" };
+    throw error;
+  }
+}

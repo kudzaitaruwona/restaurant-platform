@@ -124,6 +124,8 @@ describe("app_tenant, with app.restaurant_id cleared", () => {
     ["platform_admin_id_by_email", sql`select platform_admin_id_by_email(${devPlatformAdmin.email})`],
     ["platform_enter_restaurant", sql`select platform_enter_restaurant(${adminId}, ${devPlatformAdmin.sessionId}, ${restaurantA})`],
     ["platform_leave_restaurant", sql`select platform_leave_restaurant(${adminId}, ${devPlatformAdmin.sessionId})`],
+    ["platform_onboarding_checklist", sql`select * from platform_onboarding_checklist(${adminId})`],
+    ["platform_set_qr_codes_printed", sql`select platform_set_qr_codes_printed(${adminId}, ${restaurantA}, true)`],
   ] as const;
 
   it.each(platformFunctions)("can't call %s", async (_name, call) => {
@@ -149,6 +151,21 @@ describe("app_tenant, with app.restaurant_id cleared", () => {
     );
     for (const { name, executors } of rows) {
       expect(executors, name).toEqual(["app_admin"]);
+    }
+  });
+
+  it("can't read or change the onboarding checklist, which is the admin's alone", async () => {
+    for (const statement of [
+      sql`select * from onboarding_checklist`,
+      sql`insert into onboarding_checklist (restaurant_id, qr_codes_printed_by) values (${restaurantA}, ${adminId})`,
+      sql`delete from onboarding_checklist`,
+    ]) {
+      await expect(
+        app.db.transaction(async (tx) => {
+          await tx.execute(sql`select set_config('app.restaurant_id', ${restaurantA}, true)`);
+          return tx.execute(statement);
+        }),
+      ).rejects.toMatchObject(refused);
     }
   });
 
