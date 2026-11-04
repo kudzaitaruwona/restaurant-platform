@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   foreignKey,
+  jsonb,
   numeric,
   pgEnum,
   pgPolicy,
@@ -49,6 +50,12 @@ export const currencyMode = pgEnum("currency_mode", [
 ]);
 
 export const staffKind = pgEnum("staff_kind", ["staff", "platform_admin"]);
+
+export const auditActorType = pgEnum("audit_actor_type", [
+  "staff",
+  "platform_admin",
+  "system",
+]);
 
 export const staffRole = pgEnum("staff_role", ["owner", "staff"]);
 
@@ -98,6 +105,51 @@ export const staff = pgTable(
       "staff_email_required",
       sql`${table.kind} = 'platform_admin' or ${table.email} is not null`,
     ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * Platform admins (Kudzai) sign in here, not through `staff`. Not a tenant
+ * table: no restaurant_id, and app_tenant is granted nothing on it (see the
+ * migration), so only the system and admin paths can read it. RLS is on with
+ * no policy as a second lock.
+ */
+export const platformAdmins = pgTable("platform_admins", {
+  id: uuid().primaryKey().defaultRandom(),
+  email: text().notNull().unique(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+}).enableRLS();
+
+/**
+ * Append-only: app_tenant is granted SELECT and INSERT only (see the
+ * migration), so no tenant code can alter or remove an entry. `actor_id` has no
+ * foreign key because it points at staff, a platform admin or nothing,
+ * depending on `actor_type`.
+ */
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    actorType: auditActorType("actor_type").notNull(),
+    actorId: uuid("actor_id"),
+    action: text().notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: uuid("entity_id").notNull(),
+    details: jsonb().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
     tenantPolicy("restaurant_id"),
   ],
 );

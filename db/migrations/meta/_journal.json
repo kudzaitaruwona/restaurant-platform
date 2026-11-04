@@ -22,6 +22,13 @@
       "when": 1793757281550,
       "tag": "0002_app_tenant_role",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793759522507,
+      "tag": "0003_audit_log_and_platform_admins",
+      "breakpoints": true
     }
   ]
 }
