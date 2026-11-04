@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseRestaurantSettings, timeZoneNames } from "./restaurant-settings";
+import {
+  isTimeZone,
+  parseRestaurantSettings,
+  timeZoneNames,
+  timeZoneOptions,
+} from "./restaurant-settings";
 
 const valid = {
   name: "Mama's Kitchen",
@@ -90,7 +95,19 @@ describe("parseRestaurantSettings", () => {
     },
   );
 
-  it.each(["Mars/Olympus", "africa/harare", "+02:00", "CAT", ""])(
+  // Real names this runtime's list leaves out, so a restaurant can hold them.
+  it.each([
+    "Asia/Kolkata",
+    "Europe/Kyiv",
+    "US/Eastern",
+    "Etc/UTC",
+    "GMT",
+    "Etc/GMT+2",
+  ])("accepts the alias %s, which the list needn't have", (timezone) => {
+    expect(parse({ timezone })).toMatchObject({ data: { timezone } });
+  });
+
+  it.each(["Mars/Olympus", "africa/harare", "AFRICA/HARARE", "+02:00", "CAT", ""])(
     "refuses the timezone %j",
     (timezone) => {
       expect(parse({ timezone })).toMatchObject({ success: false });
@@ -99,6 +116,20 @@ describe("parseRestaurantSettings", () => {
 
   it("offers the default timezone", () => {
     expect(timeZoneNames).toContain("Africa/Harare");
+  });
+
+  it("accepts every timezone it offers, whatever this runtime's list holds", () => {
+    expect(timeZoneNames.filter((zone) => !isTimeZone(zone))).toEqual([]);
+  });
+
+  it("offers a stored timezone that isn't on the list, in order", () => {
+    const options = timeZoneOptions("US/Eastern");
+    expect(options).toContain("US/Eastern");
+    expect(options).toEqual([...options].sort());
+  });
+
+  it("offers each timezone once", () => {
+    expect(timeZoneOptions("Africa/Harare")).toEqual(timeZoneNames);
   });
 
   it("refuses a form with a field missing, rather than blanking it", () => {

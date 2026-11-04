@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { currencyMode } from "@/db/schema";
-import { getRestaurantSettings, timeZoneNames } from "@/lib/restaurant-settings";
+import { getRestaurantSettings, timeZoneOptions } from "@/lib/restaurant-settings";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
 import { Field, inputClassName } from "../field";
@@ -92,7 +92,7 @@ export async function SettingsScreen() {
             defaultValue={settings.timezone}
             className={inputClassName}
           >
-            {timeZoneNames.map((zone) => (
+            {timeZoneOptions(settings.timezone).map((zone) => (
               <option key={zone} value={zone}>
                 {zone}
               </option>

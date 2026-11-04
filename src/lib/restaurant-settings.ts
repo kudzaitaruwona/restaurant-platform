@@ -12,12 +12,34 @@ import { type TenantContext, withTenant } from "@/lib/tenant";
 
 type Tenant = Pick<TenantContext, "restaurantId">;
 
-/** Exact names only: Intl alone would also take `africa/harare` and `+02:00`. */
+/** What the settings screen offers. Varies with the runtime's ICU data. */
 export const timeZoneNames = [
   ...new Set([...Intl.supportedValuesOf("timeZone"), "UTC"]),
 ].sort();
 
-const timeZones = new Set(timeZoneNames);
+/** A stored zone off the list still has to be an option, or saving replaces it. */
+export const timeZoneOptions = (stored: string) =>
+  timeZoneNames.includes(stored)
+    ? timeZoneNames
+    : [...timeZoneNames, stored].sort();
+
+// Intl alone would also take `africa/harare`, `+02:00` and `CAT`.
+const timeZoneSpelling = /^(UTC|GMT|(US|[A-Z][a-z]+)(\/[A-Z][A-Za-z0-9_+-]*)+)$/;
+
+/**
+ * The one test of a timezone, for creating a restaurant and for saving its
+ * settings. Not the list above: that leaves out real names, like Asia/Kolkata,
+ * and which ones depends on the runtime.
+ */
+export function isTimeZone(value: string) {
+  if (!timeZoneSpelling.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const E164 = /^\+[1-9][0-9]{1,14}$/;
 
@@ -51,9 +73,7 @@ const settingsForm = z.object({
     .max(200, messages.wifiPassword)
     .transform(blankToNull),
   currencyMode: z.enum(currencyMode.enumValues, messages.currencyMode),
-  timezone: z
-    .string(messages.timezone)
-    .refine((value) => timeZones.has(value), messages.timezone),
+  timezone: z.string(messages.timezone).refine(isTimeZone, messages.timezone),
 });
 
 export type RestaurantSettings = z.output<typeof settingsForm>;

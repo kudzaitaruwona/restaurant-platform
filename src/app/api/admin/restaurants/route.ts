@@ -1,20 +1,12 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { currencyMode } from "@/db/schema";
+import { isTimeZone } from "@/lib/restaurant-settings";
 import {
   createRestaurant,
   DEFAULT_TIMEZONE,
   getPlatformAdminContext,
 } from "@/lib/tenant/platform-admin";
-
-const isTimeZone = (value: string) => {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: value });
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const unknownTimezone = "Enter a timezone like Africa/Harare.";
 

@@ -274,6 +274,49 @@ describe("/dashboard/settings", () => {
     expect(row.wifiName).toBe("Mamas Guest");
   });
 
+  describe.each(["US/Eastern", "Asia/Kolkata", "Etc/GMT+2"])(
+    "with a stored timezone the list leaves out: %s",
+    (timezone) => {
+      beforeEach(async () => {
+        await owner.db
+          .update(restaurants)
+          .set({ timezone })
+          .where(eq(restaurants.id, tenant.restaurantId));
+      });
+
+      /** What a browser submits: the selected option, or else the first. */
+      const submittedTimezone = (html: string) => {
+        const [select] = /<select[^>]*name="timezone"[\s\S]*?<\/select>/.exec(html)!;
+        const options = [...select.matchAll(/<option[^>]*>/g)].map(([tag]) => tag);
+        const chosen = options.find((tag) => / selected/.test(tag)) ?? options[0];
+        return /value="([^"]+)"/.exec(chosen)![1];
+      };
+
+      it("shows it as the selected option", async () => {
+        expect(submittedTimezone(await screen(SettingsScreen))).toBe(timezone);
+      });
+
+      it("survives a save that only changes the Wi-Fi", async () => {
+        const html = await screen(SettingsScreen);
+
+        const response = await saveSettings(
+          post("/api/restaurant", {
+            ...settings,
+            wifiName: "New Wi-Fi",
+            timezone: submittedTimezone(html),
+          }),
+        );
+
+        expect(response.status).toBe(303);
+        const [row] = await owner.db
+          .select()
+          .from(restaurants)
+          .where(eq(restaurants.id, tenant.restaurantId));
+        expect(row).toMatchObject({ wifiName: "New Wi-Fi", timezone });
+      });
+    },
+  );
+
   it("is a 403 for staff, so they never receive the Wi-Fi password", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => SettingsScreen())).toBe(403);

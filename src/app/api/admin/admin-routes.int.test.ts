@@ -107,6 +107,16 @@ describe("POST /api/admin/restaurants", () => {
     expect((await restaurantRow(id)).timezone).toBe("Africa/Harare");
   });
 
+  it.each(["Asia/Kolkata", "Etc/GMT+2"])(
+    "takes %s, which the settings screen must then cope with",
+    async (timezone) => {
+      const id = await created(
+        await createRestaurant({ ...validRestaurant(), timezone }),
+      );
+      expect((await restaurantRow(id)).timezone).toBe(timezone);
+    },
+  );
+
   it("takes another timezone", async () => {
     const id = await created(
       await createRestaurant({ ...validRestaurant(), timezone: "Europe/London" }),
@@ -144,6 +154,8 @@ describe("POST /api/admin/restaurants", () => {
     ["a long slug", { slug: "x".repeat(64) }],
     ["an unknown timezone", { timezone: "Mars/Olympus" }],
     ["an offset, which Postgres doesn't know", { timezone: "+02:00" }],
+    ["a timezone in the wrong case", { timezone: "africa/harare" }],
+    ["a timezone abbreviation", { timezone: "CAT" }],
     ["no currency mode", { currencyMode: "" }],
     ["an unknown currency mode", { currencyMode: "gold" }],
   ])("is a 400 for %s", async (_label, change) => {
