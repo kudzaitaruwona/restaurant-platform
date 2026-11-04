@@ -27,6 +27,14 @@ const messageFor = (error: string | null) => {
   return error === "sign_in_refused" ? refused : expired;
 };
 
+/** The per-IP limiter passes in a minute. The per-email ceiling on codes doesn't. */
+export async function tooManyTriesMessage(response: Response) {
+  const body = await response.json().catch(() => undefined);
+  return body?.code === "sign_in_codes_paused"
+    ? "We can't send or accept more codes for this email today. Use a sign-in link or Google instead."
+    : "Too many tries. Wait a minute and try again.";
+}
+
 /**
  * Plain fetch rather than Better Auth's client: three calls don't need it. The
  * answer is the same whether or not an email is known, so the words are too.
@@ -49,7 +57,7 @@ export function SignInForm({ audience, destination, page }: Props) {
         body: JSON.stringify(body),
       });
       if (response.status === 429) {
-        setError("Too many tries. Wait a minute and try again.");
+        setError(await tooManyTriesMessage(response));
       }
       return response;
     } catch {

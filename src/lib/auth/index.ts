@@ -1,7 +1,7 @@
 import "server-only";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP, magicLink } from "better-auth/plugins";
 import { after } from "next/server";
 import { getDb } from "@/db";
@@ -18,6 +18,11 @@ import {
   staffAuthVerification,
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
+import {
+  clearCodeAttempts,
+  SIGN_IN_CODES_PAUSED,
+  spendCodeAttempt,
+} from "./code-limit";
 import {
   SESSION_MAX_AGE_SECONDS,
   secureCookies,
@@ -64,6 +69,9 @@ const signInPages: Record<Audience, string> = {
 
 const SIGN_IN_EXPIRY_MINUTES = 10;
 const signInExpirySeconds = SIGN_IN_EXPIRY_MINUTES * 60;
+
+const SEND_CODE_PATH = "/email-otp/send-verification-otp";
+const USE_CODE_PATH = "/sign-in/email-otp";
 
 export const basePath = (audience: Audience) => `/api/auth/${audience}`;
 
@@ -128,6 +136,26 @@ function createAuth(audience: Audience) {
     rateLimit: {
       enabled: process.env.NODE_ENV === "production",
       storage: "database",
+    },
+    // The ceiling on codes, per email (S-30). Everyone is counted the same,
+    // known or not, so being refused says nothing about who works where. A
+    // malformed body goes on to fail Better Auth's own validation.
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== SEND_CODE_PATH && ctx.path !== USE_CODE_PATH) return;
+        const email: unknown = ctx.body?.email;
+        if (typeof email !== "string") return;
+        if (await spendCodeAttempt(audience, email.toLowerCase())) return;
+        throw new APIError("TOO_MANY_REQUESTS", {
+          code: SIGN_IN_CODES_PAUSED,
+          message: "Too many sign-in codes for this email.",
+        });
+      }),
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== USE_CODE_PATH || !ctx.context.newSession) return;
+        const { email } = ctx.context.newSession.user;
+        await clearCodeAttempts(audience, email.toLowerCase());
+      }),
     },
     account: {
       // Google only tells us who someone is. We never call it for them, so its

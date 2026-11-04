@@ -17,7 +17,14 @@ const app = openTestDatabase();
 const owner = openOwnerDatabase();
 
 const prefixes = ["staff", "admin"];
-const models = ["user", "session", "account", "verification", "rate_limit"];
+const models = [
+  "user",
+  "session",
+  "account",
+  "verification",
+  "rate_limit",
+  "code_limit",
+];
 const tables = prefixes.flatMap((prefix) =>
   models.map((model) => `${prefix}_auth_${model}`),
 );

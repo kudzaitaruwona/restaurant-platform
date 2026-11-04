@@ -278,7 +278,19 @@ function authTables(prefix: "staff" | "admin") {
     () => [outsideTenantOnly()],
   );
 
-  return { user, session, account, verification, rateLimit };
+  // Not in rate_limit: Better Auth prunes that table down to its own longest
+  // window, about a minute, and this counts over hours (S-30).
+  const codeLimit = pgTable(
+    name("code_limit"),
+    {
+      email: text().primaryKey(),
+      attempts: integer().notNull(),
+      windowStartedAt: at("window_started_at").notNull(),
+    },
+    () => [outsideTenantOnly()],
+  );
+
+  return { user, session, account, verification, rateLimit, codeLimit };
 }
 
 // Named exports, because drizzle-kit only looks at top-level tables.
@@ -288,6 +300,7 @@ export const {
   account: staffAuthAccount,
   verification: staffAuthVerification,
   rateLimit: staffAuthRateLimit,
+  codeLimit: staffAuthCodeLimit,
 } = authTables("staff");
 
 export const {
@@ -296,4 +309,5 @@ export const {
   account: adminAuthAccount,
   verification: adminAuthVerification,
   rateLimit: adminAuthRateLimit,
+  codeLimit: adminAuthCodeLimit,
 } = authTables("admin");
