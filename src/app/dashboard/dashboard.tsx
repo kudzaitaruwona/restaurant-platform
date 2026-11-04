@@ -2,8 +2,10 @@ import { and, asc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { restaurants, staff } from "@/db/schema";
+import { getBookingMetrics } from "@/lib/booking-metrics";
 import { getCurrentRate } from "@/lib/exchange-rate";
 import { getTenantContext, withTenant } from "@/lib/tenant";
+import { BookingMetricsPanel } from "./booking-metrics";
 import { ExchangeRateStatus } from "./exchange-rate-status";
 
 /** The current restaurant and identity, and the example owner-only action. */
@@ -33,7 +35,10 @@ export async function Dashboard() {
   });
 
   // Owner only (S-26), like the menu it belongs to.
-  const rate = tenant.role === "owner" ? await getCurrentRate(tenant) : null;
+  const [rate, metrics] =
+    tenant.role === "owner"
+      ? await Promise.all([getCurrentRate(tenant), getBookingMetrics(tenant)])
+      : [null, null];
 
   const me = tenant.platformAdminId
     ? "platform admin"
@@ -70,6 +75,12 @@ export async function Dashboard() {
           <Link href="/dashboard/menu" className="text-sm underline">
             Change the exchange rate
           </Link>
+        </section>
+      )}
+      {metrics && (
+        <section className="flex flex-col gap-2">
+          <h2 className="font-heading text-xl font-semibold">Booking results</h2>
+          <BookingMetricsPanel metrics={metrics} />
         </section>
       )}
       <ul className="flex flex-col gap-3">

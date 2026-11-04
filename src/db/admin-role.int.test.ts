@@ -121,6 +121,7 @@ describe("app_tenant, with app.restaurant_id cleared", () => {
       sql`select platform_create_first_owner(${adminId}, ${restaurantA}, ${`${crypto.randomUUID()}@example.test`}, 'Planted')`,
     ],
     ["platform_list_restaurants", sql`select * from platform_list_restaurants(${adminId})`],
+    ["platform_list_booking_metrics", sql`select * from platform_list_booking_metrics(${adminId})`],
     ["platform_admin_id_by_email", sql`select platform_admin_id_by_email(${devPlatformAdmin.email})`],
     ["platform_enter_restaurant", sql`select platform_enter_restaurant(${adminId}, ${devPlatformAdmin.sessionId}, ${restaurantA})`],
     ["platform_leave_restaurant", sql`select platform_leave_restaurant(${adminId}, ${devPlatformAdmin.sessionId})`],

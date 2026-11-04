@@ -5,8 +5,10 @@ import {
   type CurrencyMode,
   DEFAULT_TIMEZONE,
   getPlatformAdminContext,
+  listBookingMetrics,
   listRestaurants,
 } from "@/lib/tenant/platform-admin";
+import { BookingMetricsPanel } from "../dashboard/booking-metrics";
 import { AdminForm } from "./admin-form";
 
 const currencyModeLabels: Record<CurrencyMode, string> = {
@@ -31,7 +33,10 @@ function Field({ label, ...input }: { label: string } & ComponentProps<"input">)
 /** Creates restaurants and their first owners, and enters them (spec 01, S-26). */
 export async function AdminConsole() {
   const admin = await getPlatformAdminContext();
-  const restaurants = await listRestaurants(admin);
+  const [restaurants, metrics] = await Promise.all([
+    listRestaurants(admin),
+    listBookingMetrics(admin),
+  ]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -80,6 +85,9 @@ export async function AdminConsole() {
                   {currencyModeLabels[restaurant.currencyMode]}
                 </p>
               </div>
+              {metrics.has(restaurant.id) && (
+                <BookingMetricsPanel metrics={metrics.get(restaurant.id)!} />
+              )}
               <form
                 method="post"
                 action={`/api/admin/restaurants/${restaurant.id}/enter`}
