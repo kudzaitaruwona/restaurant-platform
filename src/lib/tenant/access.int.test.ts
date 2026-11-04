@@ -73,7 +73,7 @@ vi.mock("next/cache", () => ({
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string; categoryId: string };
+type Target = { staffId: string; categoryId: string; itemId: string };
 
 type TenantRoute = {
   name: string;
@@ -138,6 +138,19 @@ const routes: TenantRoute[] = [
           body: form({ role: "owner" }),
         }),
         staffParams(target),
+      ),
+  },
+  {
+    // Owners and staff alike (S-26): the one item edit a staff context may make.
+    name: "POST /api/menu/items/[itemId]/availability",
+    ownerOnly: false,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/availability/route")).POST(
+        request(`/api/menu/items/${target.itemId}/availability`, {
+          method: "POST",
+          body: form({ available: "false" }),
+        }),
+        { params: Promise.resolve({ itemId: target.itemId }) },
       ),
   },
   {
@@ -328,11 +341,13 @@ const fixtures = {
   a: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    itemId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
     staffId: crypto.randomUUID(),
     categoryId: crypto.randomUUID(),
+    itemId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -365,6 +380,15 @@ beforeAll(async () => {
       name: fixtureName,
     })),
   );
+  await owner.db.insert(menuItems).values(
+    Object.values(fixtures).map(({ itemId, categoryId, restaurantId }) => ({
+      id: itemId,
+      restaurantId,
+      categoryId,
+      name: fixtureName,
+      priceUsd: "8.50",
+    })),
+  );
 });
 
 afterEach(async () => {
@@ -380,6 +404,9 @@ afterAll(async () => {
   }
   await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
   await owner.db.delete(exchangeRates).where(eq(exchangeRates.usdToZig, harnessRate));
+  await owner.db
+    .delete(menuItems)
+    .where(inArray(menuItems.id, Object.values(fixtures).map(({ itemId }) => itemId)));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -775,6 +802,45 @@ describe("the menu routes", () => {
   });
 });
 
+describe("marking an item sold out", () => {
+  const availability = async (itemId: string) =>
+    (
+      await owner.db
+        .select({ available: menuItems.available })
+        .from(menuItems)
+        .where(eq(menuItems.id, itemId))
+    )[0].available;
+
+  const route = routes.find((route) => route.name.endsWith("/availability"))!;
+
+  it("a staff member can, in their own restaurant", async () => {
+    session.identity = aStaff.key;
+    expect(await statusOf(() => route.call(fixtures.a))).toBeLessThan(400);
+    expect(await availability(fixtures.a.itemId)).toBe(false);
+  });
+
+  it("an owner can, in their own restaurant", async () => {
+    session.identity = aOwner.key;
+    expect(await statusOf(() => route.call(fixtures.a))).toBeLessThan(400);
+    expect(await availability(fixtures.a.itemId)).toBe(false);
+  });
+
+  it("a staff member can't do it to another restaurant's item, and it stays on", async () => {
+    session.identity = aStaff.key;
+    expect(await statusOf(() => route.call(fixtures.b))).toBe(404);
+    expect(await availability(fixtures.b.itemId)).toBe(true);
+  });
+
+  it("a staff member still gets a 403 on the owner's item routes, and the item stays on", async () => {
+    session.identity = aStaff.key;
+    const create = routes.find((route) => route.name === "POST /api/menu/items")!;
+    const before = (await harnessItems(fixtures.a.restaurantId)).length;
+
+    expect(await statusOf(() => create.call(fixtures.a))).toBe(403);
+    expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(before);
+  });
+});
+
 describe("public routes", () => {
   const tokenOf = (restaurant: "a" | "b") => `dev-menu-restaurant-${restaurant}`;
   const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
@@ -848,7 +914,9 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        expect(await statusOf(() => route.call({ staffId, categoryId }))).toBe(404);
+        expect(
+          await statusOf(() => route.call({ staffId, categoryId, itemId: staffId })),
+        ).toBe(404);
       }
     },
   );

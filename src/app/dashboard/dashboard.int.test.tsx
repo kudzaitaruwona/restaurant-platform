@@ -99,7 +99,7 @@ describe("the protected page", () => {
     expect(await render("a-owner")).toContain('href="/dashboard/menu"');
     expect(await render("a-staff")).not.toContain("/dashboard/staff");
     expect(await render("a-staff")).not.toContain("/dashboard/settings");
-    expect(await render("a-staff")).not.toContain("/dashboard/menu");
+    expect(await render("a-staff")).toContain('href="/dashboard/menu"');
   });
 
   it("refuses no identity with unauthorized(), before any data renders", async () => {

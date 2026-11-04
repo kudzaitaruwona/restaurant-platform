@@ -32,6 +32,8 @@ li{padding:.75rem 0;border-bottom:1px solid var(--line)}
 .item{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
 .price{white-space:nowrap;text-align:right}
 .sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
+.sold-out{color:var(--muted)}
+.tag{margin-left:.5rem;padding:0 .3rem;border:1px solid currentColor;border-radius:.25rem;font-size:.75rem;font-style:normal;font-weight:600;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle}
 p{margin:.25rem 0 0;color:var(--muted)}
 `;
 
@@ -57,10 +59,14 @@ const priceCell = (item: Item, { currencyMode, pricing }: Menu) => {
   return html`<span class="price">${main}${sub && html`<span class="sub">${sub}</span>`}</span>`;
 };
 
-const itemRow = (item: Item, menu: Menu) => html`<li>
-<div class="item"><span>${item.name}</span>${priceCell(item, menu)}</div>
+const itemRow = (item: Item, menu: Menu) => html`<li class="${item.available ? "" : "sold-out"}">
+<div class="item"><span>${item.name}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
 ${item.description && html`<p>${item.description}</p>`}
 </li>`;
+
+/** Sold-out items stay on the page, after the rest of their category (spec 02). */
+const availableFirst = (items: Item[]) =>
+  [...items].sort((a, b) => Number(!a.available) - Number(!b.available));
 
 function menuPage(menu: Menu) {
   const sections = menu.categories
@@ -68,7 +74,7 @@ function menuPage(menu: Menu) {
     .map(
       (category) => html`<section>
 <h2>${category.name}</h2>
-<ul>${category.items.map((item) => itemRow(item, menu))}</ul>
+<ul>${availableFirst(category.items).map((item) => itemRow(item, menu))}</ul>
 </section>`,
     );
 

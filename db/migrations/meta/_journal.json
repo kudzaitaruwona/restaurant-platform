@@ -92,6 +92,13 @@
       "when": 1793796208564,
       "tag": "0012_exchange_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793796751309,
+      "tag": "0013_item_availability",
+      "breakpoints": true
     }
   ]
 }

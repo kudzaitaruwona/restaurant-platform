@@ -249,9 +249,29 @@ describe("/dashboard/menu", () => {
     expect(html).not.toContain('action="/api/menu/items"');
   });
 
-  it("refuses staff with forbidden(), before any data renders", async () => {
+  it("offers an owner the sold-out toggle on each item", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toMatch(/action="\/api\/menu\/items\/[0-9a-f-]+\/availability"/);
+    expect(html).toContain("Mark sold out");
+  });
+
+  it("lets staff see the list and mark items sold out, but not add to it", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
     session.tenant = { ...tenant, role: "staff" };
-    expect(await statusOf(() => MenuScreen())).toBe(403);
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("Beef stew");
+    expect(html).toContain("Mark sold out");
+    expect(html).toMatch(/action="\/api\/menu\/items\/[0-9a-f-]+\/availability"/);
+    expect(html).not.toContain('action="/api/menu/categories"');
+    expect(html).not.toContain('action="/api/menu/items"');
+    expect(html).not.toContain("Add an item");
   });
 });
 

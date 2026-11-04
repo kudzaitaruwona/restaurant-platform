@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseNewCategory, parseNewMenuItem } from "./menu";
+import {
+  parseAvailability,
+  parseNewCategory,
+  parseNewMenuItem,
+} from "./menu";
 
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
@@ -115,5 +119,27 @@ describe("parseNewMenuItem", () => {
     const refused = parseNewMenuItem(form({ ...valid, priceUsd: "<script>" }));
     expect(refused).toMatchObject({ success: false });
     expect(JSON.stringify(refused)).not.toContain("<script>");
+  });
+});
+
+describe("parseAvailability", () => {
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("reads %j as %s", (value, available) => {
+    expect(parseAvailability(form({ available: value }))).toEqual({
+      success: true,
+      data: available,
+    });
+  });
+
+  it.each(["", "yes", "1", "TRUE", "toggle"])("refuses %j", (value) => {
+    expect(parseAvailability(form({ available: value }))).toMatchObject({
+      success: false,
+    });
+  });
+
+  it("refuses a form with no availability at all", () => {
+    expect(parseAvailability(form({}))).toMatchObject({ success: false });
   });
 });

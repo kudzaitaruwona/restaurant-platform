@@ -9,8 +9,9 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 /**
  * The menu (spec 02). Writes are owner only (S-26): callers check
- * requireOwner(ctx). A public route reads this too, so it imports the tenant
- * scope rather than "@/lib/tenant", which would load sign-in (S-32).
+ * requireOwner(ctx), except setItemAvailability, which owners and staff both
+ * make. A public route reads this too, so it imports the tenant scope rather
+ * than "@/lib/tenant", which would load sign-in (S-32).
  *
  * Every write here calls revalidateMenu, so a route can't forget to. Spec 01's
  * audit list doesn't include menu edits, so only a platform admin's are audited.
@@ -38,6 +39,10 @@ const newCategory = z.object({
     .trim()
     .min(1, messages.categoryName)
     .max(200, messages.categoryName),
+});
+
+const newAvailability = z.object({
+  available: z.enum(["true", "false"], "Choose available or sold out."),
 });
 
 // A price field left blank is no price. Postgres would also take 1e3, NaN and
@@ -90,6 +95,13 @@ export const parseNewCategory = (form: FormData) =>
 export const parseNewMenuItem = (form: FormData) =>
   parsed(newMenuItem.safeParse(Object.fromEntries(form)));
 
+export const parseAvailability = (form: FormData) => {
+  const result = newAvailability.safeParse(Object.fromEntries(form));
+  return result.success
+    ? ({ success: true, data: result.data.available === "true" } as const)
+    : ({ success: false, message: result.error.issues[0].message } as const);
+};
+
 export type Menu = Awaited<ReturnType<typeof getMenu>>;
 
 /** A restaurant's whole menu, with empty categories, for the editor and the page. */
@@ -119,6 +131,7 @@ export function getMenu(ctx: Tenant) {
         description: menuItems.description,
         priceUsd: menuItems.priceUsd,
         priceZig: menuItems.priceZig,
+        available: menuItems.available,
       })
       .from(menuItems)
       .where(eq(menuItems.restaurantId, restaurantId))
@@ -209,6 +222,45 @@ export async function addMenuItem(
     if (code === FOREIGN_KEY_VIOLATION) return "no_such_category";
     throw error;
   }
+  revalidateMenu(ctx);
+  return "saved";
+}
+
+/**
+ * Marks an item sold out, or back on (spec 02, "we've run out tonight"). Owners
+ * and staff both may (S-26), so this is the one item write that isn't owner
+ * only. It changes nothing else about the item, and the composite key on the
+ * tenant isn't needed here: the restaurant is in the where clause as well as
+ * RLS, so another restaurant's item matches no row.
+ */
+export async function setItemAvailability(
+  ctx: Writer,
+  itemId: string,
+  available: boolean,
+): Promise<"saved" | "no_such_item"> {
+  if (!z.uuid().safeParse(itemId).success) return "no_such_item";
+
+  const { restaurantId } = ctx;
+  const saved = await withTenant(ctx, async (tx) => {
+    const [updated] = await tx
+      .update(menuItems)
+      .set({ available })
+      .where(
+        and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.id, itemId)),
+      )
+      .returning({ id: menuItems.id });
+    if (!updated) return false;
+
+    await recordAdminAction(tx, ctx, {
+      action: "menu_item.availability",
+      entityType: "menu_item",
+      entityId: updated.id,
+      details: { available },
+    });
+    return true;
+  });
+  if (!saved) return "no_such_item";
+
   revalidateMenu(ctx);
   return "saved";
 }
