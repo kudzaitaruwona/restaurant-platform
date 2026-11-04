@@ -6,6 +6,7 @@ import {
   candidateTimes,
   dateLabel,
   type EngineTable,
+  freeTables,
   type Hold,
   holdFor,
   instantOf,
@@ -16,6 +17,7 @@ import {
   type Period,
   type Rules,
   sittingFor,
+  staffRules,
   tablesFor,
   weekdayOf,
 } from "./booking-engine";
@@ -394,5 +396,76 @@ describe("nearest times", () => {
 
   it("is empty when nothing is left", () => {
     expect(nearestTimes([], wanted)).toEqual([]);
+  });
+});
+
+describe("staffRules", () => {
+  it("overrides exactly the lead time, the party limit and the online switch", () => {
+    const off = { ...rules, enabled: false };
+    expect(staffRules(off)).toEqual({
+      ...off,
+      enabled: true,
+      minLeadMinutes: 0,
+      maxOnlinePartySize: Number.POSITIVE_INFINITY,
+    });
+  });
+
+  it("shows times inside the lead time and for a big party, which the guest's rules hide", () => {
+    const wide = [table("t1", 12)];
+    expect(shown({ party: 9, tables: wide })).toEqual([]);
+    expect(shown({ party: 9, tables: wide, rules: staffRules(rules) })).toContain("19:00");
+
+    const soon = new Date("2026-11-06T16:30:00Z"); // 18:30 local on the 6th
+    expect(shown({ now: soon })).not.toContain("19:00");
+    expect(shown({ now: soon, rules: staffRules(rules) })).toContain("19:00");
+  });
+
+  it("still hides the past, and a table too small for the party", () => {
+    const past = new Date("2026-11-06T17:05:00Z");
+    expect(shown({ now: past, rules: staffRules(rules) })).not.toContain("19:00");
+    expect(shown({ party: 3, tables: [table("t1", 2)], rules: staffRules(rules) })).toEqual([]);
+  });
+});
+
+describe("freeTables", () => {
+  const start = new Date("2026-11-06T17:00:00Z");
+  const end = new Date("2026-11-06T18:45:00Z");
+  const hold = (tableId: string, from: string, to: string, status = "confirmed", id?: string): Hold => ({
+    id,
+    tableId,
+    startsAt: new Date(from),
+    holdEndsAt: new Date(to),
+    status,
+  });
+  const window = { startsAt: start, holdEndsAt: end, party: 2 };
+  const ids = (holds: Hold[], tables = [table("a", 2), table("b", 2, { sortOrder: 1 }), table("c", 4, { sortOrder: 2 })], more = {}) =>
+    freeTables(tables, holds, { ...window, ...more }).map(({ id }) => id);
+
+  it("leaves out a table with an overlapping blocking hold, but not a touching one or a freed one", () => {
+    expect(ids([hold("a", "2026-11-06T18:44:00Z", "2026-11-06T20:00:00Z")])).toEqual(["b", "c"]);
+    expect(ids([hold("a", "2026-11-06T18:45:00Z", "2026-11-06T20:00:00Z")])).toEqual(["a", "b", "c"]);
+    expect(ids([hold("a", "2026-11-06T15:00:00Z", "2026-11-06T17:00:00Z")])).toEqual(["a", "b", "c"]);
+    for (const status of ["cancelled", "no_show"]) {
+      expect(ids([hold("a", "2026-11-06T17:00:00Z", "2026-11-06T18:45:00Z", status)])).toEqual(["a", "b", "c"]);
+    }
+    for (const status of ["seated", "completed"]) {
+      expect(ids([hold("a", "2026-11-06T17:00:00Z", "2026-11-06T18:45:00Z", status)])).toEqual(["b", "c"]);
+    }
+  });
+
+  it("leaves the booking being moved out of the count", () => {
+    const own = hold("a", "2026-11-06T17:00:00Z", "2026-11-06T18:45:00Z", "confirmed", "mine");
+    expect(ids([own])).toEqual(["b", "c"]);
+    expect(ids([own], undefined, { ignore: "mine" })).toEqual(["a", "b", "c"]);
+  });
+
+  it("needs a live table big enough, walk-ins-only included, in the owner's order", () => {
+    const tables = [
+      table("big", 6, { sortOrder: 2 }),
+      table("walk", 2, { bookable: false, sortOrder: 1 }),
+      table("gone", 2, { archivedAt: new Date() }),
+      table("small", 1),
+    ];
+    expect(ids([], tables)).toEqual(["walk", "big"]);
   });
 });

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { getDayView } from "@/lib/booking-day";
 import { contactLinks, type DayRow } from "@/lib/booking-day-view";
+import { getMoveTargets } from "@/lib/booking-staff";
 import { getTenantContext } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
 
@@ -12,6 +13,8 @@ const statusLabels = {
   cancelled: "Cancelled",
   no_show: "No-show",
 };
+
+type Move = Awaited<ReturnType<typeof getMoveTargets>>[string][number];
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -28,10 +31,16 @@ export async function BookingsScreen({
   const tenant = await getTenantContext();
   const query = (await searchParams) ?? {};
   const day = await getDayView(tenant, query.date);
+  const moves = await getMoveTargets(tenant, day.date);
 
   return (
     <>
-      <h1 className="font-heading text-3xl font-semibold tracking-tight">Bookings</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
+        <h1 className="font-heading text-3xl font-semibold tracking-tight">Bookings</h1>
+        <Link className="underline" href={`/dashboard/bookings/new?date=${day.date}`}>
+          Add booking
+        </Link>
+      </div>
 
       <div className="flex flex-col gap-2">
         <p className="text-lg font-medium">
@@ -86,7 +95,7 @@ export async function BookingsScreen({
           ) : (
             <ul className="flex flex-col divide-y">
               {group.rows.map((row) => (
-                <BookingRow key={row.id} row={row} />
+                <BookingRow key={row.id} row={row} moves={moves[row.id] ?? []} />
               ))}
             </ul>
           )}
@@ -96,7 +105,7 @@ export async function BookingsScreen({
   );
 }
 
-function BookingRow({ row }: { row: DayRow }) {
+function BookingRow({ row, moves }: { row: DayRow; moves: Move[] }) {
   const links = contactLinks(row.phone);
   const closed = row.status === "cancelled" || row.status === "no_show";
   return (
@@ -156,6 +165,7 @@ function BookingRow({ row }: { row: DayRow }) {
                 Cancel
               </Button>
             </ActionForm>
+            <MoveForm row={row} moves={moves} />
           </>
         )}
         {row.status === "seated" && (
@@ -167,5 +177,32 @@ function BookingRow({ row }: { row: DayRow }) {
         )}
       </div>
     </li>
+  );
+}
+
+/** Move table: the tables free for this booking's whole hold. No message goes to the guest. */
+function MoveForm({ row, moves }: { row: DayRow; moves: Move[] }) {
+  if (moves.length === 0) {
+    return <span className="py-1.5 text-sm text-muted-foreground">No other table is free</span>;
+  }
+  return (
+    <ActionForm action={`/api/bookings/${row.id}/move`} className="flex items-center gap-2">
+      <select
+        name="tableId"
+        required
+        aria-label={`Move ${row.guestName} to table`}
+        className="rounded-md border bg-background px-2 py-1.5 text-sm"
+      >
+        {moves.map((table) => (
+          <option key={table.id} value={table.id}>
+            {table.label} (seats {table.capacity}
+            {table.walkInOnly ? ", walk-ins" : ""})
+          </option>
+        ))}
+      </select>
+      <Button type="submit" size="sm" variant="outline">
+        Move
+      </Button>
+    </ActionForm>
   );
 }

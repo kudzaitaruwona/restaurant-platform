@@ -45,6 +45,8 @@ export type EngineTable = {
 };
 
 export type Hold = {
+  /** Set when a caller needs to leave one booking out of the count (a move). */
+  id?: string;
   tableId: string;
   startsAt: Date;
   holdEndsAt: Date;
@@ -287,6 +289,45 @@ export function availableTimes(input: {
       .map((table) => table.id);
     return tableIds.length > 0 ? [{ ...candidate, tableIds }] : [];
   });
+}
+
+/**
+ * The rules as staff book under them (spec 04, Add booking): the engine is the
+ * same, and these are the overrides, each explicit. Inside the lead time (a time
+ * from now on still can't be in the past), over max_online_party_size (the table
+ * still has to seat the party), and with online booking switched off, because the
+ * switch is for guests *(proposed)*. Only the staff routes call this: no request
+ * field reaches it, and the guest's routes never import it.
+ */
+export const staffRules = (rules: Rules): Rules => ({
+  ...rules,
+  enabled: true,
+  minLeadMinutes: 0,
+  maxOnlinePartySize: Number.POSITIVE_INFINITY,
+});
+
+/**
+ * Tables that could take a hold of `window` from another booking, in the order a
+ * list reads: live, big enough, and no confirmed, seated or completed hold
+ * overlapping the window, bar the booking being moved. Whether a table is
+ * walk-ins only is the caller's to say: staff may use one.
+ */
+export function freeTables(
+  tables: readonly EngineTable[],
+  holds: readonly Hold[],
+  window: { startsAt: Date; holdEndsAt: Date; party: number; ignore?: string },
+) {
+  const live = holds.filter((hold) => blocks(hold) && (window.ignore === undefined || hold.id !== window.ignore));
+  return tables
+    .filter(
+      (table) =>
+        table.archivedAt === null &&
+        table.capacity >= window.party &&
+        !live.some(
+          (hold) => hold.tableId === table.id && overlaps(hold, window.startsAt, window.holdEndsAt),
+        ),
+    )
+    .toSorted((a, b) => a.sortOrder - b.sortOrder || a.capacity - b.capacity || a.id.localeCompare(b.id));
 }
 
 /** The closest times to the one a guest wanted, in the order a day reads. */
