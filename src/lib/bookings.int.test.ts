@@ -832,6 +832,83 @@ describe("a confirm racing another for the same phone, held mid-flight", () => {
   });
 });
 
+describe("a refusal inside an attempt's savepoint", () => {
+  /** Runs the retry loop over two tables on a stubbed insert, and says which it tried. */
+  async function attempts(failure: { code: string; constraint?: string }) {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const tried: string[] = [];
+    const result = await asTenant(app.db, restaurantId, (tx) =>
+      firstTableToTake(tx, ["first", "second"], async (_attempt, tableId) => {
+        tried.push(tableId);
+        if (tableId === "first") throw Object.assign(new Error("refused"), { cause: failure });
+        return tableId;
+      }),
+    ).catch((error: Error) => error.message);
+    return { tried, result };
+  }
+
+  it("is the next table's turn when the table was taken or archived", async () => {
+    for (const failure of [
+      { code: "23P01", constraint: "bookings_no_overlap" },
+      { code: "23514", constraint: "bookings_table_live" },
+      { code: "40P01" },
+    ]) {
+      expect(await attempts(failure)).toEqual({ tried: ["first", "second"], result: "second" });
+    }
+  });
+
+  it("stops there when it's the phone's limit: another table wouldn't change the answer", async () => {
+    expect(
+      await attempts({ code: "23514", constraint: "bookings_max_active_per_phone" }),
+    ).toEqual({ tried: ["first"], result: "refused" });
+  });
+});
+
+describe("a confirm whose first table is archived under it", () => {
+  const holdArchive = async (restaurantId: string, tableId: string) => {
+    const archiver = await owner.pool.connect();
+    await archiver.query("begin");
+    await archiver.query("update tables set archived_at = now() where restaurant_id = $1 and id = $2", [
+      restaurantId,
+      tableId,
+    ]);
+    const { rows } = await archiver.query("select pg_backend_pid() as pid");
+    return { archiver, pid: rows[0].pid as number };
+  };
+  const stoppedBehind = (pid: number) =>
+    vi.waitFor(
+      async () => {
+        const blocked = await owner.db.execute<{ pid: number }>(sql`
+          select pid from pg_stat_activity
+          where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+        expect(blocked.rows).toHaveLength(1);
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+
+  it("gives the phone's lock back with the savepoint and takes the next table", async () => {
+    const live = new Date();
+    const day = addDays(localToday(live, "Africa/Harare"), 2);
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2, sortOrder: 1 }, { capacity: 2, sortOrder: 2 }],
+      rules: { maxActiveBookingsPerPhone: 1, minLeadMinutes: 0 },
+    });
+    const { archiver, pid } = await holdArchive(restaurantId, tableIds[0]);
+    try {
+      const confirming = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
+      await stoppedBehind(pid);
+      await archiver.query("commit");
+
+      expect((await confirming).outcome).toBe("confirmed");
+      expect((await bookingsOf(owner.db, restaurantId)).map(({ tableId }) => tableId)).toEqual([
+        tableIds[1],
+      ]);
+    } finally {
+      archiver.release(true);
+    }
+  });
+});
+
 describe("the booking page for large parties", () => {
   it("offers a final option, and says contact the restaurant for a party over every table", async () => {
     const { restaurantId } = await bookableRestaurant(owner.db, {
