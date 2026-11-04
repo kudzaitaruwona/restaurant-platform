@@ -2149,7 +2149,9 @@ describe("the tables route", () => {
 });
 
 describe("the booking routes", () => {
-  const [saveRules, enable, addPeriod, addClosure] = sessionRoutes.slice(4);
+  const [saveRules, enable, addPeriod, addClosure] = sessionRoutes.slice(
+    sessionRoutes.findIndex((route) => route.name === "POST /api/bookings/settings"),
+  );
   const smuggledB = () => {
     const id = fixtures.b.restaurantId;
     return {
