@@ -221,6 +221,14 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain("ZiG");
     expect(body).toContain(`https://cdn.example.test/${id}/bream`);
     expect(body).toContain("Sold out");
+
+    // Book again is the one line a table's page adds to all of that.
+    await turnBookingOn(id);
+    const line = bookAgainLine(`table-qr-${id}`);
+    const withLink = await (await scan(qrToken)).text();
+    expect(withLink).toContain(line);
+    expect(withLink.replace(line, "")).toBe(body);
+    expect(await (await genericPage(menuToken)).text()).toBe(body);
   });
 
   it("shows its own restaurant's menu and nobody else's", async () => {
