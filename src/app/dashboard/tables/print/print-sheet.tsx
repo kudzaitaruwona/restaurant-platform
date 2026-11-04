@@ -18,8 +18,9 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 // A4 with a 6mm page margin leaves 198mm x 285mm: two 99mm columns, and three
 // rows that must sum to no more than 285mm. 94mm cards leave 3mm to spare. What
-// goes on a card is boxed to fit that: padding 2.5mm + name 9.5 + label 14 + QR
-// 50 + instruction 4.5 + Wi-Fi 6.5 + four 1mm gaps = 91mm.
+// goes on a card is boxed to fit that: two 2mm paddings + two 1px borders 0.53 +
+// name 9.5 + label 13 + QR 50 + instruction 4.5 + Wi-Fi 10 + four 0.5mm gaps =
+// 93.53mm.
 const PAGE_CSS = "@page{size:A4;margin:6mm}";
 
 type Card = { key: string; heading: string; svg: string; label: string; instruction: string };
@@ -27,6 +28,25 @@ type Card = { key: string; heading: string; svg: string; label: string; instruct
 /** A long label steps down in size so it stays on its card; the box never grows. */
 const labelSize = (label: string) =>
   label.length <= 6 ? "text-5xl" : label.length <= 13 ? "text-3xl" : "text-lg";
+
+/**
+ * The sizes the Wi-Fi box steps down through, each with what fits in its 10mm:
+ * lines, and characters to a line of the card's 94mm. A character counts as 1em
+ * wide, which no Latin one is over, and break-all fills every line, so a count
+ * that fits here fits on paper. A cut-off password reads as a wrong one, so the
+ * box has no clamp: anything past the last size isn't printed at all.
+ */
+const WIFI_SIZES = [
+  { className: "text-xs leading-tight", lines: 2, perLine: 29 },
+  { className: "text-[10px] leading-tight", lines: 3, perLine: 35 },
+  { className: "text-[8px] leading-[1.15]", lines: 4, perLine: 44 },
+];
+
+const wifiSize = (text: string[]) =>
+  WIFI_SIZES.find(
+    ({ lines, perLine }) =>
+      text.reduce((sum, line) => sum + Math.ceil(line.length / perLine), 0) <= lines,
+  )?.className;
 
 export async function PrintSheet({
   searchParams,
@@ -65,13 +85,14 @@ export async function PrintSheet({
     });
   }
 
-  const wifi = restaurant.wifiName
-    ? `Wi-Fi: ${restaurant.wifiName}${
-        restaurant.wifiPassword && options.wifiPassword
-          ? `, password ${restaurant.wifiPassword}`
-          : ""
-      }`
-    : undefined;
+  const wifiLines = restaurant.wifiName ? [`Wi-Fi: ${restaurant.wifiName}`] : [];
+  if (restaurant.wifiName && restaurant.wifiPassword && options.wifiPassword) {
+    wifiLines.push(`Password: ${restaurant.wifiPassword}`);
+  }
+  const wifiFits = wifiSize(wifiLines);
+  const wifi = wifiFits
+    ? { lines: wifiLines, size: wifiFits }
+    : { lines: ["Ask staff for the Wi-Fi details"], size: WIFI_SIZES[0].className };
 
   return (
     <>
@@ -148,6 +169,13 @@ export async function PrintSheet({
             </button>
           </form>
 
+          {!wifiFits && (
+            <p className="text-sm text-muted-foreground print:hidden">
+              The Wi-Fi details are too long to fit on a card, so the cards say to ask staff. A
+              shorter name or password in Settings will print.
+            </p>
+          )}
+
           {cards.length === 0 ? (
             <p className="text-sm text-muted-foreground print:hidden">
               Tick at least one table, or add the menu card, to print.
@@ -157,13 +185,13 @@ export async function PrintSheet({
               {cards.map((card) => (
                 <li
                   key={card.key}
-                  className="flex flex-col items-center justify-between break-inside-avoid gap-1 overflow-hidden border p-4 text-center print:h-[94mm] print:gap-[1mm] print:rounded-none print:p-[2.5mm]"
+                  className="flex flex-col items-center justify-between break-inside-avoid gap-1 overflow-hidden border p-4 text-center print:h-[94mm] print:gap-[0.5mm] print:rounded-none print:p-[2mm]"
                 >
                   <p className="line-clamp-2 w-full break-words text-sm font-semibold leading-tight print:h-[9.5mm]">
                     {card.heading}
                   </p>
                   <p
-                    className={`line-clamp-2 flex w-full items-center justify-center break-words font-bold leading-none print:h-[14mm] ${labelSize(card.label)}`}
+                    className={`line-clamp-2 flex w-full items-center justify-center break-words font-bold leading-none print:h-[13mm] ${labelSize(card.label)}`}
                   >
                     {card.label}
                   </p>
@@ -174,10 +202,12 @@ export async function PrintSheet({
                     dangerouslySetInnerHTML={{ __html: card.svg }}
                   />
                   <p className="text-sm leading-tight print:h-[4.5mm]">{card.instruction}</p>
-                  {wifi && (
-                    <p className="line-clamp-2 w-full break-words text-xs leading-tight print:h-[6.5mm]">
-                      {wifi}
-                    </p>
+                  {wifi.lines.length > 0 && (
+                    <div className={`w-full break-all print:h-[10mm] ${wifi.size}`}>
+                      {wifi.lines.map((line) => (
+                        <p key={line}>{line}</p>
+                      ))}
+                    </div>
                   )}
                 </li>
               ))}

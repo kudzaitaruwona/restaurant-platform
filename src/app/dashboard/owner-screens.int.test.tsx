@@ -47,6 +47,19 @@ vi.mock("next/navigation", async (original) => ({
   useRouter: () => ({ refresh() {} }),
 }));
 
+// A client form's props never reach static markup, so what it would say once
+// clicked is surfaced here beside the real form.
+vi.mock("./action-form", async (original) => {
+  const { ActionForm } = await original<typeof import("./action-form")>();
+  return {
+    ActionForm: (props: React.ComponentProps<typeof ActionForm>) => (
+      <div data-confirmation={props.confirmation} data-saved-message={props.savedMessage}>
+        <ActionForm {...props} />
+      </div>
+    ),
+  };
+});
+
 // Only a real request has a cache to revalidate.
 vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
 
@@ -354,6 +367,22 @@ describe("/dashboard/tables", () => {
     expect(await screen(TablesScreen)).toContain('action="/api/tables"');
   });
 
+  it("asks before regenerating a code, and prompts to reprint once it's done", async () => {
+    await newTable("7");
+    const seven = await tableIdOf("7");
+
+    const html = await screen(TablesScreen);
+
+    const regenerateForm = new RegExp(
+      `data-confirmation="([^"]*)" data-saved-message="([^"]*)"><form[^>]*action="/api/tables/${seven}/regenerate"`,
+    );
+    const [, confirmation, savedMessage] = regenerateForm.exec(html) ?? [];
+    expect(confirmation).toContain("The printed code on Table 7 will stop working");
+    expect(savedMessage).toBe(
+      "New code made for Table 7. The old one has stopped working: reprint it from the print sheet.",
+    );
+  });
+
   it("offers each table a regenerate form, to its own route", async () => {
     const seven = await tableIdOf("7");
     const patio = await tableIdOf("Patio 1");
@@ -537,6 +566,17 @@ describe("the tables route", () => {
   });
 });
 
+/** The first printed card, split into its own classes and what's inside it. */
+const cardIn = (html: string) => {
+  const cards = html.slice(html.indexOf('<ul class="grid'));
+  const [, className, content] = /<li class="([^"]*)">([\s\S]*?)<\/li>/.exec(cards) ?? [];
+  return { className, content };
+};
+
+/** A print-only size on a card, in mm: a decimal must read as itself, not fall through. */
+const printMm = (className: string, utility: "h" | "p" | "gap") =>
+  Number(new RegExp(`(?:^| )print:${utility}-\\[(\\d+(?:\\.\\d+)?)mm\\]`).exec(className)?.[1]);
+
 describe("/dashboard/tables/print", () => {
   it("has a card for a table the moment it is added: restaurant, label, instruction and Wi-Fi", async () => {
     await newTable("Patio 1");
@@ -546,7 +586,7 @@ describe("/dashboard/tables/print", () => {
     expect(html).toContain("Mama&#x27;s Kitchen");
     expect(html).toContain("Patio 1");
     expect(html).toContain("Scan to see the menu");
-    expect(html).toContain("Wi-Fi: Mamas Guest, password sadza-and-stew");
+    expect(html).toContain("<p>Wi-Fi: Mamas Guest</p><p>Password: sadza-and-stew</p>");
     expect(html).toContain("<svg");
   });
 
@@ -584,11 +624,78 @@ describe("/dashboard/tables/print", () => {
   it("fits three rows of cards in the A4 page: 3 x card height is within 297mm less margins", async () => {
     await newTable("1");
     const html = await screen(PrintSheet);
-    const margin = Number(/@page\{size:A4;margin:(\d+)mm\}/.exec(html)?.[1]);
-    const card = Number(/print:h-\[(\d+)mm\]/.exec(html)?.[1]);
+    const margin = Number(/@page\{size:A4;margin:(\d+(?:\.\d+)?)mm\}/.exec(html)?.[1]);
+    const card = printMm(cardIn(html).className, "h");
     expect(margin).toBeGreaterThan(0);
     expect(card * 3).toBeLessThanOrEqual(297 - 2 * margin);
     expect(html).toContain("print:gap-0");
+  });
+
+  it("fits what's on a card in the card: padding, border, boxes, the QR code and the gaps", async () => {
+    await newTable("1");
+    const { className, content } = cardIn(await screen(PrintSheet));
+    const boxes = [...content.matchAll(/print:h-\[(\d+(?:\.\d+)?)mm\]/g)].map(([, mm]) => Number(mm));
+    expect(boxes).toHaveLength(4); // name, label, instruction, Wi-Fi
+    expect(content).toContain("w-[5cm]");
+
+    const pixel = 25.4 / 96;
+    const used =
+      2 * printMm(className, "p") +
+      2 * pixel + // the border
+      boxes.reduce((sum, mm) => sum + mm, 0) +
+      50 + // the QR code
+      boxes.length * printMm(className, "gap"); // one between each of the five
+
+    expect(used).toBeLessThanOrEqual(printMm(className, "h"));
+  });
+
+  describe("the Wi-Fi details", () => {
+    const setWifi = (wifiName: string, wifiPassword: string) =>
+      owner.db.update(restaurants).set({ wifiName, wifiPassword }).where(eq(restaurants.id, tenant.restaurantId));
+
+    it("prints the longest real network and password in full, in smaller type", async () => {
+      // WPA2's limits: a 32-byte network name and a 63-character passphrase.
+      const [name, password] = ["N".repeat(32), "p".repeat(63)];
+      await setWifi(name, password);
+      await newTable("1");
+
+      const html = await screen(PrintSheet);
+
+      expect(html).toContain(`<p>Wi-Fi: ${name}</p><p>Password: ${password}</p>`);
+      expect(cardIn(html).content).toContain("text-[8px]");
+      expect(cardIn(html).content).not.toMatch(/line-clamp[^"]*print:h-\[10mm\]/);
+    });
+
+    it("steps the type down only as far as it has to", async () => {
+      await newTable("1");
+      expect(cardIn(await screen(PrintSheet)).content).toContain("text-xs");
+
+      await setWifi("Mamas Guest", "a-passphrase-of-thirty-characters");
+      const { content } = cardIn(await screen(PrintSheet));
+      expect(content).toContain("text-[10px]");
+    });
+
+    it("never prints part of a password: details too long for the card say to ask staff, and the owner is told", async () => {
+      const password = "p".repeat(200);
+      await setWifi("Mamas Guest", password);
+      await newTable("1");
+
+      const html = await screen(PrintSheet);
+
+      expect(html).not.toContain("ppp");
+      expect(cardIn(html).content).toContain("Ask staff for the Wi-Fi details");
+      expect(html).toMatch(/print:hidden[^>]*>The Wi-Fi details are too long to fit on a card/);
+    });
+
+    it("keeps long details that fit once the password is left off", async () => {
+      await setWifi("Mamas Guest", "p".repeat(200));
+      await newTable("1");
+
+      const html = await screen(() => PrintSheet({ searchParams: Promise.resolve({ nopassword: "1" }) }));
+
+      expect(html).toContain("<p>Wi-Fi: Mamas Guest</p>");
+      expect(html).not.toContain("too long to fit");
+    });
   });
 
   describe("options", () => {
@@ -689,7 +796,7 @@ describe("/dashboard/tables/print", () => {
       const html = await render({ nopassword: "1" });
       expect(html).toContain("Wi-Fi: Mamas Guest<");
       expect(html).not.toContain("sadza-and-stew</p>");
-      expect(html).not.toContain("password sadza-and-stew");
+      expect(html).not.toContain("Password: sadza-and-stew");
     });
 
     it("shows no Wi-Fi line when none is set", async () => {
@@ -703,9 +810,14 @@ describe("/dashboard/tables/print", () => {
 
     it("the form keeps its ticks: selected, the table and the menu card", async () => {
       await newTable("Alpha");
-      const html = await render({ scope: "selected", table: [await idOf("Alpha")], menu: "1" });
+      await newTable("Beta");
+      const [alpha, beta] = [await idOf("Alpha"), await idOf("Beta")];
+      const html = await render({ scope: "selected", table: [alpha], menu: "1" });
+      const ticked = (id: string) => new RegExp(`<input[^>]*name="table"[^>]*checked=""[^>]*value="${id}"`);
       expect(html).toMatch(/<input[^>]*name="menu"[^>]*checked/);
       expect(html).toMatch(/<input[^>]*name="scope"[^>]*checked=""[^>]*value="selected"/);
+      expect(html).toMatch(ticked(alpha));
+      expect(html).not.toMatch(ticked(beta));
     });
 
     it("refuses staff with forbidden() whatever the options", async () => {

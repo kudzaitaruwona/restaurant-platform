@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, diningTables, restaurants } from "@/db/schema";
 import {
@@ -288,6 +288,50 @@ describe("moveTable", () => {
     await addTable(tenant, { label: "D", capacity: 2 });
 
     expect(await labels(tenant)).toEqual(["B", "A", "C", "D"]);
+  });
+
+  it("loses neither of two moves made together: the second starts from what the first saved", async () => {
+    const tenant = await three();
+    const a = await idOf(tenant, "A");
+    const tablesOf = eq(diningTables.restaurantId, tenant.restaurantId);
+
+    // Holds the rows until both moves are queued behind them, so they overlap
+    // for certain. Row locks queue on a tuple lock behind the first waiter.
+    let moves: Promise<unknown> | undefined;
+    await owner.db.transaction(async (tx) => {
+      await tx.select({ id: diningTables.id }).from(diningTables).where(tablesOf).for("no key update");
+      moves = Promise.all([moveTable(tenant, a, "down"), moveTable(tenant, a, "down")]);
+      await vi.waitFor(
+        async () => {
+          const { rows } = await tx.execute<{ waiting: number }>(sql`
+            select count(*)::int as waiting from pg_locks
+            where not granted and (
+              pg_backend_pid() = any(pg_blocking_pids(pid))
+              or (locktype = 'tuple' and relation = 'tables'::regclass)
+            )`);
+          expect(rows[0].waiting).toBeGreaterThanOrEqual(2);
+        },
+        { timeout: 10_000, interval: 25 },
+      );
+    });
+
+    expect(await moves).toEqual(["saved", "saved"]);
+    expect(await labels(tenant)).toEqual(["B", "C", "A"]);
+  });
+
+  it("doesn't wait for a foreign key check on the table, as a booking's insert makes", async () => {
+    const tenant = await three();
+    const a = await idOf(tenant, "A");
+
+    await owner.db.transaction(async (tx) => {
+      await tx
+        .select({ id: diningTables.id })
+        .from(diningTables)
+        .where(eq(diningTables.id, a))
+        .for("key share");
+      const timedOut = new Promise((resolve) => setTimeout(resolve, 5_000, "blocked"));
+      expect(await Promise.race([moveTable(tenant, a, "down"), timedOut])).toBe("saved");
+    });
   });
 
   it("is not found for an archived table, and for another restaurant's, and moves nothing", async () => {

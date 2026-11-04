@@ -162,7 +162,15 @@ export async function updateTable(
 /**
  * Moves a table one place up or down the list. The live tables are numbered
  * afresh from 0 first, so ties and the gaps archiving leaves can't make a move
- * do nothing; the rows are locked so two moves can't both start from the old order.
+ * do nothing.
+ *
+ * Two moves at once run one after the other, and the second starts from what the
+ * first saved, so neither is lost. That takes two reads: a locking select sorts
+ * before it locks, so a move that waited would keep the order from before the
+ * wait. The order is read once the locks are held. The locks go on in id order,
+ * which never changes, so two moves can't deadlock, and they're the weak kind
+ * that lets a foreign key check on a table through. A table added meanwhile isn't
+ * locked: it can tie for last place, which the next move renumbers.
  */
 export function moveTable(
   ctx: Writer,
@@ -170,17 +178,21 @@ export function moveTable(
   direction: "up" | "down",
 ): Promise<TableChange> {
   return withTenant(ctx, async (tx) => {
+    const liveTables = and(
+      eq(diningTables.restaurantId, ctx.restaurantId),
+      isNull(diningTables.archivedAt),
+    );
+    await tx
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(liveTables)
+      .orderBy(asc(diningTables.id))
+      .for("no key update");
     const tables = await tx
       .select({ id: diningTables.id, sortOrder: diningTables.sortOrder })
       .from(diningTables)
-      .where(
-        and(
-          eq(diningTables.restaurantId, ctx.restaurantId),
-          isNull(diningTables.archivedAt),
-        ),
-      )
-      .orderBy(asc(diningTables.sortOrder), asc(diningTables.label))
-      .for("update");
+      .where(liveTables)
+      .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
     const from = tables.findIndex(({ id }) => id === tableId);
     if (from === -1) return "not_found";
 
