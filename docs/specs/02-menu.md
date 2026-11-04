@@ -57,7 +57,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 - Cached at the edge, revalidated when the menu changes (on-demand revalidation triggered by the editor's save) and every 5 minutes, so a special starts or ends on time (issue 24)
 - Usable on throttled "Slow 3G" in Chrome DevTools within 3 seconds
 
-To meet this, the page is a Route Handler that writes its own HTML rather than a Next.js page: S-32 in `docs/decisions.md`, proposed and not yet confirmed by Kudzai.
+To meet this, the page is a Route Handler that writes its own HTML rather than a Next.js page: S-32 in `docs/decisions.md`.
 
 ### Pricing display rules
 - Show prices exactly as computed. Never show a computed ZiG price without rounding.
