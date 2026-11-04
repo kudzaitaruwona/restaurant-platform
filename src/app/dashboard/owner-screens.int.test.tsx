@@ -1,0 +1,281 @@
+import { eq } from "drizzle-orm";
+import { NextRequest } from "next/server";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { POST as saveSettings } from "@/app/api/restaurant/route";
+import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
+import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
+import { POST as addStaff } from "@/app/api/staff/route";
+import { restaurants, staff } from "@/db/schema";
+import type { TenantContext } from "@/lib/tenant";
+import {
+  openOwnerDatabase,
+  testDatabaseSettings,
+} from "../../../test/integration/database";
+import { statusOf } from "../../../test/integration/http";
+import { SettingsScreen } from "./settings/settings-screen";
+import { StaffScreen } from "./staff/staff-screen";
+
+/**
+ * The owner's screens and the routes behind them, on a restaurant of their own.
+ * Faked: who's asking (access.int.test.ts covers the real seam, but its seeded
+ * restaurants can't be changed) and the App Router context the client form
+ * expects.
+ */
+const session = vi.hoisted(() => ({ tenant: undefined as unknown }));
+
+vi.mock("@/lib/tenant", async (original) => ({
+  ...(await original<typeof import("@/lib/tenant")>()),
+  getTenantContext: async () => session.tenant as TenantContext,
+}));
+
+vi.mock("next/navigation", async (original) => ({
+  ...(await original<typeof import("next/navigation")>()),
+  useRouter: () => ({ refresh() {} }),
+}));
+
+const owner = openOwnerDatabase();
+beforeAll(() => {
+  vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+});
+afterAll(async () => {
+  await owner.pool.end();
+  vi.unstubAllEnvs();
+});
+
+let tenant: TenantContext;
+
+beforeEach(async () => {
+  const restaurantId = crypto.randomUUID();
+  const staffId = crypto.randomUUID();
+  await owner.db.insert(restaurants).values({
+    id: restaurantId,
+    name: "Mama's Kitchen",
+    slug: `screens-${restaurantId}`,
+    menuToken: restaurantId,
+    currencyMode: "usd_only",
+    wifiName: "Mamas Guest",
+    wifiPassword: "sadza-and-stew",
+  });
+  await owner.db.insert(staff).values({
+    id: staffId,
+    restaurantId,
+    email: `${staffId}@example.test`,
+    displayName: "First Owner",
+    role: "owner",
+  });
+  tenant = { restaurantId, staffId, role: "owner" };
+  session.tenant = tenant;
+});
+
+const post = (path: string, fields: Record<string, string> = {}) => {
+  const body = new FormData();
+  for (const [key, value] of Object.entries(fields)) body.set(key, value);
+  return new NextRequest(new URL(path, "http://localhost:3000"), { method: "POST", body });
+};
+
+const params = (staffId: string) => ({ params: Promise.resolve({ staffId }) });
+
+const screen = async (Screen: () => Promise<React.ReactElement>) =>
+  renderToStaticMarkup(await Screen());
+
+const newPerson = (role: string) => ({
+  email: `${crypto.randomUUID()}@example.test`,
+  displayName: `New ${role}`,
+  role,
+});
+
+const settings = {
+  name: "Mama's Kitchen",
+  contactPhone: "",
+  wifiName: "",
+  wifiPassword: "",
+  currencyMode: "usd_only",
+  timezone: "Africa/Harare",
+};
+
+describe("/dashboard/staff", () => {
+  it("lists the team with what an owner can do to each member", async () => {
+    await addStaff(post("/api/staff", newPerson("staff")));
+
+    const html = await screen(StaffScreen);
+
+    expect(html).toContain("First Owner");
+    expect(html).toContain("New staff");
+    expect(html).toContain(`/api/staff/${tenant.staffId}/deactivate`);
+    expect(html).toContain(`/api/staff/${tenant.staffId}/role`);
+  });
+
+  it("marks a deactivated member and offers nothing further", async () => {
+    const person = newPerson("staff");
+    await addStaff(post("/api/staff", person));
+    const [{ id }] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(eq(staff.email, person.email));
+    await deactivate(post(`/api/staff/${id}/deactivate`), params(id));
+
+    const html = await screen(StaffScreen);
+
+    expect(html).toContain("Deactivated");
+    expect(html).not.toContain(`/api/staff/${id}/deactivate`);
+    expect(html).not.toContain(`/api/staff/${id}/role`);
+  });
+
+  it("is a 403 for staff", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => StaffScreen())).toBe(403);
+  });
+
+  describe("the soft-limit notice", () => {
+    const notice = "goes over";
+    const overLimit = "more than the one";
+
+    it("warns before adding a second owner, and says nothing is over yet", async () => {
+      const html = await screen(StaffScreen);
+
+      expect(html).toContain(notice);
+      expect(html).not.toContain(overLimit);
+    });
+
+    it("shows once a second owner is added, and the add isn't blocked", async () => {
+      const response = await addStaff(post("/api/staff", newPerson("owner")));
+
+      expect(response.status).toBe(303);
+      expect(await screen(StaffScreen)).toContain(overLimit);
+    });
+
+    it("shows when a colleague is promoted to a second owner", async () => {
+      const person = newPerson("staff");
+      await addStaff(post("/api/staff", person));
+      const [{ id }] = await owner.db
+        .select({ id: staff.id })
+        .from(staff)
+        .where(eq(staff.email, person.email));
+
+      await changeRole(post(`/api/staff/${id}/role`, { role: "owner" }), params(id));
+
+      expect(await screen(StaffScreen)).toContain(overLimit);
+    });
+
+    it("doesn't count staff logins", async () => {
+      await addStaff(post("/api/staff", newPerson("staff")));
+      await addStaff(post("/api/staff", newPerson("staff")));
+
+      expect(await screen(StaffScreen)).not.toContain(overLimit);
+    });
+
+    it("doesn't count a platform_admin shadow row", async () => {
+      await owner.db.insert(staff).values({
+        restaurantId: tenant.restaurantId,
+        kind: "platform_admin",
+        displayName: "Shadow",
+        role: "owner",
+      });
+
+      const html = await screen(StaffScreen);
+
+      expect(html).not.toContain(overLimit);
+      expect(html).not.toContain("Shadow");
+    });
+  });
+});
+
+describe("the staff routes", () => {
+  it("refuses to remove the last owner with a reason, not an error", async () => {
+    for (const response of [
+      await deactivate(post("/deactivate"), params(tenant.staffId)),
+      await changeRole(post("/role", { role: "staff" }), params(tenant.staffId)),
+    ]) {
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain("at least one active owner");
+    }
+  });
+
+  it("explains a refused form", async () => {
+    const response = await addStaff(post("/api/staff", { ...newPerson("staff"), email: "nope" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Enter a valid email address." });
+  });
+
+  it("explains an email that's taken", async () => {
+    const person = newPerson("staff");
+    await addStaff(post("/api/staff", person));
+
+    expect((await addStaff(post("/api/staff", person))).status).toBe(409);
+  });
+
+  it("refuses a role that doesn't exist", async () => {
+    const response = await changeRole(post("/role", { role: "admin" }), params(tenant.staffId));
+    expect(response.status).toBe(400);
+  });
+
+  it("is a 404 for someone already deactivated", async () => {
+    const person = newPerson("staff");
+    await addStaff(post("/api/staff", person));
+    const [{ id }] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(eq(staff.email, person.email));
+    await deactivate(post("/deactivate"), params(id));
+
+    expect(await statusOf(() => deactivate(post("/deactivate"), params(id)))).toBe(404);
+  });
+});
+
+describe("/dashboard/settings", () => {
+  it("shows the current settings for editing", async () => {
+    const html = await screen(SettingsScreen);
+
+    expect(html).toContain('value="Mama&#x27;s Kitchen"');
+    expect(html).toContain('value="Mamas Guest"');
+    expect(html).toContain('action="/api/restaurant"');
+    expect(html).toMatch(/<option[^>]*value="usd_only"[^>]*selected/);
+    expect(html).toMatch(/<option[^>]*value="Africa\/Harare"[^>]*selected/);
+  });
+
+  it("saves what the form posts", async () => {
+    const response = await saveSettings(
+      post("/api/restaurant", {
+        ...settings,
+        name: "Mama's Place",
+        contactPhone: "+263 77 123 4567",
+        timezone: "Africa/Johannesburg",
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    const [row] = await owner.db
+      .select()
+      .from(restaurants)
+      .where(eq(restaurants.id, tenant.restaurantId));
+    expect(row).toMatchObject({
+      name: "Mama's Place",
+      contactPhone: "+263771234567",
+      timezone: "Africa/Johannesburg",
+    });
+  });
+
+  it.each([
+    [{ contactPhone: "0771234567" }, "international format"],
+    [{ timezone: "Mars/Olympus" }, "timezone"],
+    [{ currencyMode: "gold" }, "currency"],
+    [{ name: "" }, "name"],
+  ])("refuses %j with a reason and saves nothing", async (bad, reason) => {
+    const response = await saveSettings(post("/api/restaurant", { ...settings, ...bad }));
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toContain(reason);
+    const [row] = await owner.db
+      .select()
+      .from(restaurants)
+      .where(eq(restaurants.id, tenant.restaurantId));
+    expect(row.wifiName).toBe("Mamas Guest");
+  });
+
+  it("is a 403 for staff, so they never receive the Wi-Fi password", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => SettingsScreen())).toBe(403);
+  });
+});

@@ -36,6 +36,13 @@
       "when": 1793760023319,
       "tag": "0004_platform_admin_functions",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793760100965,
+      "tag": "0005_last_owner_and_contact_phone",
+      "breakpoints": true
     }
   ]
 }

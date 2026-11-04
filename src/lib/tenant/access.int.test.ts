@@ -85,6 +85,78 @@ const routes: TenantRoute[] = [
         staffParams(target),
       ),
   },
+  {
+    name: "POST /api/staff/[staffId]/deactivate",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/staff/[staffId]/deactivate/route")).POST(
+        request(`/api/staff/${target.staffId}/deactivate`, { method: "POST" }),
+        staffParams(target),
+      ),
+  },
+  {
+    name: "POST /api/staff/[staffId]/role",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/staff/[staffId]/role/route")).POST(
+        request(`/api/staff/${target.staffId}/role`, {
+          method: "POST",
+          body: form({ role: "owner" }),
+        }),
+        staffParams(target),
+      ),
+  },
+];
+
+/**
+ * Routes with no id in them: they act on the session's own restaurant, so
+ * there's no B resource to aim at. What's left to prove is in "routes that take
+ * no id" below: the role check, and that smuggled ids change nothing.
+ */
+type SessionRoute = {
+  name: string;
+  call: (fields?: Record<string, string>, init?: { path?: string; headers?: Record<string, string> }) => Promise<Response>;
+};
+
+const addedEmailPrefix = "harness-added-";
+
+const sessionRoutes: SessionRoute[] = [
+  {
+    name: "POST /api/restaurant",
+    call: async (fields, init) =>
+      (await import("@/app/api/restaurant/route")).POST(
+        request(init?.path ?? "/api/restaurant", {
+          method: "POST",
+          headers: init?.headers,
+          // Restaurant A's seeded values: other test files read them.
+          body: form({
+            name: "Restaurant A",
+            contactPhone: "",
+            wifiName: "",
+            wifiPassword: "",
+            currencyMode: "usd_primary",
+            timezone: "Africa/Harare",
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  {
+    name: "POST /api/staff",
+    call: async (fields, init) =>
+      (await import("@/app/api/staff/route")).POST(
+        request(init?.path ?? "/api/staff", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            email: `${addedEmailPrefix}${crypto.randomUUID()}@example.test`,
+            displayName: "Added by the harness",
+            role: "staff",
+            ...fields,
+          }),
+        }),
+      ),
+  },
 ];
 
 type AdminRoute = {
@@ -156,7 +228,7 @@ beforeAll(async () => {
 afterEach(async () => {
   await owner.db
     .update(staff)
-    .set({ displayName: fixtureName })
+    .set({ displayName: fixtureName, role: "staff", active: true })
     .where(eq(staff.id, fixtures.a.staffId));
 });
 
@@ -171,6 +243,7 @@ afterAll(async () => {
     await owner.db.delete(staff).where(inArray(staff.restaurantId, ids));
     await owner.db.delete(restaurants).where(inArray(restaurants.id, ids));
   }
+  await owner.db.delete(staff).where(like(staff.email, `${addedEmailPrefix}%`));
   await owner.pool.end();
   vi.unstubAllEnvs();
 });
@@ -210,6 +283,30 @@ const emptyRestaurant = async () => {
   return id;
 };
 
+/** What the staff management routes would change. */
+const standing = async (staffId: string) => {
+  const [row] = await owner.db
+    .select({ role: staff.role, active: staff.active })
+    .from(staff)
+    .where(eq(staff.id, staffId));
+  return row;
+};
+const untouched = { role: "staff", active: true };
+
+const restaurantRow = async (restaurantId: string) => {
+  const [row] = await owner.db
+    .select()
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId));
+  return row;
+};
+
+const addedStaff = () =>
+  owner.db
+    .select({ restaurantId: staff.restaurantId, displayName: staff.displayName })
+    .from(staff)
+    .where(like(staff.email, `${addedEmailPrefix}%`));
+
 const each = (identities: typeof restaurantAIdentities) =>
   routes.flatMap((route) =>
     identities.map((identity) => [route.name, identity.key, route, identity] as const),
@@ -225,6 +322,7 @@ describe("cross-tenant access", () => {
 
       expect([403, 404]).toContain(status);
       expect(await displayName(fixtures.b.staffId)).toBe(fixtureName);
+      expect(await standing(fixtures.b.staffId)).toEqual(untouched);
     },
   );
 
@@ -293,6 +391,7 @@ describe("owner-only routes", () => {
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
+      expect(await standing(fixtures.a.staffId)).toEqual(untouched);
     },
   );
 
@@ -303,6 +402,82 @@ describe("owner-only routes", () => {
       expect(await statusOf(() => route.call(fixtures.a))).toBeLessThan(400);
     },
   );
+});
+
+describe("routes that take no id", () => {
+  it.each(sessionRoutes.map((route) => [route.name, route] as const))(
+    "%s: a staff context gets a 403 and changes nothing",
+    async (_name, route) => {
+      session.identity = aStaff.key;
+      const before = await restaurantRow(aStaff.restaurantId);
+      const added = (await addedStaff()).length;
+
+      expect(
+        await statusOf(() => route.call({ contactPhone: "+263771234567" })),
+      ).toBe(403);
+
+      expect(await restaurantRow(aStaff.restaurantId)).toEqual(before);
+      expect(await addedStaff()).toHaveLength(added);
+    },
+  );
+
+  it.each(sessionRoutes.map((route) => [route.name, route] as const))(
+    "%s: an owner gets through",
+    async (_name, route) => {
+      session.identity = aOwner.key;
+      expect(await statusOf(() => route.call())).toBeLessThan(400);
+    },
+  );
+
+  const smuggled = (restaurantId: string) => ({
+    fields: { restaurantId, restaurant_id: restaurantId },
+    init: {
+      headers: { "x-restaurant-id": restaurantId },
+      query: `?restaurantId=${restaurantId}&restaurant_id=${restaurantId}`,
+    },
+  });
+
+  it("settings go to the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggled(fixtures.b.restaurantId);
+    const theirs = await restaurantRow(fixtures.b.restaurantId);
+    const [route] = sessionRoutes;
+
+    try {
+      const response = await route.call(
+        { ...fields, contactPhone: "+263770000001" },
+        { headers: init.headers, path: `/api/restaurant${init.query}` },
+      );
+
+      expect(response.status).toBeLessThan(400);
+      expect(await restaurantRow(fixtures.b.restaurantId)).toEqual(theirs);
+      expect(await restaurantRow(fixtures.a.restaurantId)).toMatchObject({
+        contactPhone: "+263770000001",
+      });
+    } finally {
+      await owner.db
+        .update(restaurants)
+        .set({ contactPhone: null })
+        .where(eq(restaurants.id, fixtures.a.restaurantId));
+    }
+  });
+
+  it("a new colleague joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggled(fixtures.b.restaurantId);
+    const displayName = `Smuggled ${crypto.randomUUID()}`;
+
+    const response = await sessionRoutes[1].call(
+      { ...fields, displayName },
+      { headers: init.headers, path: `/api/staff${init.query}` },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await addedStaff()).toContainEqual({
+      restaurantId: fixtures.a.restaurantId,
+      displayName,
+    });
+  });
 });
 
 describe("the example routes", () => {
@@ -444,6 +619,7 @@ describe("harness coverage", () => {
     const covered = [
       ...routes.map((route) => route.name),
       ...adminRoutes.map((route) => route.name),
+      ...sessionRoutes.map((route) => route.name),
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
