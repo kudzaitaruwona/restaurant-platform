@@ -58,7 +58,9 @@ GRANT EXECUTE ON FUNCTION public.platform_admin_id_by_email(text) TO app_admin;
 -- row, the entry and the audit entry can't come apart. The first entry makes the
 -- shadow row: ON CONFLICT on the unique index means a second first entry waits
 -- for the first to commit, then does nothing and finds its row. Every entry is
--- audited, not just the first.
+-- audited, not just the first, and going straight from one restaurant to another
+-- is also leaving the first, so that's written to the first's log. The row lock
+-- makes two moves at once take turns, so each leaves where the other went.
 --
 -- search_path is pinned with pg_temp last and every object schema-qualified, as
 -- in 0004.
@@ -72,6 +74,7 @@ SET search_path = pg_catalog, pg_temp
 AS $$
 DECLARE
   v_shadow_id uuid;
+  v_previous_id uuid;
 BEGIN
   PERFORM public.platform_assert_admin(p_admin_id);
 
@@ -87,6 +90,20 @@ BEGIN
   SELECT s.id INTO STRICT v_shadow_id
   FROM public.staff s
   WHERE s.restaurant_id = p_restaurant_id AND s.kind = 'platform_admin';
+
+  SELECT e.entered_restaurant_id INTO v_previous_id
+  FROM public.admin_auth_entry e
+  WHERE e.session_id = p_session_id
+  FOR UPDATE;
+
+  IF v_previous_id <> p_restaurant_id THEN
+    INSERT INTO public.audit_log
+      (restaurant_id, actor_type, actor_id, action, entity_type, entity_id)
+    VALUES (
+      v_previous_id, 'platform_admin', p_admin_id, 'restaurant.leave',
+      'restaurant', v_previous_id
+    );
+  END IF;
 
   INSERT INTO public.admin_auth_entry
     (session_id, entered_restaurant_id, shadow_staff_id)

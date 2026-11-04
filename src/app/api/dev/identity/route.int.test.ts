@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testDatabaseSettings } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
+import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import {
   DEV_IDENTITY_COOKIE,
   devIdentities,
@@ -69,12 +70,18 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
     });
   });
 
-  // The only file that enters as the dev admin: there's one seeded session, so
-  // anywhere else would race these.
+  // The only file that enters as the dev admin, or asks whether the dev admin has
+  // entered: there's one seeded session, so anywhere else would race these.
   describe("entering a restaurant under the bypass", () => {
     const [restaurant] = devRestaurants;
 
-    async function enter() {
+    // Whatever a test did, the next one starts outside.
+    afterEach(async () => {
+      const { leaveRestaurant } = await import("@/lib/tenant/platform-admin");
+      await leaveRestaurant(devPlatformAdmin);
+    });
+
+    async function enter(headers?: HeadersInit) {
       await pick(devPlatformAdmin.key);
       const { POST } = await import(
         "@/app/api/admin/restaurants/[restaurantId]/enter/route"
@@ -82,11 +89,18 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
       return POST(
         new NextRequest(
           new URL(`/api/admin/restaurants/${restaurant.id}/enter`, "http://localhost:3000"),
-          { method: "POST" },
+          { method: "POST", headers },
         ),
         { params: Promise.resolve({ restaurantId: restaurant.id }) },
       );
     }
+
+    it("is a 403 from getTenantContext() until the admin enters one", async () => {
+      await pick(devPlatformAdmin.key);
+
+      const { getTenantContext } = await import("@/lib/tenant");
+      expect(await statusOf(getTenantContext)).toBe(403);
+    });
 
     it("lands on the dashboard, in that restaurant, with the cookie still only a key", async () => {
       const response = await enter();
@@ -101,6 +115,20 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
         role: "owner",
         platformAdminId: devPlatformAdmin.platformAdminId,
       });
+    });
+
+    // Plain forms, which return the 303 themselves: a 204 is no page at all.
+    it("entering and leaving redirect whoever posts", async () => {
+      const headers = { [FORM_FETCH_HEADER]: "1" };
+
+      const entered = await enter(headers);
+      expect(entered.status).toBe(303);
+      expect(entered.headers.get("Location")).toBe("/dashboard");
+
+      const { POST } = await import("@/app/api/admin/leave/route");
+      const left = await POST();
+      expect(left.status).toBe(303);
+      expect(left.headers.get("Location")).toBe("/admin");
     });
 
     it("drops the admin out when they switch to someone else", async () => {

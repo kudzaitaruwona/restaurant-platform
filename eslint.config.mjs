@@ -27,6 +27,11 @@ const adminSeam = [
   "test/**",
 ];
 
+// Sign-in's own files, the only ones that may use authDatabase(): it hands back
+// the admin login or the raw one, so anywhere else it's a way round both.
+const authSeam = ["src/lib/auth/**"];
+const authAndAdminSeam = adminSeam.filter((file) => file.startsWith("src/lib/auth/"));
+
 // Photo storage boundary (D-07): app code touches storage only through
 // uploadImage / deleteImage / getUrl from "@/lib/storage".
 const storageBoundary = [
@@ -63,6 +68,13 @@ const adminDatabaseBoundary = [
   },
 ];
 
+const authDatabaseBoundary = [
+  {
+    regex: "(^|/)auth/database$",
+    message: "Only sign-in uses authDatabase (S-28).",
+  },
+];
+
 const restrictImports = (...boundaries) => ({
   "no-restricted-imports": ["error", { patterns: boundaries.flat() }],
 });
@@ -76,19 +88,33 @@ const eslintConfig = defineConfig([
   {
     files: appCode,
     ignores: [...storageModule, ...databaseSeam],
-    rules: restrictImports(storageBoundary, databaseBoundary),
+    rules: restrictImports(storageBoundary, databaseBoundary, authDatabaseBoundary),
   },
   {
     files: storageModule,
-    rules: restrictImports(databaseBoundary),
+    rules: restrictImports(databaseBoundary, authDatabaseBoundary),
   },
   {
     files: databaseSeam,
+    ignores: [...adminSeam, ...authSeam],
+    rules: restrictImports(
+      storageBoundary,
+      adminDatabaseBoundary,
+      authDatabaseBoundary,
+    ),
+  },
+  {
+    files: adminSeam,
+    ignores: authSeam,
+    rules: restrictImports(storageBoundary, authDatabaseBoundary),
+  },
+  {
+    files: authSeam,
     ignores: adminSeam,
     rules: restrictImports(storageBoundary, adminDatabaseBoundary),
   },
   {
-    files: adminSeam,
+    files: authAndAdminSeam,
     rules: restrictImports(storageBoundary),
   },
   // Override default ignores of eslint-config-next.

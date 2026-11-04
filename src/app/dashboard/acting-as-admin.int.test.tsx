@@ -1,8 +1,14 @@
 import { eq } from "drizzle-orm";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { adminAuthUser, platformAdmins, restaurants, staff } from "@/db/schema";
-import { devIdentities } from "@/lib/tenant/dev-identities";
+import {
+  adminAuthUser,
+  platformAdmins,
+  restaurants,
+  staff,
+  staffAuthUser,
+} from "@/db/schema";
 import { signIn } from "../../../test/integration/auth";
 import {
   openOwnerDatabase,
@@ -12,6 +18,7 @@ import { installFakeServices } from "../../../test/integration/fake-services";
 import { statusOf } from "../../../test/integration/http";
 import { ActingAsAdminBanner } from "./acting-as-admin-banner";
 import { Dashboard } from "./dashboard";
+import DashboardLayout from "./layout";
 import { SessionControls } from "./session-controls";
 
 /** The staff UI for a platform admin who has entered, on a real session. */
@@ -29,6 +36,7 @@ vi.mock("next/server", async (importOriginal) => ({
 const owner = openOwnerDatabase();
 const id = crypto.randomUUID();
 const adminEmail = `banner-admin-${id}@example.test`;
+const ownerEmail = `real-owner-${id}@example.test`;
 const restaurantName = `Mama's <Kitchen> ${id}`;
 
 let adminCookie = "";
@@ -48,12 +56,12 @@ beforeAll(async () => {
   });
   await owner.db.insert(staff).values({
     restaurantId: id,
-    email: `real-owner-${id}@example.test`,
+    email: ownerEmail,
     displayName: "The real owner",
     role: "owner",
   });
   adminCookie = await signIn(services, "admin", adminEmail);
-  staffCookie = await signIn(services, "staff", `${devIdentities[0].key}@dev.example.test`);
+  staffCookie = await signIn(services, "staff", ownerEmail);
 
   browser.cookie = adminCookie;
   const { enterRestaurant, getPlatformAdminContext } = await import(
@@ -63,6 +71,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await owner.db.delete(staffAuthUser).where(eq(staffAuthUser.email, ownerEmail));
   await owner.db.delete(adminAuthUser).where(eq(adminAuthUser.email, adminEmail));
   await owner.db.delete(platformAdmins).where(eq(platformAdmins.email, adminEmail));
   await owner.pool.end();
@@ -98,6 +107,24 @@ describe("the banner", () => {
   it("is a refusal, not an empty banner, for nobody", async () => {
     browser.cookie = "";
     expect(await statusOf(() => ActingAsAdminBanner())).toBe(401);
+  });
+});
+
+describe("the dashboard layout", () => {
+  /** Every element under `node`, so a wrapper added later doesn't fail this. */
+  const elementsIn = (node: ReactNode): ReactElement<{ children?: ReactNode }>[] =>
+    Children.toArray(node)
+      .filter((child) => isValidElement<{ children?: ReactNode }>(child))
+      .flatMap((child) => [child, ...elementsIn(child.props.children)]);
+
+  it("mounts the banner above every staff page", () => {
+    const page = <main />;
+
+    const elements = elementsIn(DashboardLayout({ children: page }));
+
+    const types = elements.map(({ type }) => type);
+    expect(types).toContain(ActingAsAdminBanner);
+    expect(types.indexOf(ActingAsAdminBanner)).toBeLessThan(types.indexOf("main"));
   });
 });
 

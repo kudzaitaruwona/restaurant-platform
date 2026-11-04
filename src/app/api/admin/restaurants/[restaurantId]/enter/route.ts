@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
-import { formSaved } from "@/lib/form-response";
 import {
   enterRestaurant,
   getPlatformAdminContext,
@@ -16,7 +15,7 @@ const restaurantIdParam = z.uuid();
  * from getTenantContext() (S-28).
  */
 export async function POST(
-  request: NextRequest,
+  _request: NextRequest,
   context: RouteContext<"/api/admin/restaurants/[restaurantId]/enter">,
 ) {
   const admin = await getPlatformAdminContext();
@@ -28,5 +27,5 @@ export async function POST(
   const result = await enterRestaurant(admin, id.data);
   if ("problem" in result) notFound();
 
-  return formSaved(request, "/dashboard");
+  return new Response(null, { status: 303, headers: { Location: "/dashboard" } });
 }

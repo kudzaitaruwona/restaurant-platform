@@ -54,13 +54,6 @@ describe("getPlatformAdminContext", () => {
   });
 });
 
-describe("getTenantContext", () => {
-  it("is a 403 for the platform admin, who hasn't entered a restaurant", async () => {
-    session.identity = devPlatformAdmin.key;
-    expect(await statusOf(tenantContext)).toBe(403);
-  });
-});
-
 describe("without the bypass", () => {
   it.each([
     ["DEV_AUTH_BYPASS is unset", "DEV_AUTH_BYPASS", ""],

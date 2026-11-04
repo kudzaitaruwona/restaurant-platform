@@ -81,6 +81,45 @@ export { withTenant, staff };`,
     ).toEqual([]);
   }, 30_000);
 
+  // authDatabase() hands back the admin login or the raw one, so it's a way round
+  // both of the boundaries above.
+  const authDatabaseImports = [
+    `import { authDatabase } from "@/lib/auth/database";\nexport { authDatabase };`,
+    `import { authDatabase } from "../auth/database";\nexport { authDatabase };`,
+  ];
+
+  it.each(
+    [
+      "src/app/admin/page.tsx",
+      "src/lib/staff-management.ts",
+      "src/lib/storage/index.ts",
+      "src/lib/tenant/index.ts",
+      "src/lib/tenant/platform-admin.ts",
+      "src/db/seed.ts",
+    ].flatMap((filePath) => authDatabaseImports.map((code) => [filePath, code])),
+  )("sign-in's database is out of reach of %s: %s", async (filePath, code) => {
+    expect(await restrictedImports(code, filePath)).not.toEqual([]);
+  }, 30_000);
+
+  it.each(["src/lib/auth/index.ts", "src/lib/auth/code-limit.ts"])(
+    "sign-in may use its own database: %s",
+    async (filePath) => {
+      expect(
+        await restrictedImports(
+          `import { authDatabase } from "./database";\nexport { authDatabase };`,
+          filePath,
+        ),
+      ).toEqual([]);
+    },
+    30_000,
+  );
+
+  it("sign-in's own files keep the rest of their boundaries", async () => {
+    const code = `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`;
+    expect(await restrictedImports(code, "src/lib/auth/code-limit.ts")).not.toEqual([]);
+    expect(await restrictedImports(code, "src/lib/auth/identity.ts")).toEqual([]);
+  }, 30_000);
+
   it("adding this boundary keeps the storage one: both apply to app code", async () => {
     const messages = await restrictedImports(
       `import { getDb } from "@/db";

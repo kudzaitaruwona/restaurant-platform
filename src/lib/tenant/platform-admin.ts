@@ -129,6 +129,16 @@ export async function leaveRestaurant(admin: PlatformAdminContext) {
   );
 }
 
+/**
+ * Signing out is someone acting, so it's audited as leaving, unlike a session
+ * that ends on its own (S-28). Better Auth calls this before it deletes the
+ * session, because the entry goes with the session and nothing records that.
+ */
+export async function leaveOnSignOut(requestHeaders: Headers) {
+  const admin = await sessionPlatformAdmin(requestHeaders);
+  if (admin) await leaveRestaurant(admin);
+}
+
 export async function listRestaurants(admin: Admin) {
   const { rows } = await getAdminDb().execute<{
     id: string;

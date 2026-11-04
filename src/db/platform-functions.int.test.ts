@@ -258,6 +258,8 @@ describe("who can reach the functions", () => {
     createRestaurantSql("Refused", slug(), actor),
     createOwnerSql(restaurantId, email(), actor),
     sql`select * from platform_list_restaurants(${actor})`,
+    sql`select platform_enter_restaurant(${actor}, ${"no-such-session"}, ${restaurantId})`,
+    sql`select platform_leave_restaurant(${actor}, ${"no-such-session"})`,
   ];
 
   it("an id that isn't a platform admin's gets nothing", async () => {

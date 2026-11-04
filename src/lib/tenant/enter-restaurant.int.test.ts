@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   adminAuthEntry,
@@ -20,9 +21,11 @@ import { installFakeServices } from "../../../test/integration/fake-services";
 import { statusOf } from "../../../test/integration/http";
 import { getTenantContext } from "./index";
 import {
+  createFirstOwner,
   enterRestaurant,
   getPlatformAdminContext,
   leaveRestaurant,
+  listRestaurants,
 } from "./platform-admin";
 
 /**
@@ -356,6 +359,128 @@ describe("what gets audited", () => {
     }
   });
 
+  const actionsIn = async (restaurantId: string) =>
+    (await auditOf(restaurantId)).map(({ action }) => action).sort();
+
+  it("going straight to another restaurant is leaving the first, in the first's log", async () => {
+    const [first, second] = [await newRestaurant(), await newRestaurant()];
+
+    await enter(first.id);
+    await enter(second.id);
+
+    expect(await actionsIn(first.id)).toEqual(["restaurant.enter", "restaurant.leave"]);
+    expect(await actionsIn(second.id)).toEqual(["restaurant.enter"]);
+    expect(
+      (await auditOf(first.id)).find(({ action }) => action === "restaurant.leave"),
+    ).toMatchObject({
+      actorType: "platform_admin",
+      actorId: adminId,
+      entityType: "restaurant",
+      entityId: first.id,
+    });
+  });
+
+  it("entering where the session already is leaves nothing", async () => {
+    const { id } = await newRestaurant();
+
+    await enter(id);
+    await enter(id);
+
+    expect(await actionsIn(id)).toEqual(["restaurant.enter", "restaurant.enter"]);
+  });
+
+  it("two moves at once each leave where the session really was", async () => {
+    const [first, second, third] = [
+      await newRestaurant(),
+      await newRestaurant(),
+      await newRestaurant(),
+    ];
+    await enter(first.id);
+    const admin = await asAdmin();
+
+    await Promise.all([
+      enterRestaurant(admin, second.id),
+      enterRestaurant(admin, third.id),
+    ]);
+
+    expect(await actionsIn(first.id)).toEqual(["restaurant.enter", "restaurant.leave"]);
+    const { restaurantId: endedIn } = await getTenantContext();
+    const passedThrough = endedIn === second.id ? third.id : second.id;
+    expect(await actionsIn(passedThrough)).toEqual([
+      "restaurant.enter",
+      "restaurant.leave",
+    ]);
+    expect(await actionsIn(endedIn)).toEqual(["restaurant.enter"]);
+  });
+
+  it("signing out inside a restaurant is leaving it, as the platform admin", async () => {
+    const { id } = await newRestaurant();
+    await enter(id);
+
+    const response = await postAuth("admin", "/sign-out", {}, { cookie: browser.cookie });
+
+    expect(response.ok).toBe(true);
+    expect(await actionsIn(id)).toEqual(["restaurant.enter", "restaurant.leave"]);
+    expect(
+      (await auditOf(id)).find(({ action }) => action === "restaurant.leave"),
+    ).toMatchObject({ actorType: "platform_admin", actorId: adminId, entityId: id });
+  });
+
+  it("signing out after leaving leaves nothing more", async () => {
+    const { id } = await newRestaurant();
+    await enter(id);
+    await leaveRestaurant(await asAdmin());
+
+    await postAuth("admin", "/sign-out", {}, { cookie: browser.cookie });
+
+    expect(await actionsIn(id)).toEqual(["restaurant.enter", "restaurant.leave"]);
+  });
+
+  it("a sign-out from another site is refused, so nobody left", async () => {
+    const { id } = await newRestaurant();
+    await enter(id);
+
+    const response = await postAuth("admin", "/sign-out", {}, {
+      cookie: browser.cookie,
+      origin: "https://elsewhere.example.test",
+    });
+
+    expect(response.ok).toBe(false);
+    expect(await actionsIn(id)).toEqual(["restaurant.enter"]);
+    expect(await getTenantContext()).toMatchObject({ restaurantId: id });
+  });
+
+  it("signing out takes only this session out", async () => {
+    const { id } = await newRestaurant();
+    await enter(id);
+    const inTheOtherBrowser = browser.cookie;
+    browser.cookie = await adminSession();
+    await enter(id);
+
+    await postAuth("admin", "/sign-out", {}, { cookie: browser.cookie });
+
+    browser.cookie = inTheOtherBrowser;
+    expect(await getTenantContext()).toMatchObject({ restaurantId: id });
+  });
+
+  it("a session that ends on its own audits nothing: no one acted", async () => {
+    const { id } = await newRestaurant();
+    await enter(id);
+    const [{ sessionId }] = await owner.db
+      .select()
+      .from(adminAuthEntry)
+      .where(eq(adminAuthEntry.enteredRestaurantId, id));
+
+    await owner.db
+      .update(adminAuthSession)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(adminAuthSession.id, sessionId));
+    expect(await statusOf(getTenantContext)).toBe(401);
+    await postAuth("admin", "/sign-out", {}, { cookie: browser.cookie });
+
+    expect(await actionsIn(id)).toEqual(["restaurant.enter"]);
+  });
+
   it("never records the shadow row as the actor (S-29)", async () => {
     const { id } = await newRestaurant();
     await enter(id);
@@ -363,6 +488,81 @@ describe("what gets audited", () => {
 
     const entries = await auditOf(id);
     expect(entries.map(({ actorId }) => actorId)).not.toContain(shadow.id);
+  });
+});
+
+describe("a restaurant with no owner yet, once entered", () => {
+  /** Made like /admin makes one: no staff until someone creates the first. */
+  async function ownerless() {
+    const id = crypto.randomUUID();
+    await owner.db.insert(restaurants).values({
+      id,
+      name: "No owner yet",
+      slug: `entered-${id}`,
+      menuToken: `entered-${id}`,
+      currencyMode: "usd_only",
+    });
+    await enter(id);
+    return id;
+  }
+
+  async function addFromTheStaffScreen(role: "owner" | "staff", email: string) {
+    const { POST } = await import("@/app/api/staff/route");
+    const body = new FormData();
+    body.set("email", email);
+    body.set("displayName", "First hire");
+    body.set("role", role);
+    return POST(
+      new NextRequest("http://localhost:3000/api/staff", { method: "POST", body }),
+    );
+  }
+
+  const team = (restaurantId: string) =>
+    owner.db
+      .select({ email: staff.email, role: staff.role })
+      .from(staff)
+      .where(and(eq(staff.restaurantId, restaurantId), eq(staff.kind, "staff")));
+
+  it("won't take a first staff record that isn't its owner (S-26), and says so", async () => {
+    const id = await ownerless();
+
+    const response = await addFromTheStaffScreen("staff", `first-${id}@example.test`);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/owner/i);
+    expect(await team(id)).toEqual([]);
+    expect((await auditOf(id)).map(({ action }) => action)).toEqual(["restaurant.enter"]);
+  });
+
+  it("leaves /admin's Create owner working after refusing one", async () => {
+    const id = await ownerless();
+    await addFromTheStaffScreen("staff", `first-${id}@example.test`);
+
+    const result = await createFirstOwner(await asAdmin(), id, {
+      email: `owner-${id}@example.test`,
+      displayName: "First owner",
+    });
+
+    expect(result).toHaveProperty("id");
+  });
+
+  it("takes its owner from the staff screen, and staff after that", async () => {
+    const id = await ownerless();
+    const [first, second] = [`first-${id}@example.test`, `second-${id}@example.test`];
+
+    expect((await addFromTheStaffScreen("owner", first)).status).toBe(303);
+    expect((await addFromTheStaffScreen("staff", second)).status).toBe(303);
+
+    expect(await team(id)).toEqual(
+      expect.arrayContaining([
+        { email: first, role: "owner" },
+        { email: second, role: "staff" },
+      ]),
+    );
+    const [listed] = (await listRestaurants(await asAdmin())).filter(
+      (restaurant) => restaurant.id === id,
+    );
+    expect(listed.hasOwner).toBe(true);
   });
 });
 
@@ -413,7 +613,6 @@ describe("the shadow row in Postgres", () => {
     });
     await enter(id);
 
-    const { createFirstOwner } = await import("./platform-admin");
     const result = await createFirstOwner(await asAdmin(), id, {
       email: `first-${id}@example.test`,
       displayName: "First owner",

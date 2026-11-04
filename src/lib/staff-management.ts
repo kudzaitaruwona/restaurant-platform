@@ -97,12 +97,33 @@ export async function listStaff(ctx: Pick<Acting, "restaurantId">) {
 export const countOwnerLogins = (team: Awaited<ReturnType<typeof listStaff>>) =>
   team.filter((member) => member.active && member.role === "owner").length;
 
+/**
+ * A restaurant's first staff record is its owner (S-26). Only a platform admin
+ * who has entered can get here with no owner yet. Once there is one, the
+ * last-owner trigger keeps it, so asking first leaves nothing to race.
+ */
 export async function addStaff(
   ctx: Acting,
   person: NewStaff,
-): Promise<"added" | "email_taken"> {
+): Promise<"added" | "email_taken" | "needs_owner_first"> {
   try {
-    await withTenant(ctx, async (tx) => {
+    return await withTenant(ctx, async (tx) => {
+      if (person.role !== "owner") {
+        const [owner] = await tx
+          .select({ id: staff.id })
+          .from(staff)
+          .where(
+            and(
+              eq(staff.restaurantId, ctx.restaurantId),
+              eq(staff.kind, "staff"),
+              eq(staff.role, "owner"),
+              eq(staff.active, true),
+            ),
+          )
+          .limit(1);
+        if (!owner) return "needs_owner_first";
+      }
+
       const [created] = await tx
         .insert(staff)
         .values({ ...person, restaurantId: ctx.restaurantId })
@@ -113,8 +134,8 @@ export async function addStaff(
         entityId: created.id,
         details: { role: person.role },
       });
+      return "added";
     });
-    return "added";
   } catch (error) {
     const constraint = constraintOf(error);
     // An exact match can trip the first, a match in another case only the second.

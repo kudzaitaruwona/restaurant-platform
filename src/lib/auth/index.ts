@@ -73,6 +73,7 @@ const signInExpirySeconds = SIGN_IN_EXPIRY_MINUTES * 60;
 
 const SEND_CODE_PATH = "/email-otp/send-verification-otp";
 const USE_CODE_PATH = "/sign-in/email-otp";
+const SIGN_OUT_PATH = "/sign-out";
 
 /**
  * The hook runs before Better Auth checks the address, so it sees whatever was
@@ -160,6 +161,12 @@ function createAuth(audience: Audience) {
     // malformed body goes on to fail Better Auth's own validation.
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === SIGN_OUT_PATH && audience === "admin") {
+          // Here rather than at the top of the file: the seam imports this one.
+          const { leaveOnSignOut } = await import("@/lib/tenant/platform-admin");
+          await leaveOnSignOut(new Headers(ctx.headers));
+          return;
+        }
         if (ctx.path !== SEND_CODE_PATH && ctx.path !== USE_CODE_PATH) return;
         const email: unknown = ctx.body?.email;
         if (hasNul(email)) {
@@ -288,7 +295,7 @@ const signInPaths = new Set([
   "/sign-in/email-otp",
   "/sign-in/social",
   "/callback/google",
-  "/sign-out",
+  SIGN_OUT_PATH,
 ]);
 
 export function handleAuthRequest(audience: Audience, request: Request) {

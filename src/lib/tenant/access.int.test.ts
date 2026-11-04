@@ -226,9 +226,7 @@ const adminRoutes: AdminRoute[] = [
   {
     name: "POST /api/admin/leave",
     call: async () =>
-      (await import("@/app/api/admin/leave/route")).POST(
-        request("/api/admin/leave", { method: "POST" }),
-      ),
+      (await import("@/app/api/admin/leave/route")).POST(),
   },
 ];
 
@@ -902,15 +900,17 @@ describe("harness coverage", () => {
       (file) =>
         /\.tsx?$/.test(file) &&
         !/\.test\.tsx?$/.test(file) &&
-        /getAdminDb\(|DATABASE_URL_ADMIN/.test(
+        /getAdminDb\(|authDatabase\(|DATABASE_URL_ADMIN/.test(
           readFileSync(join(sourceDirectory, file), "utf8"),
         ),
     );
     expect(openers.sort()).toEqual(
       [
         join("db", "admin.ts"),
+        join("lib", "auth", "code-limit.ts"),
         join("lib", "auth", "database.ts"),
         join("lib", "auth", "identity.ts"),
+        join("lib", "auth", "index.ts"),
         join("lib", "env.ts"),
         join("lib", "tenant", "admin-entry.ts"),
         join("lib", "tenant", "platform-admin.ts"),

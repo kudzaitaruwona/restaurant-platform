@@ -330,8 +330,9 @@ export const {
 /**
  * Which restaurant an admin session has entered (spec 01). Keyed by the session,
  * so the browser holds nothing that can choose a tenant, and a session that ends
- * takes its entry with it. Only the functions that enter and leave write it, so
- * every change is audited.
+ * takes its entry with it. Only the functions that enter and leave write it, and
+ * they audit every write. A cascade isn't audited: a session ending on its own
+ * means no one acted, and signing out leaves first (S-28).
  *
  * `entered_restaurant_id`, not `restaurant_id`: this isn't a tenant table. It
  * has to be read before there is a tenant, so it's outsideTenantOnly.
