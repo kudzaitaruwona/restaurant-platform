@@ -554,6 +554,61 @@ describe("/dashboard/menu bundles", () => {
     expect(await response.json()).toEqual({ error: "List what's included, in up to 1000 characters." });
     expect(await owner.db.select().from(menuItems).where(eq(menuItems.restaurantId, tenant.restaurantId))).toEqual([]);
   });
+
+  it("refuses a blank start with an end date already gone, with a reason, and adds nothing", async () => {
+    const categoryId = await newCategory("Combos");
+
+    const response = await addBundle(
+      post("/api/menu/bundles", {
+        name: "Combo",
+        description: "Burger and chips",
+        priceUsd: "9",
+        categoryId,
+        endDate: "2020-01-07",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "That end date has passed. Choose today or later.",
+    });
+    expect(await owner.db.select().from(menuItems).where(eq(menuItems.restaurantId, tenant.restaurantId))).toEqual([]);
+  });
+
+  it("refuses an edit that blanks a bundle's description, and keeps it; a regular item's may be blank", async () => {
+    const categoryId = await newCategory("Combos");
+    await addBundle(
+      post("/api/menu/bundles", {
+        name: "Burger combo",
+        description: "Burger, chips and a drink",
+        priceUsd: "9.50",
+        categoryId,
+      }),
+    );
+    await addItem(post("/api/menu/items", { ...item(categoryId), name: "Plain" }));
+    const idByName = async (name: string) =>
+      (
+        await owner.db
+          .select({ id: menuItems.id })
+          .from(menuItems)
+          .where(and(eq(menuItems.restaurantId, tenant.restaurantId), eq(menuItems.name, name)))
+      )[0].id;
+    const bundleId = await idByName("Burger combo");
+    const plainId = await idByName("Plain");
+    const edit = (itemId: string, fields: Record<string, string>) =>
+      editItem(
+        post(`/api/menu/items/${itemId}`, { ...item(categoryId), sortOrder: "0", ...fields }),
+        itemParams(itemId),
+      );
+
+    const refused = await edit(bundleId, { name: "Burger combo", description: "  " });
+
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({ error: "List what's included, in up to 1000 characters." });
+    const [row] = await owner.db.select().from(menuItems).where(eq(menuItems.id, bundleId));
+    expect(row.description).toBe("Burger, chips and a drink");
+    expect((await edit(plainId, { name: "Plain", description: "" })).status).toBe(303);
+  });
 });
 
 describe("/dashboard/menu editing", () => {

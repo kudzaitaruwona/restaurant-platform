@@ -67,6 +67,9 @@ export const optionalPrice = (pattern: RegExp, message: string) =>
       .transform((value) => value || null),
   );
 
+/** The same words as a new bundle's (bundles.ts), for an edit that blanks it. */
+export const bundleDescriptionMessage = "List what's included, in up to 1000 characters.";
+
 export const itemFields = z.object({
   name: z
     .string(messages.itemName)
@@ -167,7 +170,7 @@ export function getMenu(
     const [restaurant] = await tx
       .select({
         name: restaurants.name,
-        // The network's name only: the password isn't for a public page.
+        // The network's name only: the password isn't for a public page (D-11).
         wifiName: restaurants.wifiName,
         menuToken: restaurants.menuToken,
         currencyMode: restaurants.currencyMode,
@@ -584,7 +587,7 @@ export async function updateMenuItem(
   ctx: Writer,
   itemId: string,
   { categoryId, ...fields }: ItemEdit,
-): Promise<"saved" | "not_found" | "no_such_category" | "no_price"> {
+): Promise<"saved" | "not_found" | "no_such_category" | "no_price" | "no_description"> {
   if (!isId(itemId)) return "not_found";
   if (!isId(categoryId)) return "no_such_category";
 
@@ -592,10 +595,14 @@ export async function updateMenuItem(
   try {
     const result = await withTenant(ctx, async (tx) => {
       const [current] = await tx
-        .select({ id: menuItems.id })
+        .select({ id: menuItems.id, visibility: menuItems.visibility })
         .from(menuItems)
         .where(liveItem(restaurantId, itemId));
       if (!current) return "not_found";
+      // A bundle's description is what's included (spec 02), as when it was made.
+      if (current.visibility === "special_only" && fields.description === "") {
+        return "no_description";
+      }
       if (!(await hasLiveCategory(tx, restaurantId, categoryId))) {
         return "no_such_category";
       }

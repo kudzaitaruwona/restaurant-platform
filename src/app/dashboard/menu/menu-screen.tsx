@@ -382,7 +382,14 @@ function ItemEditor({
             <input name="name" defaultValue={item.name} required maxLength={200} className={inputClassName} />
           </Field>
           <Field label="Description">
-            <textarea name="description" defaultValue={item.description} rows={2} maxLength={1000} className={inputClassName} />
+            <textarea
+              name="description"
+              defaultValue={item.description}
+              rows={2}
+              maxLength={1000}
+              required={item.visibility === "special_only"}
+              className={inputClassName}
+            />
           </Field>
           <ItemPriceFields pricing={pricing} saved={item} />
           <Field label="Category">

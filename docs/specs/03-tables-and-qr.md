@@ -31,7 +31,7 @@ The token identifies the table on the server. The URL never contains the table l
 - One page, `/dashboard/tables/print` (staff pages live under `/dashboard/*` *(proposed)*, see D-10), prints with the browser's print function (no PDF library).
 - A4 layout with 2×3 cards per page *(proposed)*. Each card shows the restaurant name, the table label in large type, the QR code (SVG, at least 3cm wide), a short instruction, and the Wi-Fi details if set.
 - Options: print all tables, print selected tables, and include the generic menu QR card (for the door or the counter).
-- The owner can leave the Wi-Fi password off the cards. It prints by default *(proposed)*. This is the printed cards only: the menu page a code opens shows the network name and never the password (spec 02).
+- The owner can leave the Wi-Fi password off the cards. It prints by default *(proposed)*. This is the printed cards only: the menu page a code opens shows the network name and never the password (spec 02, D-11).
 - The Wi-Fi name and password print on lines of their own, in type that steps down to fit. Details too long to fit in full are never cut: the cards say to ask staff, and the sheet tells the owner *(proposed)*.
 - QR codes are generated server-side as SVG with error-correction level M, using the `qrcode` npm package.
 

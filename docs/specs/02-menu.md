@@ -65,7 +65,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 **URLs:** `/m/{menu_token}` (generic QR) and `/t/{qr_token}` (table QR; see spec 03). Both render the same menu in phase 2–5.
 
 ### Layout
-1. Restaurant name, plus the Wi-Fi details if set. For now that is the network name only, never the password, because this page is public and cached *(proposed: the owner decides whether the password belongs here)*. The printed table cards are a different place: the password does print there by default, see spec 03
+1. Restaurant name, plus the Wi-Fi details if set. For now that is the network name only, never the password, because this page is public and cached *(proposed, D-11: the owner decides whether the password belongs here)*. The printed table cards are a different place: the password does print there by default, see spec 03
 2. **Specials** section at the top, shown only when specials are active. It lists each item on special now, with its badge and prices, and a promoted item stays in its own category with the same special price *(proposed)*. A live bundle is listed here and nowhere else *(proposed)*. A special with a price but no badge is labelled "Special" *(proposed)*
 3. Categories as a sticky horizontal jump bar, then items grouped by category
 4. Each item shows name, description, price(s) per `currency_mode`, a lazy-loaded thumbnail, and a "Sold out" label when unavailable. Sold-out items stay visible but greyed out and sorted last *(proposed)*.
