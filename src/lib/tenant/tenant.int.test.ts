@@ -178,6 +178,23 @@ describe("withTenant", () => {
     expect(setting).toBe(aOwner.restaurantId);
   });
 
+  it("leaves nothing behind on the pooled connection for the next query", async () => {
+    const { withTenant } = await seam();
+    const { getDb } = await import("@/db");
+    const pid = sql`select pg_backend_pid() as pid`;
+
+    const used = await withTenant(a, async (tx) => (await tx.execute(pid)).rows[0].pid);
+
+    // A fresh pool that has only ever needed one connection hands the same one
+    // back. Checked, because the test proves nothing on a different connection.
+    const { rows } = await getDb().execute(sql`
+      select pg_backend_pid() as pid,
+             current_setting('app.restaurant_id', true) as setting,
+             (select count(*)::int from staff) as visible
+    `);
+    expect(rows).toEqual([{ pid: used, setting: "", visible: 0 }]);
+  });
+
   it("shows only the tenant's own rows", async () => {
     const { withTenant } = await seam();
     const seen = await withTenant(a, async (tx) => ({
