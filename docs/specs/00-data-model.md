@@ -126,10 +126,11 @@ Setting a discount in one currency therefore discounts both, even when the item 
 tables
   id, restaurant_id
   label                 text                  -- "7", "B2", "Patio 1"
-  capacity              int CHECK (> 0)
+  capacity              int CHECK (> 0)       -- the app also caps it at 100, and a label at 50 characters (proposed, spec 03)
   bookable              bool default true     -- false = walk-ins only
   sort_order
   qr_token              text unique           -- ≥128 bits random, base62
+  CHECK (qr_token ~ '^[0-9A-Za-z]{22,}$')    -- tables_qr_token_shape (proposed): 22 base62 characters is 131 bits, so a short or odd token can't be stored
   token_rotated_at      timestamptz null
   archived_at           null
   UNIQUE (restaurant_id, label) WHERE archived_at IS NULL

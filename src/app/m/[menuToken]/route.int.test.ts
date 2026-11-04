@@ -210,7 +210,7 @@ describe("tenants", () => {
     expect(body).not.toContain("Their");
   });
 
-  it.each(["no-such-token", "%", "' or 1=1 --"])(
+  it.each(["no-such-token", "%", "' or 1=1 --", "\0"])(
     "the unknown token %j is a real 404, with nothing of anyone's on it",
     async (token) => {
       const response = await visit(token);

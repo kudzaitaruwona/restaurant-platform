@@ -32,6 +32,10 @@ describe("the matcher", () => {
   it("covers the public menu page, for its cache (S-32)", () => {
     expect(unstable_doesMiddlewareMatch({ config, url: "/m/a-menu-token" })).toBe(true);
   });
+
+  it("covers a table's QR page too, for the same cache", () => {
+    expect(unstable_doesMiddlewareMatch({ config, url: "/t/a-qr-token" })).toBe(true);
+  });
 });
 
 describe("the public pages' cache (S-32)", () => {
@@ -48,6 +52,15 @@ describe("the public pages' cache (S-32)", () => {
     const response = proxy(request("/m/a-menu-token", { method }));
     expect(response.headers.get("x-middleware-next")).toBe("1");
   });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "PROPFIND"])(
+    "refuses %s to a table's QR page too",
+    (method) => {
+      const response = proxy(request("/t/a-qr-token", { method }));
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("GET, HEAD");
+    },
+  );
 
   it("does no session work, even for someone with a staff cookie", () => {
     const response = proxy(
