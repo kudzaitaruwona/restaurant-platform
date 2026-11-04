@@ -219,6 +219,12 @@ bookings
   -- online one on a bookable = false table. It takes the same advisory lock SHARED first, so two inserts never wait on each
   -- other and an archive and an insert order themselves: whichever commits second sees the other. Neither takes a row lock
   -- on tables, so moveTable's NO KEY UPDATE and a booking's foreign key check still don't block one another.
+  -- (proposed) bookings_max_active_per_phone (migration 0017): AFTER INSERT of a confirmed online booking with a phone, it takes
+  -- an advisory lock per (restaurant, phone) and counts (spec 04 › Abuse controls). Triggers fire in name order, so an insert takes
+  -- the phone's lock, then the table's. An archive takes only the table's, and a failed attempt gives both back with its SAVEPOINT,
+  -- so neither can wait on the other in a cycle, as long as a transaction makes one booking (src/db/booking-lock-order.int.test.ts).
+  -- It fires on insert only. A move leaves the count as it was, so it needs nothing. A reopen would add a booking the rule never
+  -- saw, but nothing reopens one (spec 04: nothing leads out of cancelled): whatever adds that must decide whether the limit applies.
   -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
   -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
   -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
