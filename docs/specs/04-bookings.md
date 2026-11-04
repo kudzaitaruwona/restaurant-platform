@@ -97,7 +97,7 @@ Staff pages live under `/dashboard/*` *(proposed)*, see D-10.
 | Action | Effect |
 |--------|--------|
 | **Seat** | `confirmed → seated` |
-| **Finish** | `seated → completed`. Sets `ends_at = greatest(starts_at + 1 min, now())` and `hold_ends_at = ends_at + buffer_minutes`, so the table becomes bookable again after the reset buffer, not at the original end time. |
+| **Finish** | `seated → completed`. Sets `ends_at = greatest(starts_at + 1 min, now())` and `hold_ends_at = ends_at + buffer_minutes`, so the table becomes bookable again after the reset buffer, not at the original end time. *(Proposed)* Both are clamped so `hold_ends_at - starts_at` stays within 960 minutes (the `bookings_hold_capped` CHECK, spec 00). |
 | **No-show** | `confirmed → no_show`. Frees the table. |
 | **Cancel** | `→ cancelled`, `cancelled_by = staff`. Queues a cancellation message (spec 05). |
 | **Move table** | Pick any table that's free for the hold window. The DB constraint still applies. No message to the guest, who never knew the table. |
@@ -109,7 +109,7 @@ Changing a booking's time in v1 means cancel plus a new booking. That keeps the 
 ### Automatic status changes (proposed)
 - `confirmed` and not seated by `starts_at + 30 min`: highlighted as **Late** in the day view. Nothing automatic happens, and staff decide.
 - `confirmed` and still not seated at `ends_at`: the system marks it `no_show` (`actor_type = system`).
-- `seated` and past `hold_ends_at`: the system marks it `completed`.
+- `seated` and past `hold_ends_at`: the system marks it `completed`. *(Proposed)* It clamps `ends_at` and `hold_ends_at` the same way, so `hold_ends_at - starts_at` stays within 960 minutes.
 
 These run on the same scheduled job as notifications (spec 05).
 
