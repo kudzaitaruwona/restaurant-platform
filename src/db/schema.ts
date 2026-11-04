@@ -78,9 +78,19 @@ export const restaurants = pgTable(
       .defaultNow(),
   },
   // The tenant root: its id is the tenant, so it has no restaurant_id.
-  () => [tenantPolicy("id")],
+  (table) => [
+    check(
+      "restaurants_contact_phone_e164",
+      sql`${table.contactPhone} ~ '^[+][1-9][0-9]{1,14}$'`,
+    ),
+    tenantPolicy("id"),
+  ],
 );
 
+/**
+ * A trigger in the migrations keeps every restaurant at least one active owner
+ * (S-26): see 0004_last_owner_and_contact_phone. Drizzle doesn't model triggers.
+ */
 export const staff = pgTable(
   "staff",
   {

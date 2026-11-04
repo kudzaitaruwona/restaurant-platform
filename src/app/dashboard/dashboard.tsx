@@ -1,4 +1,5 @@
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { restaurants, staff } from "@/db/schema";
 import { getTenantContext, withTenant } from "@/lib/tenant";
@@ -18,7 +19,7 @@ export async function Dashboard() {
         role: staff.role,
       })
       .from(staff)
-      .where(eq(staff.restaurantId, tenant.restaurantId))
+      .where(and(eq(staff.restaurantId, tenant.restaurantId), eq(staff.active, true)))
       .orderBy(asc(staff.createdAt), asc(staff.id));
     return { restaurant, team };
   });
@@ -34,6 +35,12 @@ export async function Dashboard() {
         <p className="text-muted-foreground">
           Signed in as {me?.displayName} ({tenant.role})
         </p>
+        {tenant.role === "owner" && (
+          <nav className="mt-2 flex gap-4 text-sm underline">
+            <Link href="/dashboard/settings">Restaurant settings</Link>
+            <Link href="/dashboard/staff">Staff</Link>
+          </nav>
+        )}
       </div>
       <ul className="flex flex-col gap-3">
         {team.map((member) => (

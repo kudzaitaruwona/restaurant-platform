@@ -1,6 +1,11 @@
+import { eq } from "drizzle-orm";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { testDatabaseSettings } from "../../../test/integration/database";
+import { staff } from "@/db/schema";
+import {
+  openOwnerDatabase,
+  testDatabaseSettings,
+} from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
 
 const session = vi.hoisted(() => ({ identity: "" }));
@@ -48,6 +53,31 @@ describe("the protected page", () => {
 
   it("doesn't offer it to staff", async () => {
     expect(await render("a-staff")).not.toContain('method="post"');
+  });
+
+  it("leaves deactivated colleagues out of the team", async () => {
+    const id = crypto.randomUUID();
+    const owner = openOwnerDatabase();
+    await owner.db.insert(staff).values({
+      id,
+      restaurantId: "00000000-0000-4000-8000-00000000000a",
+      email: `${id}@example.test`,
+      displayName: "Long gone",
+      active: false,
+    });
+    try {
+      expect(await render("a-owner")).not.toContain("Long gone");
+    } finally {
+      await owner.db.delete(staff).where(eq(staff.id, id));
+      await owner.pool.end();
+    }
+  });
+
+  it("links an owner to the owner-only screens, and not staff", async () => {
+    expect(await render("a-owner")).toContain('href="/dashboard/staff"');
+    expect(await render("a-owner")).toContain('href="/dashboard/settings"');
+    expect(await render("a-staff")).not.toContain("/dashboard/staff");
+    expect(await render("a-staff")).not.toContain("/dashboard/settings");
   });
 
   it("is a 401 with no identity", async () => {

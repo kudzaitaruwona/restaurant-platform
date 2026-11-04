@@ -66,4 +66,4 @@ A booking needs a WhatsApp number. Proposed: null the number 30 days after the b
 - Vercel Blob is no longer used.
 
 ### D-08: Product name and plan pricing
-The repo is named `restaurant-platform` as a working name. Pricing is undefined: the "standard plan" soft limit needs a plan to attach to. Per S-26, the soft limit counts **owner** logins only; staff logins are unlimited.
+The repo is named `restaurant-platform` as a working name. Pricing is undefined: the "standard plan" soft limit needs a plan to attach to. Per S-26, the soft limit counts **owner** logins only; staff logins are unlimited. Until plans exist, the app treats the standard plan as the only one and uses spec 01's number, one owner login, for every restaurant (`OWNER_LOGIN_SOFT_LIMIT`).
