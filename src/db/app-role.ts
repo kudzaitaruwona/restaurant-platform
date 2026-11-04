@@ -1,32 +1,87 @@
 import { sql } from "drizzle-orm";
 import { APP_DATABASE_ROLE } from "../lib/env";
-import { createDatabase, type DatabaseSettings } from "./client";
+import { createDatabase, type Database, type DatabaseSettings } from "./client";
 
 /**
  * Lets the app role log in, with the password from its own connection URL.
  * Migrations create the role without a password so that no secret is committed;
  * this keeps DATABASE_URL the one place that password is written down. Safe to
  * re-run, which is also how the password is rotated.
+ *
+ * Then refuses a role that RLS wouldn't apply to. The migration accepts any
+ * existing role of this name, and one created in the Neon Console joins
+ * neon_superuser: the app would run with every tenant's rows in view and
+ * nothing would look wrong. `role` is only for the tests, because roles are per
+ * cluster and they mustn't change the shared one.
  */
 export async function provisionAppRole(
   ownerSettings: DatabaseSettings,
   appConnectionString: string,
+  role = APP_DATABASE_ROLE,
 ) {
-  const { username, password } = new URL(appConnectionString);
-  if (username !== APP_DATABASE_ROLE || !password) {
+  // URL.parse, because a failed `new URL` keeps the whole URL on the error.
+  const url = URL.parse(appConnectionString);
+  if (url?.username !== role || !url.password) {
     throw new Error(
-      `The app's connection URL must log in as ${APP_DATABASE_ROLE}, with a password.`,
+      `The app's connection URL must log in as ${role}, with a password.`,
     );
   }
 
   const { db, pool } = createDatabase(ownerSettings);
+  let exemptions: string[];
   try {
     // ALTER ROLE takes no bind parameters, so have Postgres quote the password.
     const { rows } = await db.execute(
-      sql`select format('alter role %I login password %L', ${username}::text, ${decodeURIComponent(password)}::text) as statement`,
+      sql`select format('alter role %I login password %L', ${role}::text, ${decodeURIComponent(url.password)}::text) as statement`,
     );
     await db.execute(sql.raw(String(rows[0].statement)));
+    exemptions = await findRlsExemptions(db, role);
+  } catch (error) {
+    // Drizzle's error quotes the statement and its parameters, and both hold
+    // the password. Pass on only the code, and not as `cause`: Node prints that.
+    throw new Error(
+      `Could not set up ${role} (${errorCode(error)}). The database's message is left out because it can quote the password.`,
+    );
   } finally {
     await pool.end();
   }
+
+  if (exemptions.length > 0) {
+    throw new Error(
+      `Row-level security would not apply to ${role}: ${exemptions.join("; ")}. Create it with SQL, as db/migrations/0002_app_tenant_role.sql does.`,
+    );
+  }
+}
+
+/**
+ * Why RLS would skip this role, if it would: the role itself or any role it
+ * belongs to is a superuser, has BYPASSRLS or owns a table. Membership counts
+ * because table ownership is inherited, and SET ROLE reaches the rest.
+ */
+async function findRlsExemptions(db: Database, role: string) {
+  const { rows } = await db.execute(sql`
+    select r.rolname, r.rolsuper, r.rolbypassrls, owned.any as owns_table
+    from pg_roles r
+    cross join lateral (
+      select exists (
+        select from pg_class c
+        where c.relowner = r.oid and c.relkind in ('r', 'p')
+      ) as any
+    ) owned
+    where pg_has_role(${role}::name, r.oid, 'member')
+      and (r.rolsuper or r.rolbypassrls or owned.any)
+  `);
+  return rows.map((row) => {
+    const reasons = [
+      row.rolsuper && "superuser",
+      row.rolbypassrls && "BYPASSRLS",
+      row.owns_table && "owns a table",
+    ];
+    return `${row.rolname} (${reasons.filter(Boolean).join(", ")})`;
+  });
+}
+
+function errorCode(error: unknown) {
+  const { cause } = error as { cause?: { code?: unknown } };
+  return String(cause?.code ?? (error as { code?: unknown }).code ?? "no code");
 }
