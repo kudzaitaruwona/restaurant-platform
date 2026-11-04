@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
+import nextConfig from "./next.config";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
@@ -13,8 +14,11 @@ for (const [key, value] of Object.entries(loadEnv("test", root, ""))) {
 }
 
 // forbidden() and unauthorized() check this flag. Next.js sets it at build time
-// from experimental.authInterrupts in next.config.ts; there is no build here.
-process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS = "true";
+// from experimental.authInterrupts; there is no build here, so read the same
+// setting. Without it they throw, and the access harness fails, as the app would.
+if (nextConfig.experimental?.authInterrupts) {
+  process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS = "true";
+}
 
 export default defineConfig({
   resolve: {
