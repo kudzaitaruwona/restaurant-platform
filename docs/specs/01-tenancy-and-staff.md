@@ -17,7 +17,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ## Decided
 - Customers never have accounts. Orders attach to a table session, and bookings attach to a name and phone number.
 - **Roles (S-26, supersedes S-16):** `staff.role` is `owner` or `staff`. The first staff record created for a restaurant is its owner. The database guarantees every restaurant always has at least one active owner, so the last owner can't be deactivated or demoted.
-- **Owner only:** menu, categories, prices and specials; the exchange rate; staff management (add, deactivate, change role); tables and QR regeneration; booking settings and closures; restaurant settings.
+- **Owner only:** menu, categories, prices and specials; the exchange rate; staff management (add, deactivate, change role); tables and QR regeneration; booking settings and closures; restaurant settings; the booking success metrics on the dashboard *(proposed, S-33: staff don't see them)*.
 - "Owner only: menu" means managing it (a clarification of S-26, not a new rule). Staff see the item list read-only, with the sold-out toggle.
 - **Owner and staff:** the sold-out toggle, every booking day-view action, kitchen statuses, mark delivered, clear table, and (phase 6) void and force-close with a required, audited reason.
 - Role checks live in the app layer (`requireOwner(ctx)`). RLS stays tenant-only.
@@ -54,6 +54,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Platform admin and onboarding
 - Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26).
+- The admin screen also shows each restaurant's booking success metrics (spec 04) without entering it. This is a cross-tenant read, through `platform_list_booking_metrics`, and it isn't audited, like other reads *(proposed, S-33)*.
 - "Enter restaurant" switches the admin into that tenant's staff UI, with a persistent banner reading "Acting as admin in {restaurant}".
 - A restaurant can be entered before it has an owner. Its first staff record is still its owner (S-26), so until there is one the staff screen adds only an owner.
 - Entering a restaurant for the first time creates a shadow `staff` row (`kind = platform_admin`, `role = owner`, which can't log in) so the admin's actions satisfy the `→ staff` foreign keys (spec 00). There is one per restaurant, however many first entries race, and Postgres enforces that and its shape, including that the row is always active *(proposed)* (S-28). The shadow row passes owner permission checks but is excluded from the soft-limit count and the last-owner rule (S-26), and no staff screen or route shows it.

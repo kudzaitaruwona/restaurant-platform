@@ -70,11 +70,11 @@ describe("the dashboard's booking metrics", () => {
     const html = await render();
 
     expect(html).toContain("1 online, 0 added by staff");
-    expect(html).toContain("0%");
+    expect(html).toContain("0 of 1 finished bookings");
     expect(html).not.toContain("5 online");
   });
 
-  it("doesn't show staff the owner's numbers, or run the query", async () => {
+  it("doesn't show staff the owner's numbers", async () => {
     const { restaurantId, staffId } = await restaurantWith(2, 1);
     session.tenant = { restaurantId, staffId, role: "staff" };
 

@@ -4,6 +4,7 @@ import { bookings, servicePeriods } from "@/db/schema";
 import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { getBookingMetrics } from "./booking-metrics";
+import { seatWalkIn } from "./walk-in";
 
 /**
  * The success metrics (spec 04), against real rows as app_tenant, on restaurants of
@@ -85,6 +86,22 @@ describe("how many bookings are made online and how many staff add", () => {
       guestPhone: null,
       whatsappOptIn: false,
     });
+
+    expect(await getBookingMetrics(tenant)).toMatchObject({
+      online: 1,
+      staff: 0,
+      onlineShare: 1,
+      attended: 0,
+    });
+  });
+});
+
+describe("a walk-in seated through seatWalkIn", () => {
+  it("is in none of the numbers, whatever label seatWalkIn gives it", async () => {
+    const { restaurantId, tenant, tableIds, book } = await restaurant();
+    await book(DURING);
+    const outcome = await seatWalkIn({ restaurantId, staffId: crypto.randomUUID() }, tableIds[11], 2);
+    expect(outcome.outcome).toBe("seated");
 
     expect(await getBookingMetrics(tenant)).toMatchObject({
       online: 1,
@@ -177,12 +194,7 @@ describe("online bookings made while staff weren't answering", () => {
 
   it("counts every online booking when the restaurant has no periods", async () => {
     const { restaurantId, tenant, book } = await restaurant();
-    await owner.db.execute(sql`alter table booking_settings disable trigger user`);
-    try {
-      await owner.db.delete(servicePeriods).where(sql`${servicePeriods.restaurantId} = ${restaurantId}`);
-    } finally {
-      await owner.db.execute(sql`alter table booking_settings enable trigger user`);
-    }
+    await owner.db.delete(servicePeriods).where(sql`${servicePeriods.restaurantId} = ${restaurantId}`);
     await book(DURING);
 
     expect(await getBookingMetrics(tenant)).toMatchObject({ outsideHours: 1 });

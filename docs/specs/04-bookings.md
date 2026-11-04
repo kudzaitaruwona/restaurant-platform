@@ -189,8 +189,12 @@ Track these per restaurant from day one, because they're what wins the next ten 
 - **No-show rate**, compared with what the owner estimates they had before
 - **Share of bookings made online** versus added by staff
 
-- **Decided: they show in both places** (S-33, ticket #42). The owner's dashboard shows a restaurant's owners its own numbers (staff don't see them), and the platform admin's console shows them per restaurant. Both read the one Postgres function `booking_success_metrics`, so the two can't disagree. The numbers cover all time, from the restaurant's first booking.
-- *(Proposed)* How the three are counted where the list above leaves it open (ticket #42):
+- **Decided: they show in both places** (S-33, ticket #42). The owner's dashboard shows a restaurant's owners its own numbers, and the platform admin's console shows them per restaurant.
+- *(Proposed)* How the three are counted and served where the list above leaves it open (ticket #42):
+  - **Who sees them.** Staff don't see them: the dashboard gates on the role.
+  - **One definition.** Both places read the one Postgres function `booking_success_metrics`, so the two can't disagree.
+  - **Window.** The numbers cover all time, from the restaurant's first booking.
+  - **No new routes.** The dashboard and the admin console read the numbers, not a route of their own, so the cross-tenant test is extended to those entry points.
   - **What a booking is.** Every `bookings` row except a walk-in (`source = 'staff'` and `guest_name = 'Walk-in'`, see Walk-in), whatever its status became: staff seating a party at the door isn't a booking taken, and a booking later cancelled was still made.
   - **While staff weren't answering.** Online bookings only. The `created_at` is read on the restaurant's clock (`restaurants.timezone`, never the server's), and its local weekday and time are checked against that weekday's service periods as `[opens_at, closes_at)`, as the day view does. Periods can't cross midnight in v1, so the local weekday is the one to look up. It uses the periods as they are now, not as they were when the booking was made.
   - **Share made online.** Online bookings among online plus staff-added.

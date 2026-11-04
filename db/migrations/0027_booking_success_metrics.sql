@@ -1,7 +1,7 @@
 -- Booking success metrics (spec 04): the numbers that win the next venues. One
 -- definition, in Postgres, so the owner's dashboard and the platform admin's
 -- console can't disagree: the owner's reads call booking_success_metrics() as
--- app_tenant, and platform_booking_metrics() calls the same function for every
+-- app_tenant, and platform_list_booking_metrics() calls the same function for every
 -- restaurant.
 --
 -- What counts as a booking here: a walk-in (a staff row named 'Walk-in', spec 04
