@@ -24,6 +24,14 @@ The pitch the owner should feel: **"Nobody has to answer the phone for bookings 
 
 The guest never sees which table they've been given.
 
+*(Proposed)* How the page behaves where the steps above leave it open:
+- An unknown slug shows a "Restaurant not found" page, kept out of search engines. The HTTP status is 200 on a production build, not 404: an App Router page sends its shell before the slug can be looked up (S-32 in detail). The confirm route, `POST /api/r/{slug}/book`, answers a real 404.
+- While online booking is off, the page says so and shows the contact number. Confirm refuses on the server too.
+- A name is 1 to 100 characters. The number is stored as E.164: a leading 0 is dropped, and a number typed with its own `+` keeps its own country code.
+- A date is also disabled once every time on it is inside the lead time. A date that's only full stays enabled and says no tables are free.
+- The race-lost response offers up to 4 times, on the same date, closest first.
+- Confirming needs JavaScript, so that a refusal keeps what was typed without putting a phone number in a URL. The earlier steps are plain links and a GET form.
+
 **Party too large** (the "{max}+" option, or a size bigger than every bookable table): the page says "For groups of {n}+, contact the restaurant" and shows the phone and WhatsApp click-to-chat link (`restaurants.contact_phone`). This covers D-02.
 
 ### Refusals at confirm
@@ -58,14 +66,18 @@ drop t if  t < now() + min_lead_minutes
 hold(t)   = [t, t + sitting + buffer_minutes)
 tables(p) = bookable, not archived, capacity >= p,
             ordered by capacity ASC, sort_order ASC          -- best fit
-t is available  ⇔  ∃ table in tables(p) with no confirmed/seated booking overlapping hold(t)
+t is available  ⇔  ∃ table in tables(p) with no confirmed/seated/completed booking overlapping hold(t)
 ```
+
+*(Proposed)* `completed` counts too, because the exclusion constraint counts it. Without it the list would offer a table during the reset buffer after an early finish, and confirm would refuse it.
 
 ### Assigning on confirm
 1. Re-run the refusal checks (lead time, per-phone limit, bot check).
 2. Recompute candidate tables for the chosen time, using best fit.
 3. For each candidate: `SAVEPOINT`, then `INSERT`. On `exclusion_violation`, `ROLLBACK TO SAVEPOINT` and try the next candidate. **Without the savepoint, the first violation aborts the whole transaction and every later attempt fails.**
 4. If every candidate fails, return the "race lost" response with the nearest available times.
+
+*(Proposed)* A `deadlock_detected` error counts as an `exclusion_violation` here. Two inserts landing together can each wait on the other's unfinished row, and Postgres then fails one of them, inside its savepoint, so that one tries its next candidate.
 
 **The database constraint is the source of truth.** The app's availability check only keeps the UI honest. It is not what prevents double bookings.
 
@@ -74,7 +86,8 @@ Best fit can still put a couple on the 8-top when it's the only table free at 7p
 
 ## What staff see
 
-### Day view `/admin/bookings` (defaults to today)
+### Day view `/dashboard/bookings` (defaults to today)
+Staff pages live under `/dashboard/*` *(proposed)*, see D-10.
 - **List by time**, grouped by service period. Bookings outside every period (staff-added or walk-ins) appear under "Other". Each row shows time, guest name, party size, table, status, note, and tap-to-call and WhatsApp buttons (`tel:` and `wa.me` links).
 - A per-table timeline view is optional. The list ships first because it works on a phone.
 - A date picker for other days.

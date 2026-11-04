@@ -111,6 +111,68 @@ describe("resolvePublicToken for a table's token", () => {
   });
 });
 
+describe("resolvePublicToken for a restaurant's slug", () => {
+  it("finds the restaurant the slug belongs to, and only that one", async () => {
+    expect(await resolvePublicToken("slug", restaurantA.slug)).toEqual({
+      restaurantId: restaurantA.id,
+    });
+    expect(await resolvePublicToken("slug", restaurantB.slug)).toEqual({
+      restaurantId: restaurantB.id,
+    });
+  });
+
+  it.each(["", "no-such-restaurant", "%", "restaurant-%", "' or 1=1 --", "a\0b", "\0"])(
+    "finds nothing for %j",
+    async (slug) => {
+      expect(await resolvePublicToken("slug", slug)).toBeUndefined();
+    },
+  );
+
+  it("is exact: a slug differing only in case is a different slug", async () => {
+    expect(await resolvePublicToken("slug", restaurantA.slug.toUpperCase())).toBeUndefined();
+  });
+
+  it("doesn't take a menu token for a slug, or a slug for a menu token", async () => {
+    expect(await resolvePublicToken("slug", menuTokenOf(restaurantA))).toBeUndefined();
+    expect(await resolvePublicToken("menu", restaurantA.slug)).toBeUndefined();
+  });
+});
+
+describe("how the slug lookup is locked down", () => {
+  const name = "restaurant_id_by_slug";
+
+  it("is SECURITY DEFINER with a fixed search_path", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select prosecdef, proconfig from pg_proc
+      where proname = ${name} and pronamespace = 'public'::regnamespace
+    `);
+    expect(rows).toEqual([
+      { prosecdef: true, proconfig: ["search_path=pg_catalog, pg_temp"] },
+    ]);
+  });
+
+  it("can be executed by app_tenant and not by PUBLIC", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select coalesce(grantee.rolname, 'PUBLIC') as grantee
+      from pg_proc p
+      cross join lateral aclexplode(p.proacl) acl
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where p.proname = ${name} and p.pronamespace = 'public'::regnamespace
+        and acl.privilege_type = 'EXECUTE'
+        and acl.grantee <> p.proowner
+    `);
+    expect(rows).toEqual([{ grantee: "app_tenant" }]);
+  });
+
+  it("returns a uuid and nothing else, so no Wi-Fi password can come out of it", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select pg_get_function_result(oid) as result from pg_proc
+      where proname = ${name} and pronamespace = 'public'::regnamespace
+    `);
+    expect(rows).toEqual([{ result: "uuid" }]);
+  });
+});
+
 describe("how the table lookup is locked down", () => {
   const name = "restaurant_id_by_table_token";
 

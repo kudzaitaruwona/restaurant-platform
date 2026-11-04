@@ -11,6 +11,8 @@ import {
   staff,
   staffAuthRateLimit,
 } from "../../src/db/schema";
+import { addDays, localToday } from "../../src/lib/booking-engine";
+import { bookableRestaurant, bookingsOf } from "../integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -247,6 +249,102 @@ describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
     expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
+  });
+});
+
+/**
+ * Not one of `publicPages` above: a list of free tables must never come from a
+ * cache, so this page's rule is the opposite of theirs.
+ */
+describe("the booking page", () => {
+  const date = () => addDays(localToday(new Date(), "Africa/Harare"), 1);
+  const timesPage = (slug: string) => `${origin}/r/${slug}/book?party=2&date=${date()}`;
+
+  const book = (slug: string) => {
+    const body = new FormData();
+    for (const [key, value] of Object.entries({
+      party: "2",
+      date: date(),
+      time: "19:00",
+      name: "Production guest",
+      phone: "0771234567",
+      consent: "on",
+    })) {
+      body.set(key, value);
+    }
+    return fetch(`${origin}/api/r/${slug}/book`, { method: "POST", body });
+  };
+
+  // An App Router page sends its prerendered shell, and so its 200, before the
+  // slug can be looked up. This is the status that says so: spec 04 records it.
+  it.each(["no-such-restaurant", "a%00b"])(
+    "gives the friendly not-found page, out of search engines, for the slug %s",
+    async (slug) => {
+      const response = await fetch(`${origin}/r/${slug}/book`);
+      expect(response.status).toBe(200);
+      const page = await response.text();
+      expect(page).toContain("Restaurant not found");
+      expect(page).toContain('name="robots" content="noindex"');
+    },
+  );
+
+  it("is a page, not an error, while online booking is off", async () => {
+    const { slug } = await bookableRestaurant(owner.db, { rules: { enabled: false } });
+    const response = await fetch(`${origin}/r/${slug}/book`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("isn&#x27;t available right now");
+  });
+
+  it("shows a time until it's booked, and not one visit longer", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    expect(await (await fetch(timesPage(slug))).text()).toContain("time=19:00");
+
+    expect((await book(slug)).status).toBe(201);
+
+    expect(await (await fetch(timesPage(slug))).text()).not.toContain("time=19:00");
+  });
+
+  it("can't be taken down by a post to the page", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    await fetch(timesPage(slug), { method: "POST" });
+
+    const response = await fetch(timesPage(slug));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("time=19:00");
+  });
+
+  it("confirms over real HTTP, refuses the second, and logs neither guest", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+
+    const first = await book(slug);
+    const second = await book(slug);
+
+    expect(first.status).toBe(201);
+    const { confirmation } = await first.json();
+    expect(second.status).toBe(409);
+    expect((await second.json()).error).toContain("just booked");
+    const [booked] = await bookingsOf(owner.db, restaurantId);
+    expect(booked.guestPhone).toBe("+263771234567");
+    expect(serverOutput).not.toContain("771234567");
+    expect(serverOutput).not.toContain(confirmation.manageToken);
+  });
+
+  it("doesn't reach the database from Next.js's prerender of a new path", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    await fetch(`${origin}/r/${slug}/book`);
+    // Next.js prerenders a newly seen path after answering it.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(serverOutput).not.toContain('Route "/r/[slug]/book"');
+  });
+
+  it("refuses a post from another site", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const response = await fetch(`${origin}/api/r/${slug}/book`, {
+      method: "POST",
+      headers: { origin: "https://elsewhere.example" },
+      body: new FormData(),
+    });
+    expect(response.status).toBe(403);
   });
 });
 

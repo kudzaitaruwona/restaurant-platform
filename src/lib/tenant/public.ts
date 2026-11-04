@@ -15,6 +15,7 @@ import type { TenantContext } from "./scope";
 const lookups = {
   menu: (token: string) => sql`select restaurant_id_by_menu_token(${token}) as id`,
   table: (token: string) => sql`select restaurant_id_by_table_token(${token}) as id`,
+  slug: (slug: string) => sql`select restaurant_id_by_slug(${slug}) as id`,
 } satisfies Record<string, (token: string) => SQL>;
 
 export type PublicTokenKind = keyof typeof lookups;

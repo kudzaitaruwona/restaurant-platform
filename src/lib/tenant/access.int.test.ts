@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { and, eq, inArray, like, or } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   afterAll,
   afterEach,
@@ -15,6 +16,7 @@ import {
 import {
   adminAuthUser,
   auditLog,
+  bookings,
   bookingSettings,
   categories,
   diningTables,
@@ -24,7 +26,13 @@ import {
   staff,
   staffAuthUser,
 } from "@/db/schema";
+import { addDays, localToday } from "@/lib/booking-engine";
 import { signIn } from "../../../test/integration/auth";
+import {
+  aBooking,
+  bookableRestaurant,
+  bookingsOf,
+} from "../../../test/integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -65,6 +73,8 @@ vi.mock("next/headers", () => ({
 vi.mock("next/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("next/server")>()),
   after: (task: Promise<unknown>) => task,
+  // Only a real request has a connection to wait for.
+  connection: async () => {},
 }));
 
 // Only a real request has a cache to revalidate.
@@ -482,7 +492,56 @@ const publicRoutes: PublicRoute[] = [
         { params: Promise.resolve({ qrToken }) },
       ),
   },
+  {
+    // A page, not a handler, so it goes through what the page renders.
+    name: "PAGE /r/[slug]/book",
+    tokenOf: (restaurant) => `restaurant-${restaurant}`,
+    call: async (slug, init) => {
+      const { default: Page } = await import("@/app/r/[slug]/book/page");
+      const searchParams = Object.fromEntries(new URLSearchParams(init?.query));
+      return new Response(
+        renderToStaticMarkup(
+          await Page({
+            params: Promise.resolve({ slug }),
+            searchParams: Promise.resolve(searchParams),
+          }),
+        ),
+      );
+    },
+  },
 ];
+
+/** The one public write. It takes its slug like the pages, and is tested below them. */
+const guestConfirm = "POST /api/r/[slug]/book";
+
+/** What a guest's browser posts, for a time that's free tomorrow at any hour of today. */
+const guestForm = (extra: Record<string, string> = {}) => {
+  const body = new FormData();
+  const fields = {
+    party: "2",
+    date: addDays(localToday(new Date(), "Africa/Harare"), 1),
+    time: "19:00",
+    name: "Harness guest",
+    phone: "0771234567",
+    consent: "on",
+    ...extra,
+  };
+  for (const [key, value] of Object.entries(fields)) body.set(key, value);
+  return body;
+};
+
+const postBooking = async (
+  slug: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: FormData },
+) =>
+  (await import("@/app/api/r/[slug]/book/route")).POST(
+    request(`/api/r/${slug}/book${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body ?? guestForm(),
+    }),
+    { params: Promise.resolve({ slug }) },
+  );
 
 type AdminRoute = {
   name: string;
@@ -1662,6 +1721,109 @@ describe("a platform admin inside restaurant A", () => {
   });
 });
 
+describe("the guest's confirm", () => {
+  it("needs no session", async () => {
+    session.identity = "";
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(await statusOf(() => postBooking(slug))).toBe(201);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is a 404 for an unknown slug, and for a NUL in one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => postBooking("no-such-restaurant"))).toBe(404);
+    expect(await statusOf(() => postBooking("a\0b"))).toBe(404);
+  });
+
+  it("a restaurant id in the query, headers or body can't stand in for the slug", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(
+      await statusOf(() =>
+        postBooking("no-such-restaurant", {
+          query: `?restaurantId=${restaurantId}`,
+          headers: { "x-restaurant-id": restaurantId },
+          body: guestForm({ restaurantId, restaurant_id: restaurantId }),
+        }),
+      ),
+    ).toBe(404);
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("the slug decides the tenant, not the query, the headers, the body or a session", async () => {
+    session.identity = aOwner.key;
+    const named = await bookableRestaurant(owner.db);
+    const other = await bookableRestaurant(owner.db);
+    const id = other.restaurantId;
+
+    const response = await postBooking(named.slug, {
+      query: `?restaurantId=${id}`,
+      headers: { "x-restaurant-id": id },
+      body: guestForm({ restaurantId: id, restaurant_id: id, tableId: other.tableIds[0] }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await bookingsOf(owner.db, id)).toEqual([]);
+    const [booked] = await bookingsOf(owner.db, named.restaurantId);
+    expect(booked.tableId).toBe(named.tableIds[0]);
+  });
+});
+
+describe("the day list", () => {
+  const screen = async () => {
+    const { BookingsScreen } = await import("@/app/dashboard/bookings/bookings-screen");
+    return renderToStaticMarkup(await BookingsScreen());
+  };
+
+  const today = () => localToday(new Date(), "Africa/Harare");
+
+  /** A booking today on restaurant B's harness table, gone again however the test ends. */
+  async function withBookingInB(run: () => Promise<void>) {
+    const name = `Guest of B ${crypto.randomUUID()}`;
+    const row = {
+      ...aBooking(
+        fixtures.b.restaurantId,
+        fixtures.b.tableId,
+        `${today()}T10:00:00Z`,
+        `${today()}T11:00:00Z`,
+      ),
+      guestName: name,
+    };
+    await owner.db.insert(bookings).values(row);
+    try {
+      await run();
+    } finally {
+      await owner.db.delete(bookings).where(eq(bookings.guestName, name));
+    }
+    return name;
+  }
+
+  it("needs a session", async () => {
+    session.identity = "";
+    expect(await statusOf(screen)).toBe(401);
+  });
+
+  it("shows each restaurant its own bookings, to owners and staff alike", async () => {
+    let seenByB = "";
+    let seenByBStaff = "";
+    let seenByA = "";
+    const name = await withBookingInB(async () => {
+      session.identity = bOwner.key;
+      seenByB = await screen();
+      session.identity = bStaff.key;
+      seenByBStaff = await screen();
+      session.identity = aOwner.key;
+      seenByA = await screen();
+    });
+
+    expect(seenByB).toContain(name);
+    expect(seenByBStaff).toContain(name);
+    expect(seenByA).not.toContain(name);
+  });
+});
+
 describe("harness coverage", () => {
   const appDirectory = join(process.cwd(), "src", "app");
   const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -1674,6 +1836,10 @@ describe("harness coverage", () => {
   const routePath = (file: string) =>
     `/${file.split(sep).slice(0, -1).join("/")}`;
 
+  const pagesWithParams = appFiles.filter(
+    (file) => /(^|\/)page\.tsx?$/.test(file) && file.includes("["),
+  );
+
   it("every route handler in src/app is in the harness", async () => {
     const found: string[] = [];
     for (const file of appFiles.filter((file) => /(^|\/)route\.tsx?$/.test(file))) {
@@ -1684,28 +1850,31 @@ describe("harness coverage", () => {
         if (handlers[method]) found.push(`${method} ${routePath(file)}`);
       }
     }
+    found.push(...pagesWithParams.map((file) => `PAGE ${routePath(file)}`));
 
     const covered = [
       ...routes.map((route) => route.name),
       ...adminRoutes.map((route) => route.name),
       ...sessionRoutes.map((route) => route.name),
       ...publicRoutes.map((route) => route.name),
+      guestConfirm,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
   });
 
-  it("no page takes an id and no Server Function exists that the harness doesn't know about", () => {
-    // None yet. The first one needs a way in: add a TenantRoute that calls it.
-    const pagesWithParams = appFiles.filter(
-      (file) => /(^|\/)page\.tsx?$/.test(file) && file.includes("["),
+  it("no page takes an id but a public one and no Server Function exists that the harness doesn't know about", () => {
+    // The only pages with params so far are public, in `publicRoutes`, and take a
+    // slug. The first to take an id needs a way in: add a TenantRoute that calls it.
+    const pagesWithIds = pagesWithParams.filter(
+      (file) => !publicRoutes.some((route) => route.name === `PAGE ${routePath(file)}`),
     );
     const serverFunctions = appFiles.filter(
       (file) =>
         /\.tsx?$/.test(file) &&
         readFileSync(join(appDirectory, file), "utf8").includes("use server"),
     );
-    expect([...pagesWithParams, ...serverFunctions]).toEqual([]);
+    expect([...pagesWithIds, ...serverFunctions]).toEqual([]);
   });
 
   it("only the platform-admin seam calls the privileged functions", () => {

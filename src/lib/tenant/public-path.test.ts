@@ -20,6 +20,8 @@ describe("the public path", () => {
   it.each([
     ["the menu page", () => import("@/app/m/[menuToken]/route")],
     ["the table code's page", () => import("@/app/t/[qrToken]/route")],
+    ["the guest's booking route", () => import("@/app/api/r/[slug]/book/route")],
+    ["the bookings it reads", () => import("@/lib/bookings")],
     ["the page it renders", () => import("@/lib/public-menu")],
     ["the menu it reads", () => import("@/lib/menu")],
     ["the tenant scope", () => import("./scope")],

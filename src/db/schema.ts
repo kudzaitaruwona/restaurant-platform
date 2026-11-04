@@ -78,6 +78,18 @@ export const auditActorType = pgEnum("audit_actor_type", [
 
 export const staffRole = pgEnum("staff_role", ["owner", "staff"]);
 
+export const bookingStatus = pgEnum("booking_status", [
+  "confirmed",
+  "seated",
+  "completed",
+  "cancelled",
+  "no_show",
+]);
+
+export const bookingSource = pgEnum("booking_source", ["online", "staff"]);
+
+export const bookingCancelledBy = pgEnum("booking_cancelled_by", ["guest", "staff"]);
+
 export const restaurants = pgTable(
   "restaurants",
   {
@@ -416,6 +428,72 @@ export const servicePeriods = pgTable(
     ),
     // v1: periods don't cross midnight.
     check("service_periods_same_day", sql`${table.closesAt} <= '23:59'`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * A table held for a party (spec 00, 4). Every booking has a real table: that's
+ * what availability is made of.
+ *
+ * THE double-booking guard is an exclusion constraint that lives only in the
+ * migration (0015), because Drizzle can't model it:
+ *   bookings_no_overlap EXCLUDE USING gist (table_id WITH =,
+ *     tstzrange(starts_at, hold_ends_at) WITH &&)
+ *     WHERE (status IN ('confirmed', 'seated', 'completed'))
+ * The engine's blockingStatuses (src/lib/booking-engine.ts) must match that list.
+ *
+ * `manage_token` is a guest's cancel link, and `guest_phone` is personal data:
+ * neither goes in a log or an audit row.
+ */
+export const bookings = pgTable(
+  "bookings",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    tableId: uuid("table_id").notNull(),
+    guestName: text("guest_name").notNull(),
+    // E.164. Null for a walk-in, and once the retention job has been (D-06).
+    guestPhone: text("guest_phone"),
+    whatsappOptIn: boolean("whatsapp_opt_in").notNull(),
+    partySize: integer("party_size").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    // starts_at + sitting length
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    // ends_at + buffer
+    holdEndsAt: timestamp("hold_ends_at", { withTimezone: true }).notNull(),
+    status: bookingStatus().notNull(),
+    source: bookingSource().notNull(),
+    guestNote: text("guest_note"),
+    manageToken: text("manage_token").notNull().unique(),
+    cancelledBy: bookingCancelledBy("cancelled_by"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      columns: [table.restaurantId, table.tableId],
+      foreignColumns: [diningTables.restaurantId, diningTables.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    // The day list reads one restaurant's day.
+    index().on(table.restaurantId, table.startsAt),
+    check("bookings_guest_name", sql`trim(${table.guestName}) <> '' and length(${table.guestName}) <= 100`),
+    check("bookings_guest_phone_e164", sql`${table.guestPhone} ~ '^[+][1-9][0-9]{7,14}$'`),
+    check("bookings_party_size_positive", sql`${table.partySize} > 0`),
+    check("bookings_guest_note_length", sql`length(${table.guestNote}) <= 200`),
+    check(
+      "bookings_times_ordered",
+      sql`${table.startsAt} < ${table.endsAt} and ${table.endsAt} <= ${table.holdEndsAt}`,
+    ),
+    // The same 131 bits as a table's QR token, for the same reason.
+    check("bookings_manage_token_shape", sql`${table.manageToken} ~ '^[0-9A-Za-z]{22,}$'`),
     tenantPolicy("restaurant_id"),
   ],
 );

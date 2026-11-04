@@ -207,6 +207,11 @@ bookings
     table_id WITH =,
     tstzrange(starts_at, hold_ends_at) WITH &&
   ) WHERE (status IN ('confirmed', 'seated', 'completed'))
+
+  -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
+  -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
+  -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
+  -- manage_token is at least 22 base62 characters, the same as a table's QR token.
 ```
 
 The exclusion constraint makes double-booking impossible even when two guests submit at the same moment. `completed` stays inside the constraint so the reset buffer after an early finish is still respected (see spec 04, "Finish"). `cancelled` and `no_show` free the table.
