@@ -260,6 +260,8 @@ describe("who can reach the functions", () => {
     sql`select * from platform_list_restaurants(${actor})`,
     sql`select platform_enter_restaurant(${actor}, ${"no-such-session"}, ${restaurantId})`,
     sql`select platform_leave_restaurant(${actor}, ${"no-such-session"})`,
+    sql`select * from platform_onboarding_checklist(${actor})`,
+    sql`select platform_set_qr_codes_printed(${actor}, ${restaurantId}, true)`,
   ];
 
   it("an id that isn't a platform admin's gets nothing", async () => {
@@ -337,6 +339,8 @@ describe("every SECURITY DEFINER function", () => {
         "platform_enter_restaurant",
         "platform_leave_restaurant",
         "platform_list_restaurants",
+        "platform_onboarding_checklist",
+        "platform_set_qr_codes_printed",
         "staff_identity_by_email",
         "staff_keep_last_owner",
       ]),

@@ -6,6 +6,8 @@ import {
   DEFAULT_TIMEZONE,
   getPlatformAdminContext,
   listRestaurants,
+  onboardingChecklists,
+  onboardingItems,
 } from "@/lib/tenant/platform-admin";
 import { AdminForm } from "./admin-form";
 
@@ -19,7 +21,10 @@ const currencyModeLabels: Record<CurrencyMode, string> = {
 
 const fieldClass = "min-w-0 rounded-md border px-2 py-1 text-sm";
 
-function Field({ label, ...input }: { label: string } & ComponentProps<"input">) {
+function Field({
+  label,
+  ...input
+}: { label: string } & ComponentProps<"input">) {
   return (
     <label className="flex flex-col gap-1 text-sm">
       {label}
@@ -28,10 +33,45 @@ function Field({ label, ...input }: { label: string } & ComponentProps<"input">)
   );
 }
 
+/** The manual item: when it was ticked is shown in the restaurant's own timezone. */
+function QrCodesPrintedForm({
+  restaurantId,
+  printed,
+  printedAt,
+  timezone,
+}: {
+  restaurantId: string;
+  printed: boolean;
+  printedAt: Date | null;
+  timezone: string;
+}) {
+  return (
+    <>
+      {printedAt && (
+        <span className="text-muted-foreground">
+          {new Intl.DateTimeFormat("en-GB", {
+            dateStyle: "medium",
+            timeZone: timezone,
+          }).format(printedAt)}
+        </span>
+      )}
+      <AdminForm
+        action={`/api/admin/restaurants/${restaurantId}/qr-codes-printed`}
+        submitLabel={printed ? "Untick" : "Tick as printed"}
+      >
+        <input type="hidden" name="printed" value={String(!printed)} />
+      </AdminForm>
+    </>
+  );
+}
+
 /** Creates restaurants and their first owners, and enters them (spec 01, S-26). */
 export async function AdminConsole() {
   const admin = await getPlatformAdminContext();
-  const restaurants = await listRestaurants(admin);
+  const [restaurants, checklists] = await Promise.all([
+    listRestaurants(admin),
+    onboardingChecklists(admin),
+  ]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -41,7 +81,10 @@ export async function AdminConsole() {
 
       <section className="flex flex-col gap-3">
         <h2 className="font-heading text-xl font-semibold">New restaurant</h2>
-        <AdminForm action="/api/admin/restaurants" submitLabel="Create restaurant">
+        <AdminForm
+          action="/api/admin/restaurants"
+          submitLabel="Create restaurant"
+        >
           <Field label="Name" name="name" required maxLength={200} />
           <Field
             label="Slug (its public address, /r/your-slug)"
@@ -71,39 +114,71 @@ export async function AdminConsole() {
       <section className="flex flex-col gap-3">
         <h2 className="font-heading text-xl font-semibold">Restaurants</h2>
         <ul className="flex flex-col gap-6">
-          {restaurants.map((restaurant) => (
-            <li key={restaurant.id} className="flex flex-col gap-2">
-              <div>
-                <p className="font-medium">{restaurant.name}</p>
-                <p className="text-sm text-muted-foreground">
-                  /r/{restaurant.slug} · {restaurant.timezone} ·{" "}
-                  {currencyModeLabels[restaurant.currencyMode]}
-                </p>
-              </div>
-              <form
-                method="post"
-                action={`/api/admin/restaurants/${restaurant.id}/enter`}
-              >
-                <Button type="submit" variant="outline" size="sm">
-                  Enter restaurant
-                </Button>
-              </form>
-              {!restaurant.hasOwner && (
-                <AdminForm
-                  action={`/api/admin/restaurants/${restaurant.id}/owner`}
-                  submitLabel="Create owner"
+          {restaurants.map((restaurant) => {
+            const checklist = checklists.get(restaurant.id);
+            return (
+              <li key={restaurant.id} className="flex flex-col gap-2">
+                <div>
+                  <p className="font-medium">{restaurant.name}</p>
+                  <p className="text-sm text-muted-foreground">
+                    /r/{restaurant.slug} · {restaurant.timezone} ·{" "}
+                    {currencyModeLabels[restaurant.currencyMode]}
+                  </p>
+                </div>
+                <form
+                  method="post"
+                  action={`/api/admin/restaurants/${restaurant.id}/enter`}
                 >
-                  <Field label="Owner's email" name="email" type="email" required />
-                  <Field
-                    label="Owner's name"
-                    name="displayName"
-                    required
-                    maxLength={200}
-                  />
-                </AdminForm>
-              )}
-            </li>
-          ))}
+                  <Button type="submit" variant="outline" size="sm">
+                    Enter restaurant
+                  </Button>
+                </form>
+                {checklist && (
+                  <div className="flex flex-col gap-1">
+                    <h3 className="text-sm font-medium">Onboarding</h3>
+                    <ul className="flex flex-col gap-1 text-sm">
+                      {onboardingItems.map(({ key, label }) => (
+                        <li key={key} className="flex items-center gap-2">
+                          <span aria-hidden>{checklist[key] ? "✓" : "○"}</span>
+                          <span>{label}</span>
+                          <span className="sr-only">
+                            {checklist[key] ? "done" : "not done"}
+                          </span>
+                          {key === "qrCodesPrinted" && (
+                            <QrCodesPrintedForm
+                              restaurantId={restaurant.id}
+                              printed={checklist.qrCodesPrinted}
+                              printedAt={checklist.qrCodesPrintedAt}
+                              timezone={restaurant.timezone}
+                            />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {!restaurant.hasOwner && (
+                  <AdminForm
+                    action={`/api/admin/restaurants/${restaurant.id}/owner`}
+                    submitLabel="Create owner"
+                  >
+                    <Field
+                      label="Owner's email"
+                      name="email"
+                      type="email"
+                      required
+                    />
+                    <Field
+                      label="Owner's name"
+                      name="displayName"
+                      required
+                      maxLength={200}
+                    />
+                  </AdminForm>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </section>
     </div>

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { auditLog, restaurants, staff } from "@/db/schema";
+import { auditLog, onboardingChecklist, restaurants, staff } from "@/db/schema";
 import { devPlatformAdmin, devRestaurants } from "@/lib/tenant/dev-identities";
 import {
   openOwnerDatabase,
@@ -74,6 +74,22 @@ async function enter(restaurantId: string) {
     { params: Promise.resolve({ restaurantId }) },
   );
 }
+
+async function tickQrCodes(restaurantId: string, fields: Record<string, string>) {
+  const { POST } = await import("./restaurants/[restaurantId]/qr-codes-printed/route");
+  return POST(
+    post(`/api/admin/restaurants/${restaurantId}/qr-codes-printed`, fields),
+    { params: Promise.resolve({ restaurantId }) },
+  );
+}
+
+const isTicked = async (restaurantId: string) =>
+  (
+    await owner.db
+      .select()
+      .from(onboardingChecklist)
+      .where(eq(onboardingChecklist.restaurantId, restaurantId))
+  ).length === 1;
 
 const restaurantRow = async (id: string) =>
   (await owner.db.select().from(restaurants).where(eq(restaurants.id, id)))[0];
@@ -311,6 +327,52 @@ describe("POST /api/admin/restaurants/[restaurantId]/enter", () => {
     "a malformed id is a 404, not an error: %j",
     async (restaurantId) => {
       expect(await statusOf(() => enter(restaurantId))).toBe(404);
+    },
+  );
+});
+
+describe("POST /api/admin/restaurants/[restaurantId]/qr-codes-printed", () => {
+  it("ticks the box and unticks it, and the tick is still there afterwards", async () => {
+    const id = await created(await createRestaurant(validRestaurant()));
+
+    expect((await tickQrCodes(id, { printed: "true" })).status).toBe(200);
+    expect(await isTicked(id)).toBe(true);
+
+    expect((await tickQrCodes(id, { printed: "false" })).status).toBe(200);
+    expect(await isTicked(id)).toBe(false);
+  });
+
+  it("audits the tick as the platform admin", async () => {
+    const id = await created(await createRestaurant(validRestaurant()));
+
+    await tickQrCodes(id, { printed: "true" });
+
+    const entries = await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, id));
+    expect(entries.map(({ action }) => action)).toContain("onboarding.qr_codes_printed");
+  });
+
+  it.each<Record<string, string>>([{}, { printed: "" }, { printed: "yes" }])(
+    "is a 400 without a clear true or false, and changes nothing: %j",
+    async (fields) => {
+      const id = await created(await createRestaurant(validRestaurant()));
+
+      expect((await tickQrCodes(id, fields)).status).toBe(400);
+      expect(await isTicked(id)).toBe(false);
+    },
+  );
+
+  it("is a 404 for a restaurant that doesn't exist", async () => {
+    expect(
+      await statusOf(() => tickQrCodes(crypto.randomUUID(), { printed: "true" })),
+    ).toBe(404);
+  });
+
+  it.each(["not-a-uuid", "", "'; drop table staff; --"])(
+    "a malformed id is a 404, not an error: %j",
+    async (restaurantId) => {
+      expect(
+        await statusOf(() => tickQrCodes(restaurantId, { printed: "true" })),
+      ).toBe(404);
     },
   );
 });

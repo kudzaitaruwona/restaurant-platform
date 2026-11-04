@@ -190,6 +190,20 @@
       "when": 1793816410511,
       "tag": "0026_closures",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793832064127,
+      "tag": "0027_onboarding_checklist",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793832065076,
+      "tag": "0028_onboarding_checklist_functions",
+      "breakpoints": true
     }
   ]
 }
