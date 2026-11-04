@@ -189,7 +189,7 @@ Track these per restaurant from day one, because they're what wins the next ten 
 - **No-show rate**, compared with what the owner estimates they had before
 - **Share of bookings made online** versus added by staff
 
-- **Decided: they show in both places** (S-33, ticket #42). The owner's dashboard shows a restaurant's owners its own numbers, and the platform admin's console shows them per restaurant.
+- **Decided: they show in both places** (S-34, ticket #42). The owner's dashboard shows a restaurant's owners its own numbers, and the platform admin's console shows them per restaurant.
 - *(Proposed)* How the three are counted and served where the list above leaves it open (ticket #42):
   - **Who sees them.** Staff don't see them: the dashboard gates on the role.
   - **One definition.** Both places read the one Postgres function `booking_success_metrics`, so the two can't disagree.

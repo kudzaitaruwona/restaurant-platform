@@ -194,8 +194,22 @@
     {
       "idx": 27,
       "version": "7",
-      "when": 1793831047175,
-      "tag": "0027_booking_success_metrics",
+      "when": 1793832064127,
+      "tag": "0027_onboarding_checklist",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793832065076,
+      "tag": "0028_onboarding_checklist_functions",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793834759658,
+      "tag": "0029_booking_success_metrics",
       "breakpoints": true
     }
   ]

@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -5,7 +6,7 @@ import {
   devPlatformAdmin,
   devRestaurants,
 } from "@/lib/tenant/dev-identities";
-import { bookings } from "@/db/schema";
+import { bookings, onboardingChecklist, restaurants } from "@/db/schema";
 import { aBooking, bookableRestaurant } from "../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
@@ -58,6 +59,56 @@ describe("the admin screen", () => {
       expect(html).toContain(`action="/api/admin/restaurants/${id}/enter"`);
     }
     expect(html).toContain("Enter restaurant");
+  });
+
+  it("shows each restaurant's onboarding checklist, all seven items", async () => {
+    const html = await render();
+    for (const label of [
+      "Menu entered",
+      "Photos",
+      "Exchange rate set",
+      "Tables added",
+      "QR codes printed",
+      "Booking hours set",
+      "Booking enabled",
+    ]) {
+      expect(html.split(label).length - 1).toBeGreaterThanOrEqual(devRestaurants.length);
+    }
+  });
+
+  it("lets the admin tick QR codes printed, as an unticked box to start", async () => {
+    const html = await render();
+    expect(html).toContain("Tick as printed");
+    expect(html).toContain('<input type="hidden" name="printed" value="true"/>');
+  });
+
+  it("shows when it was ticked in the restaurant's timezone, and offers to untick", async () => {
+    const owner = openOwnerDatabase();
+    const slug = `tz-${crypto.randomUUID()}`;
+    const [restaurant] = await owner.db
+      .insert(restaurants)
+      .values({ name: "Midnight Grill", slug, menuToken: slug, currencyMode: "both", timezone: "Pacific/Auckland" })
+      .returning();
+    try {
+      // 23:30 UTC on 1 March is already 2 March in Auckland (UTC+13).
+      await owner.db.insert(onboardingChecklist).values({
+        restaurantId: restaurant.id,
+        qrCodesPrintedAt: new Date("2026-03-01T23:30:00Z"),
+        qrCodesPrintedBy: devPlatformAdmin.platformAdminId,
+      });
+
+      const html = await render();
+
+      const start = html.indexOf(`${restaurant.id}/enter`);
+      const row = html.slice(start, html.indexOf("</ul>", start));
+      expect(row).toContain("2 Mar 2026");
+      expect(row).not.toContain("1 Mar 2026");
+      expect(row).toContain("Untick");
+      expect(row).toContain('<input type="hidden" name="printed" value="false"/>');
+    } finally {
+      await owner.db.delete(restaurants).where(eq(restaurants.id, restaurant.id));
+      await owner.pool.end();
+    }
   });
 
   it("doesn't offer a first owner to a restaurant that has one", async () => {

@@ -4,7 +4,7 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 /**
  * The booking success metrics (spec 04 › Success metrics). The counting is one
- * Postgres function, booking_success_metrics (migration 0027), which this file
+ * Postgres function, booking_success_metrics (migration 0029), which this file
  * calls for an owner, and the admin console reaches the same function for every
  * restaurant through the platform-admin seam, so the two can't disagree. What
  * counts, and the restaurant's clock, are decided there.

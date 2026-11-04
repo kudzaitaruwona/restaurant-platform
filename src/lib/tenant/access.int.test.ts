@@ -24,6 +24,7 @@ import {
   diningTables,
   exchangeRates,
   menuItems,
+  onboardingChecklist,
   restaurants,
   servicePeriods,
   specials,
@@ -1012,6 +1013,19 @@ const adminRoutes: AdminRoute[] = [
             email: `${crypto.randomUUID()}@example.test`,
             displayName: "Owner by the harness",
           }),
+        }),
+        { params: Promise.resolve({ restaurantId }) },
+      ),
+  },
+  {
+    name: "POST /api/admin/restaurants/[restaurantId]/qr-codes-printed",
+    call: async (restaurantId) =>
+      (
+        await import("@/app/api/admin/restaurants/[restaurantId]/qr-codes-printed/route")
+      ).POST(
+        request(`/api/admin/restaurants/${restaurantId}/qr-codes-printed`, {
+          method: "POST",
+          body: form({ printed: "true" }),
         }),
         { params: Promise.resolve({ restaurantId }) },
       ),
@@ -2471,6 +2485,12 @@ describe("platform-admin routes", () => {
 
       expect(await harnessRestaurants()).toHaveLength(restaurantsBefore);
       expect(await staffCount(fixtures.b.restaurantId)).toBe(staffBefore);
+      expect(
+        await owner.db
+          .select()
+          .from(onboardingChecklist)
+          .where(eq(onboardingChecklist.restaurantId, fixtures.b.restaurantId)),
+      ).toEqual([]);
     },
   );
 
