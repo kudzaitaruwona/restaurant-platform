@@ -24,7 +24,7 @@ export function ActionForm({
   children: ReactNode;
 }) {
   const router = useRouter();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
 
@@ -47,7 +47,7 @@ export function ActionForm({
         setError(await refusalFrom(response));
       }
     } catch {
-      setError("That didn't reach the server. Try again.");
+      setError({ message: "That didn't reach the server. Try again.", bookings: [] });
     } finally {
       setPending(false);
     }
@@ -63,18 +63,37 @@ export function ActionForm({
           </p>
         )}
         {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
+          <div role="alert" className="text-sm text-destructive">
+            <p>{error.message}</p>
+            {error.bookings.length > 0 && (
+              <ul className="list-disc pl-5">
+                {error.bookings.map((booking) => (
+                  <li key={booking.id}>{booking.summary}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </fieldset>
     </form>
   );
 }
 
-async function refusalFrom(response: Response) {
+type Refusal = { message: string; bookings: { id: string; summary: string }[] };
+
+/** A refusal says why, and may list the bookings in the way (the archive's 409). */
+async function refusalFrom(response: Response): Promise<Refusal> {
   const body = await response.json().catch(() => undefined);
-  return typeof body?.error === "string"
-    ? body.error
-    : "That didn't work. Reload the page and try again.";
+  return {
+    message:
+      typeof body?.error === "string"
+        ? body.error
+        : "That didn't work. Reload the page and try again.",
+    bookings: Array.isArray(body?.bookings)
+      ? body.bookings.filter(
+          (item: { id?: unknown; summary?: unknown }) =>
+            typeof item?.id === "string" && typeof item?.summary === "string",
+        )
+      : [],
+  };
 }

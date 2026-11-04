@@ -245,12 +245,15 @@ const dbErrorOf = (error: unknown) =>
  * Someone else got the table. 23P01 is the constraint saying so. 40P01 is the same
  * news: each of two inserts landing together sees the other's unfinished row and
  * waits for it, so Postgres ends that deadlock by failing one of them, and the
- * one it fails has lost that table just the same.
+ * one it fails has lost that table just the same. So has a confirm that finds the
+ * table archived (bookings_table_live, migration 0016): an owner archived it
+ * between the list and the insert.
  */
 function tableWasTaken(error: unknown) {
   const cause = dbErrorOf(error);
   return (
     (cause?.code === "23P01" && cause.constraint === "bookings_no_overlap") ||
+    (cause?.code === "23514" && cause.constraint === "bookings_table_live") ||
     cause?.code === "40P01"
   );
 }

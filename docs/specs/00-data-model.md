@@ -134,6 +134,10 @@ tables
   token_rotated_at      timestamptz null
   archived_at           null
   UNIQUE (restaurant_id, label) WHERE archived_at IS NULL
+  -- (proposed) archive guard (migration 0016, spec 03): an AFTER UPDATE OF archived_at trigger refuses to archive a table
+  -- while a booking holds it: status IN ('confirmed','seated') AND hold_ends_at > now() (booking_holds_table()).
+  -- It takes pg_advisory_xact_lock(hashtextextended('table_seat:' || id, 0)) first, in its own statement, so it waits for
+  -- inserts in flight and sees them.
 ```
 
 ## 4. Bookings
@@ -210,6 +214,11 @@ bookings
     tstzrange(starts_at, hold_ends_at) WITH &&
   ) WHERE (status IN ('confirmed', 'seated', 'completed'))
 
+  -- (proposed) bookings_table_live (migration 0016): AFTER INSERT, and AFTER UPDATE OF table_id, status when the booking
+  -- newly claims a table, refuse a booking that holds its table (booking_holds_table()) on an archived table, and an
+  -- online one on a bookable = false table. It takes the same advisory lock SHARED first, so two inserts never wait on each
+  -- other and an archive and an insert order themselves: whichever commits second sees the other. Neither takes a row lock
+  -- on tables, so moveTable's NO KEY UPDATE and a booking's foreign key check still don't block one another.
   -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
   -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
   -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
