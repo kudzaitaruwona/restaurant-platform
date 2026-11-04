@@ -58,6 +58,28 @@ const item = (prices: { priceUsd?: string | null; priceZig?: string | null }) =>
   ...prices,
 });
 
+describe("menu item visibility", () => {
+  it("is regular unless the item is made a bundle", async () => {
+    const [plain] = await owner.db
+      .insert(menuItems)
+      .values(item({ priceUsd: "3" }))
+      .returning({ visibility: menuItems.visibility });
+    const [bundle] = await owner.db
+      .insert(menuItems)
+      .values({ ...item({ priceUsd: "3" }), visibility: "special_only" })
+      .returning({ visibility: menuItems.visibility });
+    expect([plain.visibility, bundle.visibility]).toEqual(["regular", "special_only"]);
+  });
+
+  it("takes no other value", async () => {
+    await expect(
+      owner.db.execute(
+        sql`update menu_items set visibility = 'hidden' where restaurant_id = ${mine.restaurantId}`,
+      ),
+    ).rejects.toMatchObject({ cause: { code: "22P02" } });
+  });
+});
+
 describe("menu item prices", () => {
   it("refuses an item with neither a USD nor a ZiG price", async () => {
     await expect(
