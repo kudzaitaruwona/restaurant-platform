@@ -7,6 +7,7 @@ import { POST as addPeriod } from "@/app/api/bookings/periods/route";
 import { POST as saveRules } from "@/app/api/bookings/settings/route";
 import { POST as setEnabled } from "@/app/api/bookings/settings/enabled/route";
 import { bookingSettings, diningTables, restaurants, servicePeriods, staff } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -27,6 +28,8 @@ vi.mock("@/lib/tenant", async (original) => ({
   ...(await original<typeof import("@/lib/tenant")>()),
   getTenantContext: async () => session.tenant as TenantContext,
 }));
+
+vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
 
 vi.mock("next/navigation", async (original) => ({
   ...(await original<typeof import("next/navigation")>()),
@@ -166,6 +169,41 @@ describe("/dashboard/bookings/settings", () => {
     const [{ id }] = await periods();
 
     expect(deleteConfirmation(await screen(), id)).not.toContain("switch off");
+  });
+
+  it("gives the booking link and its QR code, for this restaurant's slug", async () => {
+    const link = `${getEnv().NEXT_PUBLIC_APP_URL.replace(/\/+$/, "")}/r/booking-screen-${tenant.restaurantId}/book`;
+
+    const html = await screen();
+
+    expect(html).toContain(`value="${link}"`);
+    expect(html).toMatch(/<svg[\s\S]*<\/svg>/);
+  });
+
+  it("gives another restaurant's session its own link, never this one's", async () => {
+    const other = crypto.randomUUID();
+    await owner.db.insert(restaurants).values({
+      id: other,
+      name: "Somewhere else",
+      slug: `booking-screen-${other}`,
+      menuToken: other,
+      currencyMode: "usd_only",
+    });
+    created.push(other);
+    session.tenant = { restaurantId: other, staffId: tenant.staffId, role: "owner" };
+
+    const html = await screen();
+
+    expect(html).toContain(`/r/booking-screen-${other}/book`);
+    expect(html).not.toContain(`/r/booking-screen-${tenant.restaurantId}/book`);
+  });
+
+  it("says guests will see that booking is off, until it's turned on", async () => {
+    expect(await screen()).toContain("Guests who open the link will see that online booking is off");
+
+    await turnBookingOn();
+
+    expect(await screen()).not.toContain("Guests who open the link will see that online booking is off");
   });
 
   it("refuses staff with forbidden(), before any data renders", async () => {

@@ -3,6 +3,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { bookingSettings, diningTables, restaurants, servicePeriods } from "@/db/schema";
+import { revalidateMenu } from "@/lib/menu-cache";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
@@ -171,6 +172,10 @@ export async function setBookingEnabled(
     }
     throw error;
   }
+  // After commit: the table page's "Book again" depends on this (spec 03). The
+  // gate's own switch-off runs in Postgres and never gets here, so that page
+  // catches up on its 5-minute revalidation instead.
+  revalidateMenu(ctx);
   return { outcome: "saved" };
 }
 
@@ -204,7 +209,11 @@ export function getBookingReadiness(ctx: Tenant) {
         ),
       );
     const [restaurant] = await tx
-      .select({ contactPhone: restaurants.contactPhone, timezone: restaurants.timezone })
+      .select({
+        contactPhone: restaurants.contactPhone,
+        timezone: restaurants.timezone,
+        slug: restaurants.slug,
+      })
       .from(restaurants)
       .where(eq(restaurants.id, ctx.restaurantId));
     return { bookableTables: tables.count, ...restaurant };

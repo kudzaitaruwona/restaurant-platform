@@ -8,6 +8,7 @@ import {
   diningTables,
   menuItems,
   restaurants,
+  servicePeriods,
   staff,
   staffAuthRateLimit,
 } from "../../src/db/schema";
@@ -382,6 +383,65 @@ describe("archiving a table", () => {
       .where(eq(diningTables.restaurantId, mine.id));
 
     await visit(`/api/tables/${tableId}/archive`, { method: "POST", headers: { origin, cookie } });
+
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
+  });
+});
+
+describe("Book again on a table's page", () => {
+  /** What the gate asks for, so that turning booking on can succeed. */
+  async function readyForBooking(restaurantId: string) {
+    await owner.db
+      .update(restaurants)
+      .set({ contactPhone: "+263771234567" })
+      .where(eq(restaurants.id, restaurantId));
+    await owner.db.insert(servicePeriods).values({
+      restaurantId,
+      name: "Lunch",
+      weekday: 1,
+      opensAt: "12:00",
+      lastBookingAt: "14:00",
+      closesAt: "15:00",
+    });
+  }
+
+  const setBooking = (restaurant: { cookie: string }, enabled: boolean) =>
+    visit("/api/bookings/settings/enabled", {
+      method: "POST",
+      headers: { origin, cookie: restaurant.cookie },
+      body: new URLSearchParams({ enabled: String(enabled) }),
+    });
+
+  it("appears at once when booking is turned on, and goes at once when it's turned off", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const cookie = await signInAsOwnerOf(restaurant.id);
+    await readyForBooking(restaurant.id);
+    const scan = () => visit(`/t/${restaurant.qrToken}`);
+    const bookAgain = `href="/r/${restaurant.menuToken}/book"`;
+    expect(await (await scan()).text()).not.toContain("Book again");
+    expect(cacheStatus(await scan())).toBe("HIT");
+
+    const on = await setBooking({ cookie }, true);
+    expect(on.status).toBe(303);
+    const whileOn = await scan();
+    expect(cacheStatus(whileOn)).toBe("MISS");
+    expect(await whileOn.text()).toContain(bookAgain);
+
+    const off = await setBooking({ cookie }, false);
+    expect(off.status).toBe(303);
+    const whileOff = await scan();
+    expect(cacheStatus(whileOff)).toBe("MISS");
+    expect(await whileOff.text()).not.toContain("Book again");
+  });
+
+  it("leaves another restaurant's cached table page where it was", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+    await readyForBooking(mine.id);
+
+    expect((await setBooking({ cookie }, true)).status).toBe(303);
 
     expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
   });

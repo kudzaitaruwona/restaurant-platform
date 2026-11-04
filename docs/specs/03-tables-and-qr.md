@@ -14,7 +14,7 @@ Adding a table gives the restaurant a printable QR code straight away. The codes
 ## Key design point: one URL that changes behaviour with phase
 A table QR code encodes `https://{domain}/t/{qr_token}`.
 
-- **Phases 3–5:** `/t/{qr_token}` renders the menu, plus a small "Book again" link to the booking page.
+- **Phases 3–5:** `/t/{qr_token}` renders the menu, plus a small "Book again" link to the booking page. *(Proposed)* The link shows only while online booking is on, so it never leads to a closed page. It's the same for every table, so the page stays free of per-table data. Turning booking on or off refreshes the page at once. The automatic switch-off in spec 04 can't, so the link can outlast it by up to five minutes.
 - **Phase 6:** the same URL becomes the ordering entry point.
 
 The token identifies the table on the server. The URL never contains the table label or the restaurant ID.
