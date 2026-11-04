@@ -29,4 +29,4 @@ try {
 } finally {
   await pool.end();
 }
-console.log("Seeded restaurants A and B, each with an owner and a staff member.");
+console.log("Seeded restaurants A and B, each with an owner and a staff member, and the platform admin.");

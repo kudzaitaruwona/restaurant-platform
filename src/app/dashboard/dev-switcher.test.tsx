@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { devIdentities } from "@/lib/tenant/dev-identities";
+import { devSwitcherIdentities } from "@/lib/tenant/dev-identities";
 
 async function render() {
   vi.resetModules(); // fresh env cache per test
@@ -25,9 +25,10 @@ describe("DevSwitcher", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  it("offers all four identities when the bypass is on", async () => {
+  it("offers every seeded identity, platform admin included, when the bypass is on", async () => {
     const html = await render();
-    for (const identity of devIdentities) {
+    expect(devSwitcherIdentities).toHaveLength(5);
+    for (const identity of devSwitcherIdentities) {
       expect(html).toContain(identity.label);
       expect(html).toContain(`value="${identity.key}"`);
     }

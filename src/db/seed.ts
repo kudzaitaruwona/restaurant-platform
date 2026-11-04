@@ -1,10 +1,15 @@
-import { devIdentities, devRestaurants } from "../lib/tenant/dev-identities";
+import {
+  devIdentities,
+  devPlatformAdmin,
+  devRestaurants,
+} from "../lib/tenant/dev-identities";
 import type { Database } from "./client";
-import { restaurants, staff } from "./schema";
+import { platformAdmins, restaurants, staff } from "./schema";
 
 /**
- * Restaurants A and B, each with one owner and one staff member. Needs the role
- * that owns the tables: the app role can't create restaurants. Safe to re-run.
+ * Restaurants A and B, each with one owner and one staff member, and the
+ * platform admin. Needs the role that owns the tables: the app role can't create
+ * restaurants or touch platform_admins. Safe to re-run.
  */
 export async function seedDevData(db: Database) {
   await db
@@ -29,5 +34,13 @@ export async function seedDevData(db: Database) {
         role,
       })),
     )
+    .onConflictDoNothing();
+
+  await db
+    .insert(platformAdmins)
+    .values({
+      id: devPlatformAdmin.platformAdminId,
+      email: devPlatformAdmin.email,
+    })
     .onConflictDoNothing();
 }

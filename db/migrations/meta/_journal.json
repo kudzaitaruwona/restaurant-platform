@@ -29,6 +29,13 @@
       "when": 1793759522507,
       "tag": "0003_audit_log_and_platform_admins",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793760023319,
+      "tag": "0004_platform_admin_functions",
+      "breakpoints": true
     }
   ]
 }

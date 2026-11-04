@@ -1,8 +1,12 @@
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { openOwnerDatabase } from "../../test/integration/database";
-import { devIdentities, devRestaurants } from "../lib/tenant/dev-identities";
-import { restaurants, staff } from "./schema";
+import {
+  devIdentities,
+  devPlatformAdmin,
+  devRestaurants,
+} from "../lib/tenant/dev-identities";
+import { platformAdmins, restaurants, staff } from "./schema";
 import { seedDevData } from "./seed";
 
 const { db, pool } = openOwnerDatabase();
@@ -42,5 +46,15 @@ describe("the development seed", () => {
         .sort();
       expect(roles).toEqual(["owner", "staff"]);
     }
+  });
+
+  it("creates the platform admin the dev switcher offers", async () => {
+    await seedDevData(db);
+
+    const admins = await db
+      .select({ id: platformAdmins.id })
+      .from(platformAdmins)
+      .where(eq(platformAdmins.id, devPlatformAdmin.platformAdminId));
+    expect(admins).toHaveLength(1);
   });
 });

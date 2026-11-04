@@ -1,0 +1,60 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { testDatabaseSettings } from "../../../test/integration/database";
+import { statusOf } from "../../../test/integration/http";
+import { devIdentities, devPlatformAdmin } from "./dev-identities";
+
+const session = vi.hoisted(() => ({ identity: undefined as string | undefined }));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: (name: string) =>
+      session.identity === undefined
+        ? undefined
+        : { name, value: session.identity },
+  }),
+}));
+
+const guard = async () =>
+  (await import("./platform-admin")).getPlatformAdminContext();
+const tenantContext = async () =>
+  (await import("./index")).getTenantContext();
+
+beforeAll(() => {
+  vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+  vi.stubEnv("DEV_AUTH_BYPASS", "1");
+});
+afterAll(() => vi.unstubAllEnvs());
+
+describe("getPlatformAdminContext", () => {
+  it("returns the platform admin, and nothing tenant-shaped", async () => {
+    session.identity = devPlatformAdmin.key;
+    expect(await guard()).toEqual({
+      platformAdminId: devPlatformAdmin.platformAdminId,
+    });
+  });
+
+  it.each(devIdentities.map((identity) => [identity.key] as const))(
+    "is a 403 for restaurant staff: %s",
+    async (key) => {
+      session.identity = key;
+      expect(await statusOf(guard)).toBe(403);
+    },
+  );
+
+  it("is a 403 for the default identity, which is restaurant staff", async () => {
+    session.identity = undefined;
+    expect(await statusOf(guard)).toBe(403);
+  });
+
+  it("is a 401 with no identity", async () => {
+    session.identity = "nobody";
+    expect(await statusOf(guard)).toBe(401);
+  });
+});
+
+describe("getTenantContext", () => {
+  it("is a 403 for the platform admin, who hasn't entered a restaurant", async () => {
+    session.identity = devPlatformAdmin.key;
+    expect(await statusOf(tenantContext)).toBe(403);
+  });
+});

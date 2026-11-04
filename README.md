@@ -30,11 +30,11 @@ npm install
 cp .env.example .env.local   # fill in values; the "local" hints match docker-compose.yml
 npm run db:up                # Postgres 17 on :5499 and Neon's wsproxy on :5498
 npm run db:migrate           # also lets the app role log in
-npm run db:seed              # restaurants A and B, for DEV_AUTH_BYPASS
+npm run db:seed              # restaurants A and B and the platform admin, for DEV_AUTH_BYPASS
 npm run dev
 ```
 
-Open http://localhost:3000, or http://localhost:3000/dashboard for the staff side. With `DEV_AUTH_BYPASS` set, the dev switcher on that page swaps between the four seeded identities: an owner and a staff member in each restaurant.
+Open http://localhost:3000, or http://localhost:3000/dashboard for the staff side. With `DEV_AUTH_BYPASS` set, the dev switcher on that page swaps between the five seeded identities: an owner and a staff member in each restaurant, and the platform admin, who lands on http://localhost:3000/admin.
 
 The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Against a plain local Postgres that needs Neon's wsproxy, which `NEON_WS_PROXY` points at. Leave `NEON_WS_PROXY` unset against Neon.
 
@@ -56,6 +56,10 @@ All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` 
 There are two database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`. A test fails if a table has no RLS or tenant policy, or a route isn't listed. Nothing checks the `UNIQUE` or the composite foreign keys yet, so those are on you and your reviewer.
+
+### Platform admin
+
+The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
 
 ### Environment
 

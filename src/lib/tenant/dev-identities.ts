@@ -1,7 +1,7 @@
 /**
  * The seeded identities behind DEV_AUTH_BYPASS (S-25). The ids are fixed so the
- * switcher can offer all four without a query: RLS rightly stops the app role
- * from listing staff across restaurants.
+ * switcher can offer them without a query: RLS rightly stops the app role from
+ * listing staff across restaurants.
  */
 
 const restaurantA = "00000000-0000-4000-8000-00000000000a";
@@ -44,6 +44,19 @@ export const devIdentities = [
     role: "staff",
   },
 ] as const;
+
+/** A platform admin, not a staff member: it belongs to no restaurant. */
+export const devPlatformAdmin = {
+  key: "platform-admin",
+  label: "Platform admin",
+  platformAdminId: "00000000-0000-4000-8000-0000000000f1",
+  email: "platform-admin@dev.example.test",
+} as const;
+
+export type DevPlatformAdmin = typeof devPlatformAdmin;
+
+/** Everyone the dev switcher offers. */
+export const devSwitcherIdentities = [...devIdentities, devPlatformAdmin];
 
 /** The cookie that holds the chosen identity's key, never a raw id. */
 export const DEV_IDENTITY_COOKIE = "dev_identity";

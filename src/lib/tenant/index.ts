@@ -9,6 +9,7 @@ import { devAuthBypassEnabled } from "@/lib/env";
 import {
   defaultDevIdentity,
   DEV_IDENTITY_COOKIE,
+  devPlatformAdmin,
   findDevIdentity,
 } from "./dev-identities";
 
@@ -48,20 +49,23 @@ export function withTenant<T>(
  * Who is signed in. Real login (ticket 1.6) replaces this function and nothing
  * else. Until then, the only identities are the dev bypass's.
  */
-async function currentIdentity() {
+export async function currentIdentity() {
   if (!devAuthBypassEnabled()) return undefined;
   const chosen = (await cookies()).get(DEV_IDENTITY_COOKIE);
+  if (chosen?.value === devPlatformAdmin.key) return devPlatformAdmin;
   return chosen ? findDevIdentity(chosen.value) : defaultDevIdentity;
 }
 
 /**
  * The only source of tenant identity: the restaurant ID always comes from here,
  * never from request input. Ends the request with a 401 for anyone without an
- * active staff record.
+ * active staff record, and a 403 for a platform admin, who has no tenant until
+ * entering a restaurant (ticket 1.3).
  */
 export async function getTenantContext(): Promise<TenantContext> {
   const identity = await currentIdentity();
   if (!identity) unauthorized();
+  if ("platformAdminId" in identity) forbidden();
 
   const { restaurantId, staffId } = identity;
   const [member] = await withTenant({ restaurantId }, (tx) =>

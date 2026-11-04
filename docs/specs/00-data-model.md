@@ -48,7 +48,7 @@ platform_admins                               -- Kudzai, for hand-onboarding
 audit_log
   id, restaurant_id
   actor_type            enum(staff, platform_admin, system)
-  actor_id              uuid null
+  actor_id              uuid null            -- S-29: platform_admins.id when actor_type = platform_admin
   action                text                 -- 'session.force_close', 'booking.cancel', ...
   entity_type, entity_id
   details               jsonb

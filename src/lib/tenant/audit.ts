@@ -11,8 +11,10 @@ import type { TenantContext, TenantTransaction } from "./index";
  * (spec 01 requires actor_type = platform_admin); the system actor has no id.
  * A write for another restaurant than the transaction's is rejected by RLS.
  *
- * Entries for platform-admin actions outside any tenant would need a privileged
- * path (no tenant is set, so app_tenant can't insert): ticket #14 decides it.
+ * A platform admin's `actor.id` is always platform_admins.id, never a shadow
+ * staff id (S-29). Its actions outside any tenant don't come through here: no
+ * tenant is set, so app_tenant can't insert, and the privileged functions write
+ * their own entries (S-28).
  */
 export type AuditActor =
   | { type: "staff" | "platform_admin"; id: string }

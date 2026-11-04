@@ -4,6 +4,7 @@ import { statusOf } from "../../../../../test/integration/http";
 import {
   DEV_IDENTITY_COOKIE,
   devIdentities,
+  devPlatformAdmin,
 } from "@/lib/tenant/dev-identities";
 
 const jar = vi.hoisted(() => new Map<string, string>());
@@ -50,6 +51,19 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
       });
     },
   );
+
+  it("switches to the platform admin and lands on the admin screen", async () => {
+    const response = await pick(devPlatformAdmin.key);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/admin");
+
+    const { getPlatformAdminContext } = await import(
+      "@/lib/tenant/platform-admin"
+    );
+    expect(await getPlatformAdminContext()).toEqual({
+      platformAdminId: devPlatformAdmin.platformAdminId,
+    });
+  });
 
   it("refuses anything but a seeded identity", async () => {
     expect((await pick("nobody")).status).toBe(400);

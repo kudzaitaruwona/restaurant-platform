@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { devAuthBypassEnabled } from "@/lib/env";
-import { devIdentities } from "@/lib/tenant/dev-identities";
+import { devSwitcherIdentities } from "@/lib/tenant/dev-identities";
 
 /** Swaps between the seeded identities (S-25). Absent unless the bypass is on. */
 export function DevSwitcher() {
@@ -14,7 +14,7 @@ export function DevSwitcher() {
     >
       <p className="text-sm text-muted-foreground">Dev switcher: act as</p>
       <div className="flex flex-wrap gap-2">
-        {devIdentities.map(({ key, label }) => (
+        {devSwitcherIdentities.map(({ key, label }) => (
           <Button
             key={key}
             type="submit"

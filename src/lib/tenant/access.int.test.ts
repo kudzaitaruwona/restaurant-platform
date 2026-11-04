@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
@@ -11,20 +11,25 @@ import {
   it,
   vi,
 } from "vitest";
-import { staff } from "@/db/schema";
+import { auditLog, restaurants, staff } from "@/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
-import { devIdentities, findDevIdentity } from "./dev-identities";
+import {
+  devIdentities,
+  devPlatformAdmin,
+  findDevIdentity,
+} from "./dev-identities";
 
 /**
  * The cross-tenant and role harness (spec 01 › Tenant isolation). Each route
  * goes in `routes` below. The tests then hold it to the rules: restaurant A's
  * context gets a 404 or 403 on restaurant B's resources, and a staff context
  * gets a 403 on anything owner-only. A route handler that isn't listed fails
- * the coverage test, so a new one can't skip the harness.
+ * the coverage test, so a new one can't skip the harness. Platform-admin routes
+ * go in `adminRoutes`: no restaurant identity gets past them, on anyone's IDs.
  *
  * Handlers run for real against Postgres, as the RLS-bound role. Only the
  * cookie jar is faked: that's the session, and it's the input under test.
@@ -82,6 +87,44 @@ const routes: TenantRoute[] = [
   },
 ];
 
+type AdminRoute = {
+  name: string;
+  call: (restaurantId: string) => Promise<Response>;
+};
+
+const HARNESS_SLUG_PREFIX = "harness-";
+
+const adminRoutes: AdminRoute[] = [
+  {
+    name: "POST /api/admin/restaurants",
+    call: async () =>
+      (await import("@/app/api/admin/restaurants/route")).POST(
+        request("/api/admin/restaurants", {
+          method: "POST",
+          body: form({
+            name: "Created by the harness",
+            slug: `${HARNESS_SLUG_PREFIX}${crypto.randomUUID()}`,
+            currencyMode: "usd_only",
+          }),
+        }),
+      ),
+  },
+  {
+    name: "POST /api/admin/restaurants/[restaurantId]/owner",
+    call: async (restaurantId) =>
+      (await import("@/app/api/admin/restaurants/[restaurantId]/owner/route")).POST(
+        request(`/api/admin/restaurants/${restaurantId}/owner`, {
+          method: "POST",
+          body: form({
+            email: `${crypto.randomUUID()}@example.test`,
+            displayName: "Owner by the harness",
+          }),
+        }),
+        { params: Promise.resolve({ restaurantId }) },
+      ),
+  },
+];
+
 /** Holds no tenant data: tested in src/app/api/dev/identity/route.int.test.ts. */
 const outsideTheHarness = ["POST /api/dev/identity"];
 
@@ -121,6 +164,13 @@ afterAll(async () => {
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
+  const created = await harnessRestaurants();
+  if (created.length > 0) {
+    const ids = created.map(({ id }) => id);
+    await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, ids));
+    await owner.db.delete(staff).where(inArray(staff.restaurantId, ids));
+    await owner.db.delete(restaurants).where(inArray(restaurants.id, ids));
+  }
   await owner.pool.end();
   vi.unstubAllEnvs();
 });
@@ -131,6 +181,33 @@ const displayName = async (staffId: string) => {
     .from(staff)
     .where(eq(staff.id, staffId));
   return row.displayName;
+};
+
+const harnessRestaurants = () =>
+  owner.db
+    .select({ id: restaurants.id })
+    .from(restaurants)
+    .where(like(restaurants.slug, `${HARNESS_SLUG_PREFIX}%`));
+
+const staffCount = async (restaurantId: string) =>
+  (
+    await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(eq(staff.restaurantId, restaurantId))
+  ).length;
+
+/** A restaurant with nobody in it yet: the state the admin routes work on. */
+const emptyRestaurant = async () => {
+  const id = crypto.randomUUID();
+  await owner.db.insert(restaurants).values({
+    id,
+    name: "Harness restaurant",
+    slug: `${HARNESS_SLUG_PREFIX}${id}`,
+    menuToken: `harness-${id}`,
+    currencyMode: "usd_only",
+  });
+  return id;
 };
 
 const each = (identities: typeof restaurantAIdentities) =>
@@ -273,6 +350,74 @@ describe("the example routes", () => {
   );
 });
 
+describe("platform-admin routes", () => {
+  const eachStaffIdentity = adminRoutes.flatMap((route) =>
+    devIdentities.map(
+      (identity) => [route.name, identity.key, route, identity] as const,
+    ),
+  );
+
+  it.each(eachStaffIdentity)(
+    "%s: %s gets a 403 on restaurant B's id and changes nothing",
+    async (_name, key, route) => {
+      session.identity = key;
+      const restaurantsBefore = (await harnessRestaurants()).length;
+      const staffBefore = await staffCount(fixtures.b.restaurantId);
+
+      expect(await statusOf(() => route.call(fixtures.b.restaurantId))).toBe(403);
+
+      expect(await harnessRestaurants()).toHaveLength(restaurantsBefore);
+      expect(await staffCount(fixtures.b.restaurantId)).toBe(staffBefore);
+    },
+  );
+
+  it.each(eachStaffIdentity)(
+    "%s: %s gets a 403 on an empty restaurant too, the one thing the route would change",
+    async (_name, key, route) => {
+      session.identity = key;
+      const restaurantId = await emptyRestaurant();
+
+      expect(await statusOf(() => route.call(restaurantId))).toBe(403);
+
+      expect(await staffCount(restaurantId)).toBe(0);
+    },
+  );
+
+  it.each(adminRoutes.map((route) => [route.name, route] as const))(
+    "%s: no identity gets a 401",
+    async (_name, route) => {
+      session.identity = "nobody";
+      expect(
+        await statusOf(async () => route.call(await emptyRestaurant())),
+      ).toBe(401);
+    },
+  );
+
+  it.each(adminRoutes.map((route) => [route.name, route] as const))(
+    "%s: the platform admin gets through, so the refusals above mean something",
+    async (_name, route) => {
+      session.identity = devPlatformAdmin.key;
+      expect(
+        await statusOf(async () => route.call(await emptyRestaurant())),
+      ).toBeLessThan(400);
+    },
+  );
+});
+
+describe("the platform admin on tenant routes", () => {
+  it.each(routes.map((route) => [route.name, route] as const))(
+    "%s: a 403 until it enters a restaurant, on any restaurant's id",
+    async (_name, route) => {
+      session.identity = devPlatformAdmin.key;
+
+      for (const fixture of [fixtures.a, fixtures.b]) {
+        expect(await statusOf(() => route.call(fixture))).toBe(403);
+        expect(await displayName(fixture.staffId)).toBe(fixtureName);
+      }
+    },
+  );
+});
+
 describe("harness coverage", () => {
   const appDirectory = join(process.cwd(), "src", "app");
   const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -296,7 +441,11 @@ describe("harness coverage", () => {
       }
     }
 
-    const covered = [...routes.map((route) => route.name), ...outsideTheHarness];
+    const covered = [
+      ...routes.map((route) => route.name),
+      ...adminRoutes.map((route) => route.name),
+      ...outsideTheHarness,
+    ];
     expect(found.sort()).toEqual(covered.sort());
   });
 
@@ -311,6 +460,22 @@ describe("harness coverage", () => {
         readFileSync(join(appDirectory, file), "utf8").includes("use server"),
     );
     expect([...pagesWithParams, ...serverFunctions]).toEqual([]);
+  });
+
+  it("only the platform-admin seam calls the privileged functions", () => {
+    const sourceDirectory = join(process.cwd(), "src");
+    const callers = readdirSync(sourceDirectory, {
+      recursive: true,
+      encoding: "utf8",
+    }).filter(
+      (file) =>
+        /\.tsx?$/.test(file) &&
+        !/\.test\.tsx?$/.test(file) &&
+        /platform_(create|list)_/.test(
+          readFileSync(join(sourceDirectory, file), "utf8"),
+        ),
+    );
+    expect(callers).toEqual([join("lib", "tenant", "platform-admin.ts")]);
   });
 
   it("identities really are in the restaurants the tests assume", () => {
