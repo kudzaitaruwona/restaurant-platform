@@ -2,8 +2,10 @@ import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
 import { bookAgainPath } from "@/lib/booking-link";
 import { html, trusted } from "@/lib/html";
-import { formatUsd, getMenu, type Menu } from "@/lib/menu";
+import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
+import { photoUrls } from "@/lib/photo-urls";
+import { type PromotionSlot, priceDisplay, promotionDisplay } from "@/lib/pricing";
 import { type PublicTokenKind, resolvePublicToken } from "@/lib/tenant/public";
 
 /**
@@ -25,13 +27,26 @@ const styles = `
 *{box-sizing:border-box}
 body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
-h1{margin:0 0 1rem;font-size:1.75rem;line-height:1.2}
-.book-again{margin:0 0 1rem}
-h2{margin:2rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
+h1{margin:0;font-size:1.75rem;line-height:1.2}
+.wifi{margin:.25rem 0 0;font-size:.9rem}
+.book-again{margin:.5rem 0 0}
+nav{position:sticky;top:0;z-index:1;display:flex;gap:.5rem;margin:1rem -1rem 0;padding:.5rem 1rem;overflow-x:auto;background:Canvas;border-bottom:1px solid var(--line)}
+nav a{flex:none;padding:.25rem .75rem;border:1px solid var(--line);border-radius:999px;color:inherit;font-size:.9rem;text-decoration:none;white-space:nowrap}
+section{scroll-margin-top:3.5rem}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+h2{margin:1.5rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
 ul{margin:0;padding:0;list-style:none}
-li{padding:.75rem 0;border-bottom:1px solid var(--line)}
+li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom:1px solid var(--line)}
+.text{flex:1;min-width:0}
+.thumb{flex:none;width:64px;height:64px;object-fit:cover;border-radius:.375rem;background:var(--line)}
 .item{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
-.price{white-space:nowrap}
+.price{white-space:nowrap;text-align:right}
+.sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
+.sold-out{color:var(--muted)}
+.sold-out .thumb{opacity:.5}
+s{font-weight:400;color:var(--muted)}
+.tag{margin-left:.5rem;padding:0 .3rem;border:1px solid currentColor;border-radius:.25rem;font-size:.75rem;font-style:normal;font-weight:600;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle}
 p{margin:.25rem 0 0;color:var(--muted)}
 `;
 
@@ -52,33 +67,87 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 
 type Item = Menu["categories"][number]["items"][number];
 
-/** Issue 20 replaces this with display by `currency_mode`. */
-const priceOf = ({ priceUsd, priceZig }: Item) =>
-  priceUsd !== null ? formatUsd(priceUsd) : `ZiG ${priceZig}`;
+/** The struck-through normal price, when this line has one, then the price now. */
+const slot = ({ was, now }: PromotionSlot) => html`${was !== undefined && html`<s>${was}</s> `}${now}`;
 
-const itemRow = (item: Item) => html`<li>
-<div class="item"><span>${item.name}</span><span class="price">${priceOf(item)}</span></div>
+const priceCell = (item: Item, { currencyMode, pricing }: Menu) => {
+  if (item.special) {
+    const { main, sub } = promotionDisplay(item, item.special, currencyMode, pricing);
+    return html`<span class="price">${slot(main)}${sub && html`<span class="sub">${slot(sub)}</span>`}</span>`;
+  }
+  const { main, sub } = priceDisplay(item, currencyMode, pricing);
+  return html`<span class="price">${main}${sub && html`<span class="sub">${sub}</span>`}</span>`;
+};
+
+/**
+ * The 320px file, shown at 64px: fixed width and height so the text doesn't move
+ * when it arrives, and lazy so a long menu doesn't fetch every photo up front.
+ * Empty alt, because the name is beside it.
+ */
+const thumbnail = ({ photoKey }: Item) =>
+  photoKey !== null &&
+  html`<img class="thumb" src="${photoUrls(photoKey).thumb}" width="64" height="64" loading="lazy" decoding="async" alt="">`;
+
+const itemRow = (item: Item, menu: Menu) => html`<li class="${item.available ? "" : "sold-out"}">
+<div class="text">
+<div class="item"><span>${item.name}${item.special && html`<em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
 ${item.description && html`<p>${item.description}</p>`}
+</div>
+${thumbnail(item)}
 </li>`;
 
 /** Only on a table's page (spec 03), and only while booking is on. */
 const bookAgainLine = (path: string | null) =>
   path === null ? "" : html`<p class="book-again"><a href="${path}">Book again</a></p>\n`;
 
+/** Sold-out items stay on the page, after the rest of their category (spec 02). */
+const availableFirst = (items: Item[]) =>
+  [...items].sort((a, b) => Number(!a.available) - Number(!b.available));
+
+/**
+ * Whatever is on special now, at the top (spec 02). Each promoted item is also in
+ * its own category, with the same price, so the two never disagree. A bundle is
+ * only here: it has no category on the page.
+ */
+function specialsSection(menu: Menu) {
+  const onSpecial = availableFirst(
+    [
+      ...menu.categories.flatMap((category) => category.items).filter((item) => item.special),
+      ...menu.bundles,
+    ],
+  );
+  if (onSpecial.length === 0) return null;
+  return html`<section id="specials">
+<h2>Specials</h2>
+<ul>${onSpecial.map((item) => itemRow(item, menu))}</ul>
+</section>`;
+}
+
 function menuPage(menu: Menu, bookAgain: string | null) {
-  const sections = menu.categories
-    .filter((category) => category.items.length > 0)
-    .map(
-      (category) => html`<section>
+  const shown = menu.categories.filter((category) => category.items.length > 0);
+  const specials = specialsSection(menu);
+  // Anchors are positions, not ids from the database: nothing internal on the page.
+  const anchorOf = (index: number) => `c${index + 1}`;
+  const sections = shown.map(
+    (category, index) => html`<section id="${anchorOf(index)}">
 <h2>${category.name}</h2>
-<ul>${category.items.map(itemRow)}</ul>
+<ul>${availableFirst(category.items).map((item) => itemRow(item, menu))}</ul>
 </section>`,
-    );
+  );
+  // A plain list of anchors, so it works without JavaScript (spec 02).
+  const jumpBar =
+    (sections.length > 0 || specials) &&
+    html`<nav aria-label="Menu sections">${specials && html`<a href="#specials">Specials</a>`}${shown.map(
+      (category, index) => html`<a href="#${anchorOf(index)}">${category.name}</a>`,
+    )}</nav>`;
 
   return page(
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
-${bookAgainLine(bookAgain)}${sections.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
+${menu.wifiName && html`<p class="wifi">Wi-Fi: ${menu.wifiName}</p>`}
+${bookAgainLine(bookAgain)}${jumpBar}
+${specials}
+${sections.length > 0 || specials ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }
 

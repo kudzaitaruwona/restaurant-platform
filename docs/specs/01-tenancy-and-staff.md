@@ -18,6 +18,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - Customers never have accounts. Orders attach to a table session, and bookings attach to a name and phone number.
 - **Roles (S-26, supersedes S-16):** `staff.role` is `owner` or `staff`. The first staff record created for a restaurant is its owner. The database guarantees every restaurant always has at least one active owner, so the last owner can't be deactivated or demoted.
 - **Owner only:** menu, categories, prices and specials; the exchange rate; staff management (add, deactivate, change role); tables and QR regeneration; booking settings and closures; restaurant settings.
+- "Owner only: menu" means managing it (a clarification of S-26, not a new rule). Staff see the item list read-only, with the sold-out toggle.
 - **Owner and staff:** the sold-out toggle, every booking day-view action, kitchen statuses, mark delivered, clear table, and (phase 6) void and force-close with a required, audited reason.
 - Role checks live in the app layer (`requireOwner(ctx)`). RLS stays tenant-only.
 - Soft limit: one **owner** login on the standard plan; staff logins are unlimited. Show a notice instead of blocking. Enforce it only once pricing exists (D-08).

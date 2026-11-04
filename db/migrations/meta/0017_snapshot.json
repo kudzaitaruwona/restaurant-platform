@@ -1,6 +1,6 @@
 {
-  "id": "a96eabd8-e243-4a0d-958e-1d9e83c264e2",
-  "prevId": "38917962-048a-4755-ab07-3509563d3a77",
+  "id": "47cac19e-255d-4f29-9281-c971b14751e8",
+  "prevId": "7f8b5ab9-7536-4c02-9765-477004427316",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -659,453 +659,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.booking_rate_limit": {
-      "name": "booking_rate_limit",
-      "schema": "",
-      "columns": {
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "window_started_at": {
-          "name": "window_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "outside_tenant_only": {
-          "name": "outside_tenant_only",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "public"
-          ],
-          "using": "nullif(current_setting('app.restaurant_id', true), '') is null",
-          "withCheck": "nullif(current_setting('app.restaurant_id', true), '') is null"
-        }
-      },
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.booking_settings": {
-      "name": "booking_settings",
-      "schema": "",
-      "columns": {
-        "restaurant_id": {
-          "name": "restaurant_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "slot_interval_minutes": {
-          "name": "slot_interval_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 15
-        },
-        "sitting_minutes": {
-          "name": "sitting_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 90
-        },
-        "large_party_size": {
-          "name": "large_party_size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 5
-        },
-        "large_party_sitting_minutes": {
-          "name": "large_party_sitting_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 120
-        },
-        "buffer_minutes": {
-          "name": "buffer_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 15
-        },
-        "min_lead_minutes": {
-          "name": "min_lead_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 60
-        },
-        "max_days_ahead": {
-          "name": "max_days_ahead",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 30
-        },
-        "max_online_party_size": {
-          "name": "max_online_party_size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 8
-        },
-        "guest_cancel_cutoff_minutes": {
-          "name": "guest_cancel_cutoff_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 120
-        },
-        "max_active_bookings_per_phone": {
-          "name": "max_active_bookings_per_phone",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 2
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "booking_settings_restaurant_id_restaurants_id_fk": {
-          "name": "booking_settings_restaurant_id_restaurants_id_fk",
-          "tableFrom": "booking_settings",
-          "tableTo": "restaurants",
-          "columnsFrom": [
-            "restaurant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "booking_settings_restaurant_id_id_unique": {
-          "name": "booking_settings_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "restaurant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {
-        "tenant_isolation": {
-          "name": "tenant_isolation",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "public"
-          ],
-          "using": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid",
-          "withCheck": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid"
-        }
-      },
-      "checkConstraints": {
-        "booking_settings_slot_interval": {
-          "name": "booking_settings_slot_interval",
-          "value": "\"booking_settings\".\"slot_interval_minutes\" between 1 and 240"
-        },
-        "booking_settings_sitting": {
-          "name": "booking_settings_sitting",
-          "value": "\"booking_settings\".\"sitting_minutes\" between 1 and 720"
-        },
-        "booking_settings_large_party_size": {
-          "name": "booking_settings_large_party_size",
-          "value": "\"booking_settings\".\"large_party_size\" between 1 and 100"
-        },
-        "booking_settings_large_party_sitting": {
-          "name": "booking_settings_large_party_sitting",
-          "value": "\"booking_settings\".\"large_party_sitting_minutes\" between 1 and 720"
-        },
-        "booking_settings_buffer": {
-          "name": "booking_settings_buffer",
-          "value": "\"booking_settings\".\"buffer_minutes\" between 0 and 240"
-        },
-        "booking_settings_min_lead": {
-          "name": "booking_settings_min_lead",
-          "value": "\"booking_settings\".\"min_lead_minutes\" between 0 and 10080"
-        },
-        "booking_settings_max_days_ahead": {
-          "name": "booking_settings_max_days_ahead",
-          "value": "\"booking_settings\".\"max_days_ahead\" between 0 and 365"
-        },
-        "booking_settings_max_online_party_size": {
-          "name": "booking_settings_max_online_party_size",
-          "value": "\"booking_settings\".\"max_online_party_size\" between 1 and 100"
-        },
-        "booking_settings_cancel_cutoff": {
-          "name": "booking_settings_cancel_cutoff",
-          "value": "\"booking_settings\".\"guest_cancel_cutoff_minutes\" between 0 and 10080"
-        },
-        "booking_settings_max_active_per_phone": {
-          "name": "booking_settings_max_active_per_phone",
-          "value": "\"booking_settings\".\"max_active_bookings_per_phone\" between 1 and 20"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.bookings": {
-      "name": "bookings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "restaurant_id": {
-          "name": "restaurant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "table_id": {
-          "name": "table_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "guest_name": {
-          "name": "guest_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "guest_phone": {
-          "name": "guest_phone",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "whatsapp_opt_in": {
-          "name": "whatsapp_opt_in",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "party_size": {
-          "name": "party_size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "starts_at": {
-          "name": "starts_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ends_at": {
-          "name": "ends_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hold_ends_at": {
-          "name": "hold_ends_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "booking_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "booking_source",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "guest_note": {
-          "name": "guest_note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "manage_token": {
-          "name": "manage_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "cancelled_by": {
-          "name": "cancelled_by",
-          "type": "booking_cancelled_by",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cancelled_at": {
-          "name": "cancelled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "bookings_restaurant_id_starts_at_index": {
-          "name": "bookings_restaurant_id_starts_at_index",
-          "columns": [
-            {
-              "expression": "restaurant_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "starts_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "bookings_restaurant_id_restaurants_id_fk": {
-          "name": "bookings_restaurant_id_restaurants_id_fk",
-          "tableFrom": "bookings",
-          "tableTo": "restaurants",
-          "columnsFrom": [
-            "restaurant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "bookings_restaurant_id_table_id_tables_restaurant_id_id_fk": {
-          "name": "bookings_restaurant_id_table_id_tables_restaurant_id_id_fk",
-          "tableFrom": "bookings",
-          "tableTo": "tables",
-          "columnsFrom": [
-            "restaurant_id",
-            "table_id"
-          ],
-          "columnsTo": [
-            "restaurant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "bookings_manage_token_unique": {
-          "name": "bookings_manage_token_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "manage_token"
-          ]
-        },
-        "bookings_restaurant_id_id_unique": {
-          "name": "bookings_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "restaurant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {
-        "tenant_isolation": {
-          "name": "tenant_isolation",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "public"
-          ],
-          "using": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid",
-          "withCheck": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid"
-        }
-      },
-      "checkConstraints": {
-        "bookings_guest_name": {
-          "name": "bookings_guest_name",
-          "value": "trim(\"bookings\".\"guest_name\") <> '' and length(\"bookings\".\"guest_name\") <= 100"
-        },
-        "bookings_guest_phone_e164": {
-          "name": "bookings_guest_phone_e164",
-          "value": "\"bookings\".\"guest_phone\" ~ '^[+][1-9][0-9]{7,14}$'"
-        },
-        "bookings_party_size_positive": {
-          "name": "bookings_party_size_positive",
-          "value": "\"bookings\".\"party_size\" > 0"
-        },
-        "bookings_guest_note_length": {
-          "name": "bookings_guest_note_length",
-          "value": "length(\"bookings\".\"guest_note\") <= 200"
-        },
-        "bookings_times_ordered": {
-          "name": "bookings_times_ordered",
-          "value": "\"bookings\".\"starts_at\" < \"bookings\".\"ends_at\" and \"bookings\".\"ends_at\" <= \"bookings\".\"hold_ends_at\""
-        },
-        "bookings_hold_capped": {
-          "name": "bookings_hold_capped",
-          "value": "\"bookings\".\"hold_ends_at\" - \"bookings\".\"starts_at\" <= interval '960 minutes'"
-        },
-        "bookings_manage_token_shape": {
-          "name": "bookings_manage_token_shape",
-          "value": "\"bookings\".\"manage_token\" ~ '^[0-9A-Za-z]{22,}$'"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.categories": {
       "name": "categories",
       "schema": "",
@@ -1135,6 +688,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -1259,43 +818,43 @@
             }
           ],
           "isUnique": true,
-          "where": "\"tables\".\"archived_at\" is null",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"tables\".\"archived_at\" is null",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "tables_restaurant_id_restaurants_id_fk": {
           "name": "tables_restaurant_id_restaurants_id_fk",
           "tableFrom": "tables",
-          "tableTo": "restaurants",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "tables_qr_token_unique": {
           "name": "tables_qr_token_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "qr_token"
-          ]
+          ],
+          "nullsNotDistinct": false
         },
         "tables_restaurant_id_id_unique": {
           "name": "tables_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1318,6 +877,127 @@
         "tables_qr_token_shape": {
           "name": "tables_qr_token_shape",
           "value": "\"tables\".\"qr_token\" ~ '^[0-9A-Za-z]{22,}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.exchange_rates": {
+      "name": "exchange_rates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "restaurant_id": {
+          "name": "restaurant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "usd_to_zig": {
+          "name": "usd_to_zig",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "set_by": {
+          "name": "set_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "exchange_rates_restaurant_id_created_at_index": {
+          "name": "exchange_rates_restaurant_id_created_at_index",
+          "columns": [
+            {
+              "expression": "restaurant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "exchange_rates_restaurant_id_restaurants_id_fk": {
+          "name": "exchange_rates_restaurant_id_restaurants_id_fk",
+          "tableFrom": "exchange_rates",
+          "tableTo": "restaurants",
+          "columnsFrom": [
+            "restaurant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "exchange_rates_set_by_fk": {
+          "name": "exchange_rates_set_by_fk",
+          "tableFrom": "exchange_rates",
+          "tableTo": "staff",
+          "columnsFrom": [
+            "restaurant_id",
+            "set_by"
+          ],
+          "columnsTo": [
+            "restaurant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "exchange_rates_restaurant_id_id_unique": {
+          "name": "exchange_rates_restaurant_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "restaurant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "public"
+          ],
+          "using": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid",
+          "withCheck": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "exchange_rates_usd_to_zig_finite": {
+          "name": "exchange_rates_usd_to_zig_finite",
+          "value": "\"exchange_rates\".\"usd_to_zig\" > 0 and \"exchange_rates\".\"usd_to_zig\" < 'Infinity'"
         }
       },
       "isRLSEnabled": false
@@ -1370,12 +1050,31 @@
           "primaryKey": false,
           "notNull": false
         },
+        "available": {
+          "name": "available",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "photo_key": {
+          "name": "photo_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sort_order": {
           "name": "sort_order",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -1645,113 +1344,10 @@
         "restaurants_contact_phone_e164": {
           "name": "restaurants_contact_phone_e164",
           "value": "\"restaurants\".\"contact_phone\" ~ '^[+][1-9][0-9]{1,14}$'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.service_periods": {
-      "name": "service_periods",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
         },
-        "restaurant_id": {
-          "name": "restaurant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "weekday": {
-          "name": "weekday",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "opens_at": {
-          "name": "opens_at",
-          "type": "time",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_booking_at": {
-          "name": "last_booking_at",
-          "type": "time",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "closes_at": {
-          "name": "closes_at",
-          "type": "time",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "service_periods_restaurant_id_restaurants_id_fk": {
-          "name": "service_periods_restaurant_id_restaurants_id_fk",
-          "tableFrom": "service_periods",
-          "tableTo": "restaurants",
-          "columnsFrom": [
-            "restaurant_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "service_periods_restaurant_id_id_unique": {
-          "name": "service_periods_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "restaurant_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {
-        "tenant_isolation": {
-          "name": "tenant_isolation",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "public"
-          ],
-          "using": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid",
-          "withCheck": "\"restaurant_id\" = nullif(current_setting('app.restaurant_id', true), '')::uuid"
-        }
-      },
-      "checkConstraints": {
-        "service_periods_weekday": {
-          "name": "service_periods_weekday",
-          "value": "\"service_periods\".\"weekday\" between 0 and 6"
-        },
-        "service_periods_name": {
-          "name": "service_periods_name",
-          "value": "trim(\"service_periods\".\"name\") <> '' and length(\"service_periods\".\"name\") <= 50"
-        },
-        "service_periods_times_ordered": {
-          "name": "service_periods_times_ordered",
-          "value": "\"service_periods\".\"opens_at\" <= \"service_periods\".\"last_booking_at\" and \"service_periods\".\"last_booking_at\" < \"service_periods\".\"closes_at\""
-        },
-        "service_periods_same_day": {
-          "name": "service_periods_same_day",
-          "value": "\"service_periods\".\"closes_at\" <= '23:59'"
+        "restaurants_rounding_steps_positive_finite": {
+          "name": "restaurants_rounding_steps_positive_finite",
+          "value": "\"restaurants\".\"zig_rounding_step\" > 0 and \"restaurants\".\"zig_rounding_step\" < 'Infinity' and \"restaurants\".\"usd_rounding_step\" > 0 and \"restaurants\".\"usd_rounding_step\" < 'Infinity'"
         }
       },
       "isRLSEnabled": false
@@ -2387,33 +1983,6 @@
         "staff",
         "platform_admin",
         "system"
-      ]
-    },
-    "public.booking_cancelled_by": {
-      "name": "booking_cancelled_by",
-      "schema": "public",
-      "values": [
-        "guest",
-        "staff"
-      ]
-    },
-    "public.booking_source": {
-      "name": "booking_source",
-      "schema": "public",
-      "values": [
-        "online",
-        "staff"
-      ]
-    },
-    "public.booking_status": {
-      "name": "booking_status",
-      "schema": "public",
-      "values": [
-        "confirmed",
-        "seated",
-        "completed",
-        "cancelled",
-        "no_show"
       ]
     },
     "public.currency_mode": {

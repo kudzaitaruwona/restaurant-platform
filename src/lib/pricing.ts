@@ -1,0 +1,255 @@
+/**
+ * Effective prices (spec 00, 2): computed from the stored ones, never stored.
+ * Money is a numeric string all the way through and the sums are in BigInt, so
+ * "rounds up" means up in exact arithmetic: 1.1 * 10 is 11 here, not the
+ * 11.000000000000002 that would round up to 12. No server-only import: the
+ * item form calls this in the browser for its live hint.
+ */
+
+export type CurrencyMode =
+  | "usd_only"
+  | "zig_only"
+  | "usd_primary"
+  | "zig_primary"
+  | "both";
+
+export type Pricing = {
+  /** ZiG per 1 USD: the latest exchange_rates row, null before the first. */
+  rate: string | null;
+  zigStep: string;
+  usdStep: string;
+};
+
+export type ItemPrices = { priceUsd: string | null; priceZig: string | null };
+
+/** int / 10^scale */
+type Decimal = { int: bigint; scale: number };
+
+const DECIMAL = /^([0-9]+)(?:\.([0-9]+))?$/;
+
+function decimal(value: string): Decimal {
+  const match = DECIMAL.exec(value);
+  if (!match) throw new RangeError(`Not a decimal number: ${value}`);
+  const fraction = match[2] ?? "";
+  return { int: BigInt(match[1] + fraction), scale: fraction.length };
+}
+
+// BigInt literals need a newer compile target than this project sets.
+const ZERO = BigInt(0);
+const ONE = BigInt(1);
+
+const power10 = (scale: number) => BigInt(10) ** BigInt(scale);
+
+const ceilDiv = (numerator: bigint, denominator: bigint) =>
+  (numerator + denominator - ONE) / denominator;
+
+/** Trimmed: "210", "8.5". Display adds back what it needs. */
+function toText({ int, scale }: Decimal) {
+  const digits = int.toString().padStart(scale + 1, "0");
+  const whole = digits.slice(0, digits.length - scale);
+  const fraction = digits.slice(digits.length - scale).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+/** ceil(value * factor / divisor / step) * step, with every part exact. */
+function roundedUp(
+  value: string,
+  factor: string,
+  divisor: string,
+  stepText: string,
+): string | null {
+  const v = decimal(value);
+  const f = decimal(factor);
+  const d = decimal(divisor);
+  const step = decimal(stepText);
+  if (d.int === ZERO || step.int === ZERO) return null;
+  // (v.int/10^vs * f.int/10^fs) / (d.int/10^ds) / (step.int/10^ss)
+  const numerator = v.int * f.int * power10(d.scale + step.scale);
+  const denominator = d.int * step.int * power10(v.scale + f.scale);
+  const multiples = ceilDiv(numerator, denominator);
+  return toText({ int: multiples * step.int, scale: step.scale });
+}
+
+export type EffectiveZig = { amount: string; source: "fixed" | "calculated" };
+
+export function effectiveZig(
+  { priceUsd, priceZig }: ItemPrices,
+  { rate, zigStep }: Pricing,
+): EffectiveZig | null {
+  if (priceZig !== null) return { amount: toText(decimal(priceZig)), source: "fixed" };
+  if (priceUsd === null || rate === null) return null;
+  const amount = roundedUp(priceUsd, rate, "1", zigStep);
+  return amount === null ? null : { amount, source: "calculated" };
+}
+
+export function effectiveUsd(
+  { priceUsd, priceZig }: ItemPrices,
+  { rate, usdStep }: Pricing,
+): string | null {
+  if (priceUsd !== null) return priceUsd;
+  if (priceZig === null || rate === null) return null;
+  return roundedUp(priceZig, "1", rate, usdStep);
+}
+
+function grouped(whole: string) {
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** "$8.00": at least the cents, more if the step is finer. */
+export function formatUsd(amount: string) {
+  const [whole, fraction = ""] = toText(decimal(amount)).split(".");
+  return `$${grouped(whole)}.${fraction.padEnd(2, "0")}`;
+}
+
+/** "ZiG 210" */
+export function formatZig(amount: string) {
+  const [whole, fraction] = toText(decimal(amount)).split(".");
+  return `ZiG ${grouped(whole)}${fraction ? `.${fraction}` : ""}`;
+}
+
+export type PriceDisplay = { main: string; sub?: string };
+
+/** The lines a mode shows, in order. Null is a currency that can't be worked out. */
+function shownLines<Line>(
+  shown: { usd: Line | null; zig: Line | null },
+  mode: CurrencyMode,
+): Line[] {
+  const wanted =
+    mode === "usd_only"
+      ? [shown.usd]
+      : mode === "zig_only"
+        ? [shown.zig]
+        : mode.startsWith("zig")
+          ? [shown.zig, shown.usd]
+          : [shown.usd, shown.zig];
+  const lines = wanted.filter((line) => line !== null);
+  return lines.length > 0 ? lines : [shown.usd ?? shown.zig].filter((line) => line !== null);
+}
+
+/** Lays out the formatted prices a mode shows. */
+function arranged(
+  shown: { usd: string | null; zig: string | null },
+  mode: CurrencyMode,
+): PriceDisplay {
+  const parts = shownLines(shown, mode);
+  if (mode === "both") return { main: parts.join(" · ") };
+  return parts.length > 1 ? { main: parts[0], sub: parts[1] } : { main: parts[0] };
+}
+
+const formatted = (usd: string | null, zig: string | null) => ({
+  usd: usd === null ? null : formatUsd(usd),
+  zig: zig === null ? null : formatZig(zig),
+});
+
+/**
+ * What a menu shows for an item under `currency_mode`. A currency that can't be
+ * worked out yet, because no rate is set, falls back to the other one rather
+ * than showing no price.
+ */
+export function priceDisplay(
+  item: ItemPrices,
+  mode: CurrencyMode,
+  pricing: Pricing,
+): PriceDisplay {
+  return arranged(
+    formatted(effectiveUsd(item, pricing), effectiveZig(item, pricing)?.amount ?? null),
+    mode,
+  );
+}
+
+/** A special's own prices (spec 00, specials): either, both or neither (badge only). */
+export type SpecialPrices = { priceUsd: string | null; priceZig: string | null };
+
+/**
+ * The ZiG price during a special, in spec 00's order: the special's fixed ZiG
+ * price, else its USD price converted at the rate and rounded up, else the item's
+ * normal price (a badge-only special, or a USD special before any rate is set).
+ */
+export function specialZig(
+  item: ItemPrices,
+  { priceUsd, priceZig }: SpecialPrices,
+  pricing: Pricing,
+): EffectiveZig | null {
+  if (priceZig !== null) return { amount: toText(decimal(priceZig)), source: "fixed" };
+  if (priceUsd !== null && pricing.rate !== null) {
+    const amount = roundedUp(priceUsd, pricing.rate, "1", pricing.zigStep);
+    if (amount !== null) return { amount, source: "calculated" };
+  }
+  return effectiveZig(item, pricing);
+}
+
+/** The USD price during a special: the mirror of `specialZig`. */
+export function specialUsd(
+  item: ItemPrices,
+  { priceUsd, priceZig }: SpecialPrices,
+  pricing: Pricing,
+): string | null {
+  if (priceUsd !== null) return priceUsd;
+  if (priceZig !== null && pricing.rate !== null) {
+    const amount = roundedUp(priceZig, "1", pricing.rate, pricing.usdStep);
+    if (amount !== null) return amount;
+  }
+  return effectiveUsd(item, pricing);
+}
+
+/** `was` is the normal price to strike through: absent where the line didn't change. */
+export type PromotionSlot = { was?: string; now: string };
+export type PromotionDisplay = { main: PromotionSlot; sub?: PromotionSlot };
+
+/**
+ * What a menu shows for an item during a promotion (spec 02, pricing display
+ * rules): the same layout as `priceDisplay`, with the normal price to strike
+ * through beside each line the special changes. Strikes are decided per currency
+ * before the layout, because with no rate the normal and special layouts can
+ * differ: a price is only ever struck against its own currency's normal price.
+ */
+export function promotionDisplay(
+  item: ItemPrices,
+  special: SpecialPrices,
+  mode: CurrencyMode,
+  pricing: Pricing,
+): PromotionDisplay {
+  const normal = formatted(effectiveUsd(item, pricing), effectiveZig(item, pricing)?.amount ?? null);
+  const now = formatted(
+    specialUsd(item, special, pricing),
+    specialZig(item, special, pricing)?.amount ?? null,
+  );
+  const slot = (was: string | null, current: string | null): PromotionSlot | null => {
+    if (current === null) return null;
+    return was !== null && was !== current ? { was, now: current } : { now: current };
+  };
+  const [main, sub] = shownLines(
+    { usd: slot(normal.usd, now.usd), zig: slot(normal.zig, now.zig) },
+    mode,
+  );
+
+  if (mode === "both") {
+    const struck = [main, sub].some((line) => line?.was !== undefined);
+    const line = arranged(now, mode).main;
+    return { main: struck ? { was: arranged(normal, mode).main, now: line } : { now: line } };
+  }
+  return sub === undefined ? { main } : { main, sub };
+}
+
+const PRICE_TEXT = /^[0-9]{1,6}(\.[0-9]{1,2})?$/;
+
+/** The item form's hint beside the ZiG field. Null when there's no price to show it for. */
+export function calculatedZigNote(usdText: string, pricing: Pricing) {
+  const priceUsd = usdText.trim();
+  if (!PRICE_TEXT.test(priceUsd)) return null;
+  const zig = effectiveZig({ priceUsd, priceZig: null }, pricing);
+  if (zig === null) return "Set the exchange rate to calculate the ZiG price.";
+  return `Calculated: ${formatZig(zig.amount)} at rate ${toText(decimal(pricing.rate!))}`;
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+/** Proposed in spec 02: a rate older than this is probably wrong. */
+export const STALE_AFTER_DAYS = 7;
+
+export function rateAge(setAt: Date, now: Date) {
+  const elapsed = Math.max(0, now.getTime() - setAt.getTime());
+  return { days: Math.floor(elapsed / DAY), stale: elapsed > STALE_AFTER_DAYS * DAY };
+}
+
+export const rateAgeLabel = (days: number) =>
+  days === 0 ? "today" : days === 1 ? "1 day ago" : `${days} days ago`;

@@ -6,9 +6,12 @@ import {
   bookingSettings,
   categories,
   diningTables,
+  exchangeRates,
   menuItems,
   restaurants,
   servicePeriods,
+  specials,
+  staff,
 } from "@/db/schema";
 import { BUILD_SAMPLE_TOKEN } from "@/lib/public-menu";
 import { mintQrToken } from "@/lib/qr-token";
@@ -22,6 +25,11 @@ vi.mock("next/cache", () => ({
   cacheTag: vi.fn(),
   cacheLife: vi.fn(),
   revalidateTag: vi.fn(),
+}));
+
+// Photo addresses come from the storage interface; nothing here reaches R2.
+vi.mock("@/lib/storage", () => ({
+  getUrl: (key: string) => `https://cdn.example.test/${key}`,
 }));
 
 /**
@@ -92,6 +100,9 @@ beforeAll(() => {
 
 afterAll(async () => {
   await owner.db.delete(servicePeriods).where(inArray(servicePeriods.restaurantId, created));
+  await owner.db.delete(specials).where(inArray(specials.restaurantId, created));
+  await owner.db.delete(exchangeRates).where(inArray(exchangeRates.restaurantId, created));
+  await owner.db.delete(staff).where(inArray(staff.restaurantId, created));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, created));
   await owner.db.delete(categories).where(inArray(categories.restaurantId, created));
   await owner.db.delete(diningTables).where(inArray(diningTables.restaurantId, created));
@@ -168,6 +179,48 @@ describe("/t/{qr_token}", () => {
     await turnBookingOn(id);
 
     expect(await (await genericPage(menuToken)).text()).not.toContain("Book again");
+  });
+
+  it("renders everything the menu page does, byte for byte", async () => {
+    const { id, menuToken, qrToken, categoryId } = await newRestaurant("Full menu", "Beef stew");
+    await owner.db
+      .update(restaurants)
+      .set({ currencyMode: "usd_primary", wifiName: "Guest-Net" })
+      .where(eq(restaurants.id, id));
+    const [{ id: setBy }] = await owner.db
+      .insert(staff)
+      .values({ restaurantId: id, email: `${id}@example.test`, displayName: "Rate setter" })
+      .returning({ id: staff.id });
+    await owner.db.insert(exchangeRates).values({ restaurantId: id, setBy, usdToZig: "26.2" });
+    const [promoted, bundle] = await owner.db
+      .insert(menuItems)
+      .values([
+        { restaurantId: id, categoryId, name: "Grilled bream", priceUsd: "10", photoKey: `${id}/bream` },
+        { restaurantId: id, categoryId, name: "Lunch combo", priceUsd: "12", visibility: "special_only" },
+        { restaurantId: id, categoryId, name: "Oxtail", priceUsd: "14", available: false },
+      ])
+      .returning({ id: menuItems.id });
+    await owner.db.insert(specials).values([
+      { restaurantId: id, menuItemId: promoted.id, title: "Fish Friday", specialPriceUsd: "7" },
+      { restaurantId: id, menuItemId: bundle.id, title: "Lunch deal" },
+    ]);
+
+    const body = await (await scan(qrToken)).text();
+    const generic = await menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {
+      params: Promise.resolve({ menuToken }),
+    });
+
+    expect(body).toBe(await generic.text());
+    expect(body).toContain("Wi-Fi: Guest-Net");
+    expect(body).not.toContain("kept-off-the-page");
+    expect(body).toContain('<nav aria-label="Menu sections"><a href="#specials">Specials</a>');
+    expect(body).toContain("Fish Friday");
+    expect(body).toContain("Lunch combo");
+    expect(body).toContain("<s>$10.00</s>");
+    expect(body).toContain('class="sub"');
+    expect(body).toContain("ZiG");
+    expect(body).toContain(`https://cdn.example.test/${id}/bream`);
+    expect(body).toContain("Sold out");
   });
 
   it("shows its own restaurant's menu and nobody else's", async () => {

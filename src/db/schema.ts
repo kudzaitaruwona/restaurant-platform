@@ -90,6 +90,9 @@ export const bookingSource = pgEnum("booking_source", ["online", "staff"]);
 
 export const bookingCancelledBy = pgEnum("booking_cancelled_by", ["guest", "staff"]);
 
+// special_only is a bundle (spec 02): it shows only while one of its specials is on.
+export const menuVisibility = pgEnum("menu_visibility", ["regular", "special_only"]);
+
 export const restaurants = pgTable(
   "restaurants",
   {
@@ -113,6 +116,12 @@ export const restaurants = pgTable(
     check(
       "restaurants_contact_phone_e164",
       sql`${table.contactPhone} ~ '^[+][1-9][0-9]{1,14}$'`,
+    ),
+    // A step of 0 divides by zero in the effective-price formula (spec 00), and
+    // numeric takes NaN and Infinity, so each needs both bounds.
+    check(
+      "restaurants_rounding_steps_positive_finite",
+      sql`${table.zigRoundingStep} > 0 and ${table.zigRoundingStep} < 'Infinity' and ${table.usdRoundingStep} > 0 and ${table.usdRoundingStep} < 'Infinity'`,
     ),
     tenantPolicy("id"),
   ],
@@ -216,8 +225,7 @@ export const auditLog = pgTable(
 );
 
 /**
- * The menu (spec 00, 2). Columns arrive with the tickets that use them: photos,
- * availability, visibility and archiving aren't here yet.
+ * The menu (spec 00, 2). Columns arrive with the tickets that use them.
  */
 export const categories = pgTable(
   "categories",
@@ -226,6 +234,8 @@ export const categories = pgTable(
     restaurantId: uuid("restaurant_id").notNull(),
     name: text().notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
+    // Nothing customer-facing is hard-deleted (spec 00).
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -250,7 +260,18 @@ export const menuItems = pgTable(
     priceUsd: numeric("price_usd"),
     // Set means a fixed ZiG price (S-10).
     priceZig: numeric("price_zig"),
+    // False while the kitchen has run out (S-26). Staff toggle it from the item list.
+    available: boolean().notNull().default(true),
+    // special_only is a bundle: the customer's page shows it only while one of
+    // its specials is live (spec 02). It is set when the item is made and no
+    // edit changes it.
+    visibility: menuVisibility().notNull().default("regular"),
+    // The photo's storage key without its size: `-800.webp` and `-320.webp` are
+    // the two files under it. A key, not a URL, because getUrl owns the domain
+    // (D-07). Each upload gets a new key so the CDN never serves the old one.
+    photoKey: text("photo_key"),
     sortOrder: integer("sort_order").notNull().default(0),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -279,6 +300,109 @@ export const menuItems = pgTable(
     check(
       "menu_items_prices_finite",
       sql`${table.priceUsd} < 'Infinity' and ${table.priceZig} < 'Infinity'`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * A promotion (spec 02, Specials): an existing item at a special price, or just a
+ * badge. The item's own prices never change. The window is half-open, [starts_at,
+ * ends_at): a null start has no lower end and a null end runs until turned off.
+ * The owner picks dates, which the app turns into instants in the restaurant's
+ * timezone: a start date opens at that day's midnight, and an end date is
+ * inclusive, so it closes at midnight after it.
+ *
+ * D-05: the exclusion constraint `specials_no_overlap` (see 0019_specials) stops
+ * two active specials on one item from overlapping. Drizzle can't model it, so
+ * it lives in the migration only.
+ */
+export const specials = pgTable(
+  "specials",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    menuItemId: uuid("menu_item_id").notNull(),
+    // The badge text: "Taco Tuesday".
+    title: text(),
+    // Null keeps the item's normal price, by the precedence in spec 00.
+    specialPriceUsd: numeric("special_price_usd"),
+    specialPriceZig: numeric("special_price_zig"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    // D-04: the columns exist and nothing reads them yet.
+    daysOfWeek: integer("days_of_week").array(),
+    dailyStart: time("daily_start"),
+    dailyEnd: time("daily_end"),
+    active: boolean().notNull().default(true),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "specials_menu_item_fk",
+      columns: [table.restaurantId, table.menuItemId],
+      foreignColumns: [menuItems.restaurantId, menuItems.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.menuItemId),
+    check(
+      "specials_prices_not_negative",
+      sql`${table.specialPriceUsd} >= 0 and ${table.specialPriceZig} >= 0`,
+    ),
+    // Finite only together with the lower bound above: NaN sorts above Infinity.
+    check(
+      "specials_prices_finite",
+      sql`${table.specialPriceUsd} < 'Infinity' and ${table.specialPriceZig} < 'Infinity'`,
+    ),
+    // Proposed: a special that changes nothing and says nothing is no special.
+    check(
+      "specials_does_something",
+      sql`${table.title} is not null or ${table.specialPriceUsd} is not null or ${table.specialPriceZig} is not null`,
+    ),
+    // Proposed: an empty or backwards window would never be live.
+    check(
+      "specials_window_ordered",
+      sql`${table.startsAt} is null or ${table.endsAt} is null or ${table.endsAt} > ${table.startsAt}`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * The rate history (spec 00, 2): the current rate is the latest row, and a change
+ * is a new row, never an update.
+ */
+export const exchangeRates = pgTable(
+  "exchange_rates",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    usdToZig: numeric("usd_to_zig").notNull(),
+    setBy: uuid("set_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "exchange_rates_set_by_fk",
+      columns: [table.restaurantId, table.setBy],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.createdAt),
+    // > 0 alone lets NaN and Infinity through, and < 'Infinity' alone lets
+    // negatives through: both together are finite and positive.
+    check(
+      "exchange_rates_usd_to_zig_finite",
+      sql`${table.usdToZig} > 0 and ${table.usdToZig} < 'Infinity'`,
     ),
     tenantPolicy("restaurant_id"),
   ],
