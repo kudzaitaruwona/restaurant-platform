@@ -120,6 +120,13 @@
       "when": 1793806957844,
       "tag": "0016_table_archive_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793806958844,
+      "tag": "0017_booking_abuse_controls",
+      "breakpoints": true
     }
   ]
 }

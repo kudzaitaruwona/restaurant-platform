@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, count, eq, gt, isNull, lt, max } from "drizzle-orm";
 import { z } from "zod";
 import {
   bookings,
@@ -18,9 +18,11 @@ import {
   instantOf,
   isLocalDate,
   type LocalDate,
+  localToday,
   nearestTimes,
 } from "@/lib/booking-engine";
 import { mintQrToken } from "@/lib/qr-token";
+import { whatsappLink } from "@/lib/whatsapp-link";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
 /**
@@ -69,6 +71,7 @@ async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
       minLeadMinutes: bookingSettings.minLeadMinutes,
       maxDaysAhead: bookingSettings.maxDaysAhead,
       maxOnlinePartySize: bookingSettings.maxOnlinePartySize,
+      maxActiveBookingsPerPhone: bookingSettings.maxActiveBookingsPerPhone,
     })
     .from(bookingSettings)
     .where(eq(bookingSettings.restaurantId, restaurantId));
@@ -85,6 +88,35 @@ async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
 }
 
 type ReadRules = Awaited<ReturnType<typeof readRules>>;
+
+/**
+ * The smallest party that can't book online: one more than the most the rules
+ * allow and than the biggest table a guest could be given. D-02: a table is one
+ * booking, so a bigger party gets the contact message, not an empty list.
+ */
+async function contactThreshold(
+  tx: TenantTransaction,
+  { restaurantId }: Tenant,
+  { maxOnlinePartySize }: ReadRules["rules"],
+) {
+  const [{ capacity }] = await tx
+    .select({ capacity: max(diningTables.capacity) })
+    .from(diningTables)
+    .where(
+      and(
+        eq(diningTables.restaurantId, restaurantId),
+        eq(diningTables.bookable, true),
+        isNull(diningTables.archivedAt),
+      ),
+    );
+  return Math.min(maxOnlinePartySize, capacity ?? 0) + 1;
+}
+
+/** Where a guest can reach the restaurant instead: its number, and WhatsApp if it can take it. */
+const contactOf = (phone: string | null) => ({
+  contactPhone: phone,
+  whatsappLink: whatsappLink(phone) ?? null,
+});
 
 /** The one path to what can be seated: the guest's list and confirm both come here. */
 async function timesOn(
@@ -145,7 +177,10 @@ export function getBookingPage(
     }));
 
     const party = /^[0-9]{1,3}$/.test(choice.party ?? "") ? Number(choice.party) : undefined;
-    const chosenParty = party && party <= rules.maxOnlinePartySize ? party : undefined;
+    const threshold = await contactThreshold(tx, tenant, rules);
+    const requestedParty = party && party >= 1 ? party : undefined;
+    const tooLarge = requestedParty !== undefined && requestedParty >= threshold;
+    const chosenParty = requestedParty && !tooLarge ? requestedParty : undefined;
     const chosenDate = dates.find((day) => day.open && day.date === choice.date);
     const times =
       rules.enabled && chosenParty && chosenDate
@@ -157,6 +192,10 @@ export function getBookingPage(
       contactPhone: restaurant.contactPhone,
       enabled: rules.enabled,
       maxParty: rules.maxOnlinePartySize,
+      requestedParty,
+      // Shown in place of the times: for groups of this many, or more, contact the
+      // restaurant. Only while booking is on, as everything else on the page is.
+      largeParty: rules.enabled && tooLarge ? { threshold, ...contactOf(restaurant.contactPhone) } : undefined,
       dates,
       party: chosenParty,
       date: chosenDate,
@@ -206,8 +245,11 @@ const guestRequest = z
       .min(1, messages.name)
       .max(100, messages.name)
       .refine(noNul, messages.name),
-    countryCode: z.string(messages.phone).default(DEFAULT_COUNTRY_CODE),
-    phone: z.string(messages.phone),
+    // Capped before anything reads them, so no pattern ever runs on a long string.
+    // A country code is a + and at most four digits (E.164, ITU-T E.164).
+    countryCode: z.string(messages.phone).max(8, messages.phone).default(DEFAULT_COUNTRY_CODE),
+    // 15 digits at most, plus the spaces, dashes and brackets people type.
+    phone: z.string(messages.phone).max(40, messages.phone),
     note: z
       .string(messages.note)
       .trim()
@@ -279,7 +321,16 @@ export async function firstTableToTake<T>(
 }
 
 export const raceLostMessage = "That time was just booked — here are the nearest available times.";
+export const leadTimeMessage =
+  "That time is now too soon to book online — here are the next available times.";
+export const botCheckMessage = "We couldn't verify the request — please try again.";
 export const closedMessage = "This restaurant isn't taking online bookings right now.";
+/** *(Proposed)* Spec 04 has no row for a date outside today to max_days_ahead. */
+export const dateMessage = "That date can't be booked online. Choose another date.";
+export const phoneLimitMessage = (held: number) =>
+  `You already have ${held} upcoming ${held === 1 ? "booking" : "bookings"} here. Cancel one or contact the restaurant.`;
+export const largePartyMessage = (threshold: number) =>
+  `For groups of ${threshold}+, contact the restaurant`;
 
 export type Confirmation = {
   restaurantName: string;
@@ -293,7 +344,38 @@ export type Confirmation = {
 export type ConfirmOutcome =
   | { outcome: "confirmed"; confirmation: Confirmation }
   | { outcome: "race_lost"; times: TimeChoice[] }
+  | { outcome: "lead_time"; times: TimeChoice[] }
+  | { outcome: "phone_limit"; held: number }
+  | { outcome: "date_unavailable" }
+  | {
+      outcome: "party_too_large";
+      threshold: number;
+      contactPhone: string | null;
+      whatsappLink: string | null;
+    }
   | { outcome: "closed" };
+
+/** The trigger in migration 0016 saying this phone is at its limit. */
+const isPhoneLimit = (error: unknown) => {
+  const cause = dbErrorOf(error);
+  return cause?.code === "23514" && cause.constraint === "bookings_max_active_per_phone";
+};
+
+/** Upcoming confirmed bookings under this number at this restaurant. */
+async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phone: string, now: Date) {
+  const [{ held }] = await tx
+    .select({ held: count() })
+    .from(bookings)
+    .where(
+      and(
+        eq(bookings.restaurantId, restaurantId),
+        eq(bookings.guestPhone, phone),
+        eq(bookings.status, "confirmed"),
+        gt(bookings.startsAt, now),
+      ),
+    );
+  return held;
+}
 
 /**
  * Confirms a booking, or says why not. Runs the same engine as the guest's list,
@@ -301,9 +383,15 @@ export type ConfirmOutcome =
  * would show gets its tables tried. Whatever the list said a moment ago, Postgres
  * has the last word.
  *
- * A time that's gone for any reason gets the race-lost answer for now. #33 adds
- * the refusals that come first (lead time, per-phone limit, bot check) and the
- * route's rate limit.
+ * The refusals come in the order a guest can act on them: a party that can't
+ * book online, a date outside the booking window, a time inside the lead time, a
+ * phone at its limit. Each has an answer of its own; a time that's gone for any
+ * other reason, or was never on the grid, is the race-lost answer. The route runs
+ * the rate limit and the bot check before any of this.
+ *
+ * The per-phone count here is for the guest's message. The rule is the trigger in
+ * migration 0016, which serialises per phone: two confirms for one phone can't
+ * both pass, and the one that loses is answered below as if the count had caught it.
  */
 export async function confirmBooking(
   tenant: Tenant,
@@ -318,29 +406,60 @@ export async function confirmBooking(
       const { timezone } = restaurant;
       if (!rules.enabled) return { outcome: "closed" };
 
+      const threshold = await contactThreshold(tx, tenant, rules);
+      if (party >= threshold) {
+        return { outcome: "party_too_large", threshold, ...contactOf(restaurant.contactPhone) };
+      }
+
+      // Before any date arithmetic: a date like 9999-12-31 is a real date, and one
+      // day after it isn't. Today and the last day are the restaurant's own.
+      const today = localToday(now, timezone);
+      if (date < today || date > addDays(today, rules.maxDaysAhead)) {
+        return { outcome: "date_unavailable" };
+      }
+
       const day = { party, date, now };
+      const wanted = instantOf(date, time, timezone);
+      if (wanted.getTime() < now.getTime() + rules.minLeadMinutes * 60_000) {
+        const remaining = await timesOn(tx, tenant, read, day);
+        return { outcome: "lead_time", times: choices(nearestTimes(remaining, wanted)) };
+      }
+
+      const held = await upcomingFor(tx, tenant, guest.phone, now);
+      if (held >= rules.maxActiveBookingsPerPhone) return { outcome: "phone_limit", held };
+
       const chosen = (await timesOn(tx, tenant, read, day)).find((slot) => slot.time === time);
       const manageToken = mintQrToken();
-      const booked =
-        chosen &&
-        (await firstTableToTake(tx, chosen.tableIds, (attempt, tableId) =>
-          attempt
-            .insert(bookings)
-            .values({
-              restaurantId: tenant.restaurantId,
-              tableId,
-              guestName: guest.name,
-              guestPhone: guest.phone,
-              whatsappOptIn: guest.whatsappOptIn,
-              partySize: party,
-              ...holdFor(rules, party, chosen.startsAt),
-              status: "confirmed",
-              source: "online",
-              guestNote: guest.note,
-              manageToken,
-            })
-            .returning({ id: bookings.id }),
-        ));
+      let booked: { id: string }[] | undefined;
+      try {
+        booked =
+          chosen &&
+          (await firstTableToTake(tx, chosen.tableIds, (attempt, tableId) =>
+            attempt
+              .insert(bookings)
+              .values({
+                restaurantId: tenant.restaurantId,
+                tableId,
+                guestName: guest.name,
+                guestPhone: guest.phone,
+                whatsappOptIn: guest.whatsappOptIn,
+                partySize: party,
+                ...holdFor(rules, party, chosen.startsAt),
+                status: "confirmed",
+                source: "online",
+                guestNote: guest.note,
+                manageToken,
+              })
+              .returning({ id: bookings.id }),
+          ));
+      } catch (error) {
+        if (!isPhoneLimit(error)) throw error;
+        // Lost the race for this phone's last place. The attempt's savepoint is
+        // rolled back, so the transaction is whole, and a new statement now sees
+        // whoever won.
+        const heldNow = await upcomingFor(tx, tenant, guest.phone, now);
+        return { outcome: "phone_limit", held: Math.max(heldNow, rules.maxActiveBookingsPerPhone) };
+      }
 
       if (booked) {
         return {
@@ -358,7 +477,6 @@ export async function confirmBooking(
 
       // Asked again, not reused: this statement's snapshot sees whoever just won.
       const remaining = await timesOn(tx, tenant, read, day);
-      const wanted = instantOf(date, time, timezone);
       return { outcome: "race_lost", times: choices(nearestTimes(remaining, wanted)) };
     });
   } catch (error) {

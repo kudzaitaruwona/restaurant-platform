@@ -1,14 +1,92 @@
 "use client";
 
-import { type FormEvent, useState, useSyncExternalStore } from "react";
+import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Field, inputClassName } from "@/app/dashboard/field";
 import type { Confirmation, TimeChoice } from "@/lib/bookings";
 import { postForm } from "@/lib/form-response";
+
+/** The part of Cloudflare's script this form uses. */
+type TurnstileApi = {
+  render: (container: HTMLElement, options: Record<string, unknown>) => string;
+  execute: (widget: string) => void;
+  reset: (widget: string) => void;
+};
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi;
+  }
+}
+const TURNSTILE_SCRIPT = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const TURNSTILE_FIELD = "cf-turnstile-response";
+/** How long a guest waits for the check before the form posts without a token. */
+const TURNSTILE_WAIT_MS = 10_000;
+
+/**
+ * The invisible bot check (spec 04, proposed): Cloudflare's script is loaded here,
+ * on the guest's page only, and only when a site key is set. It runs when the guest
+ * confirms, not before, so it costs nothing to someone who only looks. The token it
+ * returns goes in the post and nowhere else. If the script can't load, the post goes
+ * without a token and the server decides what that means.
+ */
+function useTurnstile(siteKey: string | undefined) {
+  const container = useRef<HTMLDivElement>(null);
+  const widget = useRef<string>(undefined);
+  const waiting = useRef<(token: string | undefined) => void>(undefined);
+
+  useEffect(() => {
+    if (!siteKey || !container.current) return;
+    const mount = () => {
+      if (!window.turnstile || !container.current || widget.current) return;
+      widget.current = window.turnstile.render(container.current, {
+        sitekey: siteKey,
+        execution: "execute",
+        appearance: "interaction-only",
+        callback: (token: string) => waiting.current?.(token),
+        "error-callback": () => waiting.current?.(undefined),
+      });
+    };
+    let script = document.querySelector<HTMLScriptElement>("script[data-turnstile]");
+    if (!script) {
+      script = document.createElement("script");
+      script.src = TURNSTILE_SCRIPT;
+      script.async = true;
+      script.dataset.turnstile = "";
+      document.head.append(script);
+    }
+    if (window.turnstile) mount();
+    else script.addEventListener("load", mount);
+    return () => script.removeEventListener("load", mount);
+  }, [siteKey]);
+
+  /** A fresh token, or undefined when there is no check, or it didn't come. */
+  const token = () =>
+    new Promise<string | undefined>((resolve) => {
+      const id = widget.current;
+      if (!id || !window.turnstile) return resolve(undefined);
+      const timer = setTimeout(() => resolve(undefined), TURNSTILE_WAIT_MS);
+      waiting.current = (value) => {
+        clearTimeout(timer);
+        waiting.current = undefined;
+        resolve(value);
+      };
+      window.turnstile.reset(id); // a token works once
+      window.turnstile.execute(id);
+    });
+
+  return { container, token };
+}
 
 const noSubscription = () => () => {};
 /** False in the server's markup and until the browser has hydrated the form. */
 const useHydrated = () =>
   useSyncExternalStore(noSubscription, () => true, () => false);
+
+type Refusal = {
+  error: string;
+  times?: TimeChoice[];
+  contactPhone?: string | null;
+  whatsappLink?: string | null;
+};
 
 /**
  * The details step and what follows it. A refusal shows here with everything the
@@ -21,15 +99,18 @@ export function DetailsForm({
   date,
   dateLabel,
   time: firstChoice,
+  turnstileSiteKey,
 }: {
   action: string;
   party: number;
   date: string;
   dateLabel: string;
   time: string;
+  turnstileSiteKey?: string;
 }) {
   const [time, setTime] = useState(firstChoice);
-  const [refusal, setRefusal] = useState<{ error: string; times?: TimeChoice[] }>();
+  const [refusal, setRefusal] = useState<Refusal>();
+  const { container: turnstileContainer, token: turnstileToken } = useTurnstile(turnstileSiteKey);
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [pending, setPending] = useState(false);
   // Until the script is running, a submit would be a native post and the guest
@@ -47,6 +128,8 @@ export function DetailsForm({
     setPending(true);
     setRefusal(undefined);
     try {
+      const token = await turnstileToken();
+      if (token) body.set(TURNSTILE_FIELD, token);
       const response = await postForm(action, body);
       const answer = await response.json();
       if (response.ok) setConfirmation(answer.confirmation);
@@ -104,9 +187,24 @@ export function DetailsForm({
         >
           Confirm booking
         </button>
+        <div ref={turnstileContainer} />
         {refusal && (
           <div role="alert" className="flex flex-col gap-2 text-sm">
             <p className="text-destructive">{refusal.error}</p>
+            {(refusal.contactPhone || refusal.whatsappLink) && (
+              <p className="flex flex-wrap gap-x-4">
+                {refusal.contactPhone && (
+                  <a className="underline" href={`tel:${refusal.contactPhone}`}>
+                    {refusal.contactPhone}
+                  </a>
+                )}
+                {refusal.whatsappLink && (
+                  <a className="underline" href={refusal.whatsappLink}>
+                    Message us on WhatsApp
+                  </a>
+                )}
+              </p>
+            )}
             {refusal.times && refusal.times.length > 0 && (
               <ul className="flex flex-wrap gap-2">
                 {refusal.times.map((choice) => (

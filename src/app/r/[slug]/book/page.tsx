@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { inputClassName } from "@/app/dashboard/field";
-import { getBookingPage, type TimeChoice } from "@/lib/bookings";
+import { getBookingPage, largePartyMessage, type TimeChoice } from "@/lib/bookings";
 import { resolvePublicToken } from "@/lib/tenant/public";
 import { DetailsForm } from "./details-form";
 
@@ -58,12 +58,19 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
           <form method="get" className="flex flex-col gap-3">
             <label className="flex flex-col gap-1 text-sm font-medium">
               Party size
-              <select name="party" defaultValue={party ?? 2} className={inputClassName}>
+              <select
+                name="party"
+                defaultValue={page.requestedParty ?? 2}
+                className={inputClassName}
+              >
                 {Array.from({ length: page.maxParty }, (_, index) => index + 1).map((size) => (
                   <option key={size} value={size}>
                     {size}
                   </option>
                 ))}
+                {/* The final option (spec 04): bigger than any online party, so it goes
+                    straight to the contact message. */}
+                <option value={page.maxParty + 1}>{page.maxParty + 1}+</option>
               </select>
             </label>
             <label className="flex flex-col gap-1 text-sm font-medium">
@@ -87,6 +94,26 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
               Show times
             </button>
           </form>
+
+          {page.largeParty && (
+            <section className="flex flex-col gap-2" aria-label="Large groups">
+              <p className="font-medium">{largePartyMessage(page.largeParty.threshold)}</p>
+              {page.largeParty.contactPhone && (
+                <p>
+                  <a className="underline" href={`tel:${page.largeParty.contactPhone}`}>
+                    {page.largeParty.contactPhone}
+                  </a>
+                </p>
+              )}
+              {page.largeParty.whatsappLink && (
+                <p>
+                  <a className="underline" href={page.largeParty.whatsappLink}>
+                    Message us on WhatsApp
+                  </a>
+                </p>
+              )}
+            </section>
+          )}
 
           {times && date && (
             <section className="flex flex-col gap-4" aria-label="Available times">
@@ -123,6 +150,7 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
               date={date.date}
               dateLabel={date.label}
               time={chosen.time}
+              turnstileSiteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || undefined}
             />
           )}
         </>
