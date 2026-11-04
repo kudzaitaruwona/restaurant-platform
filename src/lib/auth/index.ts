@@ -73,6 +73,23 @@ const signInExpirySeconds = SIGN_IN_EXPIRY_MINUTES * 60;
 const SEND_CODE_PATH = "/email-otp/send-verification-otp";
 const USE_CODE_PATH = "/sign-in/email-otp";
 
+/**
+ * The hook runs before Better Auth checks the address, so it sees whatever was
+ * posted. Only something that could be an address gets a row: 254 characters is
+ * the most an address can have, which also keeps the key far under Postgres's
+ * index limit. Anything else goes on to Better Auth's own answer.
+ */
+function couldBeAnEmail(email: unknown): email is string {
+  return typeof email === "string" && email.length <= 254 && email.includes("@");
+}
+
+/**
+ * Postgres can't store a NUL byte in text. Better Auth's code lookup would hit
+ * that and answer 500, so a NUL is refused here, as the 400 an invalid address
+ * gets.
+ */
+const hasNul = (email: unknown) => typeof email === "string" && email.includes("\0");
+
 export const basePath = (audience: Audience) => `/api/auth/${audience}`;
 
 const mayUseSignIn = async (audience: Audience, email: string) =>
@@ -144,7 +161,13 @@ function createAuth(audience: Audience) {
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== SEND_CODE_PATH && ctx.path !== USE_CODE_PATH) return;
         const email: unknown = ctx.body?.email;
-        if (typeof email !== "string") return;
+        if (hasNul(email)) {
+          throw new APIError("BAD_REQUEST", {
+            code: "INVALID_EMAIL",
+            message: "Invalid email",
+          });
+        }
+        if (!couldBeAnEmail(email)) return;
         if (await spendCodeAttempt(audience, email.toLowerCase())) return;
         throw new APIError("TOO_MANY_REQUESTS", {
           code: SIGN_IN_CODES_PAUSED,

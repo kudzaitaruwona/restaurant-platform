@@ -270,6 +270,47 @@ describe("the per-email ceiling on sign-in codes", () => {
     expect((await requestCode("staff", email)).status).toBe(200);
   });
 
+  describe("input that is not an email", () => {
+    const rowsFor = async (email: string) =>
+      owner.db.select().from(staffAuthCodeLimit).where(eq(staffAuthCodeLimit.email, email));
+
+    // Better Auth's own check has no length limit, so it answers a long address
+    // as it would any unknown one. What matters here is that nothing is stored
+    // for it and that nothing throws.
+    it("keeps no row for an address too long to be real, and does not fail", async () => {
+      const email = `${crypto.randomUUID()}${"a".repeat(3000)}@example.test`;
+
+      expect((await requestCode("staff", email)).status).not.toBe(500);
+      expect((await tryCode("staff", email, "000000")).status).not.toBe(500);
+      expect(await rowsFor(email)).toEqual([]);
+    });
+
+    it("leaves a string with no @ to Better Auth's 400, with no row", async () => {
+      const email = `no-at-${crypto.randomUUID()}`;
+
+      expect((await requestCode("staff", email)).status).toBe(400);
+      expect(await rowsFor(email)).toEqual([]);
+    });
+
+    // Postgres can't store a NUL in text at all, so there is no row to look for.
+    it("leaves a string with a NUL byte with a 400 instead of failing", async () => {
+      const email = "nul\u0000byte@example.test";
+
+      expect((await requestCode("staff", email)).status).toBe(400);
+      expect((await tryCode("staff", email, "000000")).status).toBe(400);
+    });
+
+    it("still counts a real address at the longest length there is", async () => {
+      const email = `${"a".repeat(64)}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(55)}.test`;
+      expect(email.length).toBeLessThanOrEqual(254);
+      created.push(email);
+
+      await useUpCeiling("staff", email);
+
+      expect((await requestCode("staff", email)).status).toBe(429);
+    });
+  });
+
   it("keeps a guess refused by the ceiling from extending the window", async () => {
     const email = await newStaffEmail();
     await useUpCeiling("staff", email);
