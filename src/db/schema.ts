@@ -238,6 +238,12 @@ export const menuItems = pgTable(
       "menu_items_prices_not_negative",
       sql`${table.priceUsd} >= 0 and ${table.priceZig} >= 0`,
     ),
+    // numeric takes NaN and Infinity, and both are >= 0. NaN sorts above Infinity,
+    // so this stops the two of them.
+    check(
+      "menu_items_prices_finite",
+      sql`${table.priceUsd} < 'Infinity' and ${table.priceZig} < 'Infinity'`,
+    ),
     tenantPolicy("restaurant_id"),
   ],
 );

@@ -18,7 +18,8 @@ CREATE TABLE "menu_items" (
 	"sort_order" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "menu_items_restaurant_id_id_unique" UNIQUE("restaurant_id","id"),
 	CONSTRAINT "menu_items_has_a_price" CHECK ("menu_items"."price_usd" is not null or "menu_items"."price_zig" is not null),
-	CONSTRAINT "menu_items_prices_not_negative" CHECK ("menu_items"."price_usd" >= 0 and "menu_items"."price_zig" >= 0)
+	CONSTRAINT "menu_items_prices_not_negative" CHECK ("menu_items"."price_usd" >= 0 and "menu_items"."price_zig" >= 0),
+	CONSTRAINT "menu_items_prices_finite" CHECK ("menu_items"."price_usd" < 'Infinity' and "menu_items"."price_zig" < 'Infinity')
 );
 --> statement-breakpoint
 ALTER TABLE "menu_items" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint

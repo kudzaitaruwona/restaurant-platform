@@ -95,6 +95,19 @@ describe("menu item prices", () => {
       owner.db.insert(menuItems).values(item(prices)),
     ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
   });
+
+  it.each([
+    ["a USD price of NaN", { priceUsd: "NaN" }],
+    ["a ZiG price of NaN", { priceZig: "NaN" }],
+    ["a USD price of Infinity", { priceUsd: "Infinity" }],
+    ["a ZiG price of Infinity", { priceZig: "Infinity" }],
+    ["a USD price of -Infinity", { priceUsd: "-Infinity" }],
+    ["NaN beside a real price", { priceUsd: "8.00", priceZig: "NaN" }],
+  ])("refuses %s, which numeric would otherwise store", async (_name, prices) => {
+    await expect(
+      owner.db.insert(menuItems).values(item(prices)),
+    ).rejects.toMatchObject({ cause: { code: CHECK_VIOLATION } });
+  });
 });
 
 describe("the composite key from menu_items to categories", () => {

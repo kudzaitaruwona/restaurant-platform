@@ -794,6 +794,10 @@
         "menu_items_prices_not_negative": {
           "name": "menu_items_prices_not_negative",
           "value": "\"menu_items\".\"price_usd\" >= 0 and \"menu_items\".\"price_zig\" >= 0"
+        },
+        "menu_items_prices_finite": {
+          "name": "menu_items_prices_finite",
+          "value": "\"menu_items\".\"price_usd\" < 'Infinity' and \"menu_items\".\"price_zig\" < 'Infinity'"
         }
       },
       "isRLSEnabled": false
