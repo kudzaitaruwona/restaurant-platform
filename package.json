@@ -14,6 +14,7 @@
     "test:watch": "vitest --project unit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.mts",
+    "db:seed": "tsx scripts/seed.mts",
     "db:up": "docker compose up -d --wait"
   },
   "dependencies": {

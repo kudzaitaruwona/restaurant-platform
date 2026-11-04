@@ -29,22 +29,34 @@ Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, p
 npm install
 cp .env.example .env.local   # fill in values; the "local" hints match docker-compose.yml
 npm run db:up                # Postgres 17 on :5499 and Neon's wsproxy on :5498
-npm run db:migrate
+npm run db:migrate           # also lets the app role log in
+npm run db:seed              # restaurants A and B, for DEV_AUTH_BYPASS
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000, or http://localhost:3000/dashboard for the staff side. With `DEV_AUTH_BYPASS` set, the dev switcher on that page swaps between the four seeded identities: an owner and a staff member in each restaurant.
 
 The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Against a plain local Postgres that needs Neon's wsproxy, which `NEON_WS_PROXY` points at. Leave `NEON_WS_PROXY` unset against Neon.
 
 | Command | What it does |
 |---------|--------------|
-| `npm run lint` | ESLint, including the photo-storage import boundary |
+| `npm run lint` | ESLint, including the photo-storage and database import boundaries |
 | `npm run typecheck` | Route type generation plus `tsc --noEmit` |
 | `npm run test:unit` | Unit tests (no database) |
-| `npm run test:integration` | Integration tests against the real Postgres in `TEST_DATABASE_URL`, migrated first |
+| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant` |
 | `npm test` | Both test projects |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
-| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED` |
+| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` |
+| `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one stops the server with a list of what's wrong. `next build` doesn't validate, so it runs without secrets.
+### Tenant isolation
+
+All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` says who is asking, `requireOwner(ctx)` guards owner-only actions, and `withTenant(ctx, fn)` runs `fn` in a transaction scoped to that restaurant. ESLint keeps `getDb` out of everything else.
+
+There are two database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
+
+Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`. A test fails if you skip either.
+
+### Environment
+
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one stops the server with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, which includes a local `npm run start`: leave both blank to run a production build on your machine.

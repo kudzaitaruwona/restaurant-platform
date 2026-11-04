@@ -1,11 +1,25 @@
 // Relative imports: global setup runs outside the test projects' resolver.
+import { provisionAppRole } from "../../src/db/app-role";
 import { runMigrations } from "../../src/db/migrate";
-import { testDatabaseSettings } from "./database";
+import { seedDevData } from "../../src/db/seed";
+import {
+  openOwnerDatabase,
+  ownerDatabaseSettings,
+  testDatabaseSettings,
+} from "./database";
 
-// Brings the test database up to the latest migration once per run.
+// Once per run: brings the test database up to the latest migration, lets the
+// app role log in, and seeds restaurants A and B. Tests must not change the
+// seeded rows, because test files run in parallel against this database.
 export default async function setup() {
   try {
-    await runMigrations(testDatabaseSettings());
+    const owner = ownerDatabaseSettings();
+    await runMigrations(owner);
+    await provisionAppRole(owner, testDatabaseSettings().connectionString);
+
+    const { db, pool } = openOwnerDatabase();
+    await seedDevData(db);
+    await pool.end();
   } catch (error) {
     // Vitest can fail to print errors thrown from global setup, so say it here.
     const cause = error instanceof Error && error.cause ? `\nCause: ${String(error.cause)}` : "";

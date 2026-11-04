@@ -8,6 +8,20 @@
       "when": 1792623575476,
       "tag": "0000_enable_btree_gist",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793757280914,
+      "tag": "0001_tenants_and_staff",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793757281550,
+      "tag": "0002_app_tenant_role",
+      "breakpoints": true
     }
   ]
 }

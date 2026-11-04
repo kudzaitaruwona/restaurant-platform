@@ -57,11 +57,15 @@ jobs:
         ports:
           - 5498:80
     env:
+      # `app` is a superuser that owns the tables: migrations and fixtures only,
+      # because RLS skips it. Global setup creates app_tenant by migration and
+      # gives it this password. The tenant isolation tests connect as it.
       TEST_DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      TEST_DATABASE_URL_APP: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
       NEON_WS_PROXY: localhost:5498/v1
       # Stand-ins so code paths that read the validated env can load. No real
       # credentials exist in CI; nothing here reaches R2.
-      DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      DATABASE_URL: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       R2_ACCOUNT_ID: ci
       R2_ACCESS_KEY_ID: ci
@@ -75,4 +79,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Includes the cross-tenant and role harnesses
+      # (src/lib/tenant/access.int.test.ts) and the RLS coverage test.
       - run: npm run test:integration

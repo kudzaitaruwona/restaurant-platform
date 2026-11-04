@@ -12,6 +12,10 @@ for (const [key, value] of Object.entries(loadEnv("test", root, ""))) {
   process.env[key] ??= value;
 }
 
+// forbidden() and unauthorized() check this flag. Next.js sets it at build time
+// from experimental.authInterrupts in next.config.ts; there is no build here.
+process.env.__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS = "true";
+
 export default defineConfig({
   resolve: {
     alias: {
