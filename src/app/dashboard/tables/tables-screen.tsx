@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { getBookingSettings } from "@/lib/booking-settings";
 import { listTables } from "@/lib/tables";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../action-form";
@@ -9,7 +10,12 @@ import { Field, inputClassName } from "../field";
 export async function TablesScreen() {
   const tenant = await getTenantContext();
   requireOwner(tenant);
-  const tables = await listTables(tenant);
+  const [tables, bookingSettings] = await Promise.all([
+    listTables(tenant),
+    getBookingSettings(tenant),
+  ]);
+  const onlyBookableTable =
+    bookingSettings.enabled && tables.filter((table) => table.bookable).length === 1;
 
   return (
     <div className="flex flex-col gap-6">
@@ -33,7 +39,7 @@ export async function TablesScreen() {
             <li key={table.id} className="flex flex-col gap-2 py-3">
               <ActionForm
                 action={`/api/tables/${table.id}`}
-                savedMessage="Saved. Capacity changes apply to bookings made from now on."
+                savedMessage="Saved. Capacity changes apply to bookings made from now on. If you made the last bookable table walk-ins only, online booking has switched off."
                 className="flex flex-wrap items-end gap-3"
               >
                 <span className="w-6 pb-2 text-sm text-muted-foreground" title="Position in the list">
@@ -90,7 +96,12 @@ export async function TablesScreen() {
                 ))}
                 <ActionForm
                   action={`/api/tables/${table.id}/archive`}
-                  confirmation={`Archive table ${table.label}? Its printed QR code will stop working.`}
+                  confirmation={
+                    `Archive table ${table.label}? Its printed QR code will stop working.` +
+                    (onlyBookableTable && table.bookable
+                      ? " It's the last table guests can book, so online booking will switch off."
+                      : "")
+                  }
                 >
                   <Button type="submit" size="sm" variant="outline">
                     Archive

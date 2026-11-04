@@ -1,5 +1,6 @@
 import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
+import { bookAgainPath } from "@/lib/booking-link";
 import { html, trusted } from "@/lib/html";
 import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
@@ -28,6 +29,7 @@ body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif
 main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
 h1{margin:0;font-size:1.75rem;line-height:1.2}
 .wifi{margin:.25rem 0 0;font-size:.9rem}
+.book-again{margin:.5rem 0 0}
 nav{position:sticky;top:0;z-index:1;display:flex;gap:.5rem;margin:1rem -1rem 0;padding:.5rem 1rem;overflow-x:auto;background:Canvas;border-bottom:1px solid var(--line)}
 nav a{flex:none;padding:.25rem .75rem;border:1px solid var(--line);border-radius:999px;color:inherit;font-size:.9rem;text-decoration:none;white-space:nowrap}
 section{scroll-margin-top:3.5rem}
@@ -94,6 +96,10 @@ ${item.description && html`<p>${item.description}</p>`}
 ${thumbnail(item)}
 </li>`;
 
+/** Only on a table's page (spec 03), and only while booking is on. */
+const bookAgainLine = (path: string | null) =>
+  path === null ? "" : html`<p class="book-again"><a href="${path}">Book again</a></p>\n`;
+
 /** Sold-out items stay on the page, after the rest of their category (spec 02). */
 const availableFirst = (items: Item[]) =>
   [...items].sort((a, b) => Number(!a.available) - Number(!b.available));
@@ -117,7 +123,7 @@ function specialsSection(menu: Menu) {
 </section>`;
 }
 
-function menuPage(menu: Menu) {
+function menuPage(menu: Menu, bookAgain: string | null) {
   const shown = menu.categories.filter((category) => category.items.length > 0);
   const specials = specialsSection(menu);
   // Anchors are positions, not ids from the database: nothing internal on the page.
@@ -139,7 +145,7 @@ function menuPage(menu: Menu) {
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
 ${menu.wifiName && html`<p class="wifi">Wi-Fi: ${menu.wifiName}</p>`}
-${jumpBar}
+${bookAgainLine(bookAgain)}${jumpBar}
 ${specials}
 ${sections.length > 0 || specials ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
@@ -180,7 +186,8 @@ async function cachedPage(kind: PublicTokenKind, token: string) {
   // the first visit after a quiet spell would still get the old page.
   cacheLife({ revalidate: FRESH_FOR_SECONDS, expire: FRESH_FOR_SECONDS });
   cacheTag(menuTag(tenant.restaurantId));
-  return menuPage(await getMenu(tenant)).toString();
+  const bookAgain = kind === "table" ? await bookAgainPath(tenant) : null;
+  return menuPage(await getMenu(tenant), bookAgain).toString();
 }
 
 export async function publicMenuResponse(kind: PublicTokenKind, token: string) {

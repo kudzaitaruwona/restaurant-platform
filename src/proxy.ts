@@ -14,7 +14,7 @@ import {
  * counting towards keeping a session alive.
  */
 export const config = {
-  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+", "/t/:path+"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+", "/t/:path+", "/b/:path+"],
 };
 
 /**
@@ -36,7 +36,8 @@ const readMethods = new Set(["GET", "HEAD", "OPTIONS"]);
  * SameSite=Lax already keeps the session cookie off cross-site posts. This also
  * covers what it doesn't: sibling subdomains count as same-site (S-30). A browser
  * always sends Origin on these requests, so a missing one is a server-to-server
- * caller with no cookie to abuse, like the Meta webhook.
+ * caller with no cookie to abuse, like the Meta webhook. Origin: null names no
+ * site, so it is refused like another site's.
  */
 function isCrossSiteWrite(request: NextRequest) {
   if (readMethods.has(request.method)) return false;
@@ -68,7 +69,18 @@ function keepSessionCookiesAlive(request: NextRequest, response: NextResponse) {
   }
 }
 
+/**
+ * A guest's manage link takes a POST (cancel), so it can't be refused like the
+ * cached pages above, and it isn't cached at all. What it needs from here is the
+ * cross-site check, and, like every public page, no session work.
+ */
+const isManagePage = (request: NextRequest) => request.nextUrl.pathname.startsWith("/b/");
+
 export function proxy(request: NextRequest) {
+  if (isManagePage(request)) {
+    return isCrossSiteWrite(request) ? new NextResponse(null, { status: 403 }) : NextResponse.next();
+  }
+
   if (isPublicPage(request)) {
     return cacheableMethods.has(request.method)
       ? NextResponse.next()

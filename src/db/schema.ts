@@ -78,6 +78,18 @@ export const auditActorType = pgEnum("audit_actor_type", [
 
 export const staffRole = pgEnum("staff_role", ["owner", "staff"]);
 
+export const bookingStatus = pgEnum("booking_status", [
+  "confirmed",
+  "seated",
+  "completed",
+  "cancelled",
+  "no_show",
+]);
+
+export const bookingSource = pgEnum("booking_source", ["online", "staff"]);
+
+export const bookingCancelledBy = pgEnum("booking_cancelled_by", ["guest", "staff"]);
+
 // special_only is a bundle (spec 02): it shows only while one of its specials is on.
 export const menuVisibility = pgEnum("menu_visibility", ["regular", "special_only"]);
 
@@ -430,6 +442,244 @@ export const diningTables = pgTable(
     check("tables_qr_token_shape", sql`${table.qrToken} ~ '^[0-9A-Za-z]{22,}$'`),
     tenantPolicy("restaurant_id"),
   ],
+);
+
+/**
+ * Online booking settings (spec 00, 4): one row per restaurant, made by a
+ * trigger when the restaurant is, with spec 00's defaults. `id` exists only
+ * because every tenant table needs UNIQUE (restaurant_id, id) for composite
+ * keys; the primary key is `restaurant_id`, as the spec has it *(proposed)*.
+ *
+ * Postgres rules that live only in the migration (0021), because Drizzle can't
+ * model them:
+ * - the enable gate: `enabled` can't be true unless the restaurant has a service
+ *   period, a bookable live table and a contact phone
+ *   (booking_settings_enable_gate), and it's switched off again if the last of
+ *   those goes (booking_gate_recheck), so the gate holds at every commit;
+ * - the trigger on restaurants that creates the row.
+ * Every number is bounded, so the availability maths can't be handed nonsense.
+ */
+export const bookingSettings = pgTable(
+  "booking_settings",
+  {
+    restaurantId: uuid("restaurant_id").primaryKey(),
+    id: uuid().notNull().defaultRandom(),
+    enabled: boolean().notNull().default(false),
+    slotIntervalMinutes: integer("slot_interval_minutes").notNull().default(15),
+    sittingMinutes: integer("sitting_minutes").notNull().default(90),
+    // This size and above gets the longer sitting.
+    largePartySize: integer("large_party_size").notNull().default(5),
+    largePartySittingMinutes: integer("large_party_sitting_minutes").notNull().default(120),
+    // Reset time between bookings on a table.
+    bufferMinutes: integer("buffer_minutes").notNull().default(15),
+    minLeadMinutes: integer("min_lead_minutes").notNull().default(60),
+    maxDaysAhead: integer("max_days_ahead").notNull().default(30),
+    maxOnlinePartySize: integer("max_online_party_size").notNull().default(8),
+    guestCancelCutoffMinutes: integer("guest_cancel_cutoff_minutes").notNull().default(120),
+    maxActiveBookingsPerPhone: integer("max_active_bookings_per_phone").notNull().default(2),
+  },
+  (table) => [
+    // ON DELETE CASCADE: the row is made by the restaurant's trigger, so it
+    // can't be what stops a restaurant being deleted.
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }).onDelete("cascade"),
+    unique().on(table.restaurantId, table.id),
+    check("booking_settings_slot_interval", sql`${table.slotIntervalMinutes} between 1 and 240`),
+    check("booking_settings_sitting", sql`${table.sittingMinutes} between 1 and 720`),
+    check("booking_settings_large_party_size", sql`${table.largePartySize} between 1 and 100`),
+    check(
+      "booking_settings_large_party_sitting",
+      sql`${table.largePartySittingMinutes} between 1 and 720`,
+    ),
+    check("booking_settings_buffer", sql`${table.bufferMinutes} between 0 and 240`),
+    check("booking_settings_min_lead", sql`${table.minLeadMinutes} between 0 and 10080`),
+    check("booking_settings_max_days_ahead", sql`${table.maxDaysAhead} between 0 and 365`),
+    check(
+      "booking_settings_max_online_party_size",
+      sql`${table.maxOnlinePartySize} between 1 and 100`,
+    ),
+    check(
+      "booking_settings_cancel_cutoff",
+      sql`${table.guestCancelCutoffMinutes} between 0 and 10080`,
+    ),
+    check(
+      "booking_settings_max_active_per_phone",
+      sql`${table.maxActiveBookingsPerPhone} between 1 and 20`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * Service periods (spec 00, 4): several per weekday, in the restaurant's local
+ * wall-clock time (restaurants.timezone decides which instant that is, as the
+ * availability engine converts). A period is [opens_at, closes_at), so two can
+ * touch.
+ *
+ * The no-overlap rule is an exclusion constraint that lives only in the
+ * migration (0021), because Drizzle can't model it:
+ *   service_periods_no_overlap EXCLUDE USING gist (restaurant_id WITH =,
+ *     weekday WITH =, int4range(opens_at secs, closes_at secs) WITH &&)
+ * It leads with restaurant_id, as spec 00 has it.
+ */
+export const servicePeriods = pgTable(
+  "service_periods",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    name: text().notNull(),
+    // 0 = Sunday
+    weekday: integer().notNull(),
+    opensAt: time("opens_at").notNull(),
+    // The latest start time a guest can book.
+    lastBookingAt: time("last_booking_at").notNull(),
+    // End of service; also used for the "outside hours" metric.
+    closesAt: time("closes_at").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    check("service_periods_weekday", sql`${table.weekday} between 0 and 6`),
+    check("service_periods_name", sql`trim(${table.name}) <> '' and length(${table.name}) <= 50`),
+    check(
+      "service_periods_times_ordered",
+      sql`${table.opensAt} <= ${table.lastBookingAt} and ${table.lastBookingAt} < ${table.closesAt}`,
+    ),
+    // v1: periods don't cross midnight.
+    check("service_periods_same_day", sql`${table.closesAt} <= '23:59'`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * A table held for a party (spec 00, 4). Every booking has a real table: that's
+ * what availability is made of.
+ *
+ * THE double-booking guard is an exclusion constraint that lives only in the
+ * migration (0022), because Drizzle can't model it:
+ *   bookings_no_overlap EXCLUDE USING gist (table_id WITH =,
+ *     tstzrange(starts_at, hold_ends_at) WITH &&)
+ *     WHERE (status IN ('confirmed', 'seated', 'completed'))
+ * The engine's blockingStatuses (src/lib/booking-engine.ts) must match that list.
+ *
+ * `manage_token` is a guest's cancel link, and `guest_phone` is personal data:
+ * neither goes in a log or an audit row.
+ */
+export const bookings = pgTable(
+  "bookings",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    tableId: uuid("table_id").notNull(),
+    guestName: text("guest_name").notNull(),
+    // E.164. Null for a walk-in, and once the retention job has been (D-06).
+    guestPhone: text("guest_phone"),
+    whatsappOptIn: boolean("whatsapp_opt_in").notNull(),
+    partySize: integer("party_size").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    // starts_at + sitting length
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    // ends_at + buffer
+    holdEndsAt: timestamp("hold_ends_at", { withTimezone: true }).notNull(),
+    status: bookingStatus().notNull(),
+    source: bookingSource().notNull(),
+    guestNote: text("guest_note"),
+    manageToken: text("manage_token").notNull().unique(),
+    cancelledBy: bookingCancelledBy("cancelled_by"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      columns: [table.restaurantId, table.tableId],
+      foreignColumns: [diningTables.restaurantId, diningTables.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    // The day list reads one restaurant's day.
+    index().on(table.restaurantId, table.startsAt),
+    check("bookings_guest_name", sql`trim(${table.guestName}) <> '' and length(${table.guestName}) <= 100`),
+    check("bookings_guest_phone_e164", sql`${table.guestPhone} ~ '^[+][1-9][0-9]{7,14}$'`),
+    check("bookings_party_size_positive", sql`${table.partySize} > 0`),
+    check("bookings_guest_note_length", sql`length(${table.guestNote}) <= 200`),
+    check(
+      "bookings_times_ordered",
+      sql`${table.startsAt} < ${table.endsAt} and ${table.endsAt} <= ${table.holdEndsAt}`,
+    ),
+    // The availability read looks back only this far for a hold that reaches into
+    // a date (MAX_HOLD_MS in lib/bookings.ts: the largest sitting plus the largest
+    // buffer, 720 + 240 minutes). The cap keeps that bound from hiding a hold.
+    check("bookings_hold_capped", sql`${table.holdEndsAt} - ${table.startsAt} <= interval '960 minutes'`),
+    // The same 131 bits as a table's QR token, for the same reason.
+    check("bookings_manage_token_shape", sql`${table.manageToken} ~ '^[0-9A-Za-z]{22,}$'`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * A time the restaurant is shut: a holiday, a private event (spec 00, 4). The
+ * availability engine drops any sitting that runs into one, and Postgres refuses a
+ * confirmed booking inside one, and a closure over a confirmed booking, whichever
+ * commits first. Those two guards live only in the migration (0026), because
+ * Drizzle can't model triggers: bookings_within_closure and closures_cover_bookings
+ * (see migration 0026 for the lock they meet on).
+ *
+ * A date-only closure is local midnight to the next local midnight, converted with
+ * restaurants.timezone in Postgres (src/lib/booking-closures.ts). Reads start from
+ * an instant (`ends_at` is indexed after the restaurant), so no read walks the
+ * closures of past years.
+ */
+export const closures = pgTable(
+  "closures",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+    reason: text(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.endsAt),
+    check("closures_times_ordered", sql`${table.startsAt} < ${table.endsAt}`),
+    check(
+      "closures_reason",
+      sql`${table.reason} is null or (trim(${table.reason}) <> '' and length(${table.reason}) <= 200)`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * How many booking submissions one network address has made lately (spec 04,
+ * abuse controls, proposed). In Postgres because memory would be per-instance on
+ * Vercel, and a limit that each instance counts alone is no limit. Belongs to no
+ * restaurant (the guest hasn't been resolved to one when this is spent), so it
+ * gets the reverse of the tenant policy, like the sign-in tables. `key` is a
+ * keyed hash of the address (src/lib/booking-limits.ts), never the address.
+ */
+export const bookingRateLimit = pgTable(
+  "booking_rate_limit",
+  {
+    key: text().primaryKey(),
+    attempts: integer().notNull(),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+  },
+  () => [outsideTenantOnly()],
 );
 
 /**

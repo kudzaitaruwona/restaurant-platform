@@ -3,11 +3,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { GET as menuPage } from "@/app/m/[menuToken]/route";
 import {
   auditLog,
+  bookingSettings,
   categories,
   diningTables,
   exchangeRates,
   menuItems,
   restaurants,
+  servicePeriods,
   specials,
   staff,
 } from "@/db/schema";
@@ -63,6 +65,30 @@ async function newRestaurant(name: string, dish: string) {
   return { id, menuToken: `menu-${id}`, qrToken, categoryId };
 }
 
+/** Everything the gate asks for, and booking switched on, as the owner would. */
+async function turnBookingOn(restaurantId: string) {
+  await owner.db
+    .update(restaurants)
+    .set({ contactPhone: "+263771234567" })
+    .where(eq(restaurants.id, restaurantId));
+  await owner.db.insert(servicePeriods).values({
+    restaurantId,
+    name: "Lunch",
+    weekday: 1,
+    opensAt: "12:00",
+    lastBookingAt: "14:00",
+    closesAt: "15:00",
+  });
+  await owner.db
+    .update(bookingSettings)
+    .set({ enabled: true })
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+}
+
+/** The exact line the page shows for "Book again", with its newline. */
+const bookAgainLine = (slug: string) =>
+  `<p class="book-again"><a href="/r/${slug}/book">Book again</a></p>\n`;
+
 const scan = (qrToken: string) =>
   GET(new Request(`http://localhost:3000/t/${qrToken}`), {
     params: Promise.resolve({ qrToken }),
@@ -73,6 +99,7 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  await owner.db.delete(servicePeriods).where(inArray(servicePeriods.restaurantId, created));
   await owner.db.delete(specials).where(inArray(specials.restaurantId, created));
   await owner.db.delete(exchangeRates).where(inArray(exchangeRates.restaurantId, created));
   await owner.db.delete(staff).where(inArray(staff.restaurantId, created));
@@ -84,21 +111,74 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
+const genericPage = (menuToken: string) =>
+  menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {
+    params: Promise.resolve({ menuToken }),
+  });
+
 describe("/t/{qr_token}", () => {
-  it("renders the same menu as the restaurant's /m/{menu_token}", async () => {
+  it("renders the same menu as the restaurant's /m/{menu_token}, with booking off", async () => {
     const { menuToken, qrToken } = await newRestaurant("Mama's Kitchen", "Beef stew");
 
     const table = await scan(qrToken);
-    const generic = await menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {
-      params: Promise.resolve({ menuToken }),
-    });
+    const generic = await genericPage(menuToken);
 
     expect(table.status).toBe(200);
     expect(table.headers.get("content-type")).toBe("text/html; charset=utf-8");
     const body = await table.text();
     expect(body).toContain("Mama&#39;s Kitchen");
     expect(body).toContain("Beef stew");
+    expect(body).not.toContain("Book again");
     expect(body).toBe(await generic.text());
+  });
+
+  it("adds only a Book again link to the restaurant's booking page while online booking is on", async () => {
+    const { id, menuToken, qrToken } = await newRestaurant("Mama's Kitchen", "Beef stew");
+    await turnBookingOn(id);
+    const slug = `table-qr-${id}`;
+
+    const body = await (await scan(qrToken)).text();
+    const generic = await (await genericPage(menuToken)).text();
+
+    expect(body).toContain(bookAgainLine(slug));
+    // The difference is that link and nothing else.
+    expect(body.replace(bookAgainLine(slug), "")).toBe(generic);
+  });
+
+  it("links Book again to its own restaurant's booking page, not another's", async () => {
+    const [mine, theirs] = [
+      await newRestaurant("Mine", "My stew"),
+      await newRestaurant("Theirs", "Their stew"),
+    ];
+    await turnBookingOn(mine.id);
+    await turnBookingOn(theirs.id);
+
+    const body = await (await scan(mine.qrToken)).text();
+
+    expect(body).toContain(`href="/r/table-qr-${mine.id}/book"`);
+    expect(body).not.toContain(theirs.id);
+  });
+
+  it("shows no Book again while online booking is off, once it has been on", async () => {
+    const { id, qrToken } = await newRestaurant("Mama's Kitchen", "Beef stew");
+    await turnBookingOn(id);
+    expect(await (await scan(qrToken)).text()).toContain("Book again");
+
+    await owner.db
+      .update(bookingSettings)
+      .set({ enabled: false })
+      .where(eq(bookingSettings.restaurantId, id));
+
+    // The cache is inert under vitest, so this reads the database fresh; the
+    // production suite checks the cached page is refreshed on a real build.
+    expect(await (await scan(qrToken)).text()).not.toContain("Book again");
+  });
+
+  it("never shows Book again on the generic /m/ menu, even while booking is on", async () => {
+    const { id, menuToken } = await newRestaurant("Mama's Kitchen", "Beef stew");
+    await turnBookingOn(id);
+
+    expect(await (await genericPage(menuToken)).text()).not.toContain("Book again");
   });
 
   it("renders everything the menu page does, byte for byte", async () => {
@@ -141,6 +221,14 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain("ZiG");
     expect(body).toContain(`https://cdn.example.test/${id}/bream`);
     expect(body).toContain("Sold out");
+
+    // Book again is the one line a table's page adds to all of that.
+    await turnBookingOn(id);
+    const line = bookAgainLine(`table-qr-${id}`);
+    const withLink = await (await scan(qrToken)).text();
+    expect(withLink).toContain(line);
+    expect(withLink.replace(line, "")).toBe(body);
+    expect(await (await genericPage(menuToken)).text()).toBe(body);
   });
 
   it("shows its own restaurant's menu and nobody else's", async () => {

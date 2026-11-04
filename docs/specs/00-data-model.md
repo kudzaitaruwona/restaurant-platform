@@ -11,7 +11,7 @@ This is a reference schema written as Postgres-style pseudocode. It is not a mig
 - **All timestamps are `timestamptz`.** Each restaurant has a `timezone`, which defaults to `Africa/Harare` (CAT, UTC+2, no daylight saving). Opening hours are local `time` values and are interpreted in that zone.
 - **Rules that protect money or seats live in the database**, as constraints and triggers, not only in app code.
 
-**Tables that don't carry `restaurant_id`.** The rules above govern tenant tables. Better Auth's sign-in tables (`staff_auth_*` and `admin_auth_*`, including `staff_auth_code_limit`, `admin_auth_code_limit` and `admin_auth_entry`, which holds the restaurant an admin session has entered) belong to no restaurant: they exist before anyone has a tenant, and a credential must be unreachable from inside one. They have RLS, with the reverse of the tenant policy, so rows are visible only when no tenant is set. They are not listed in this spec's schema. S-30 in `docs/decisions.md` records them, their policy and how retention works, and S-28 which login reaches which.
+**Tables that don't carry `restaurant_id`.** The rules above govern tenant tables. Better Auth's sign-in tables (`staff_auth_*` and `admin_auth_*`, including `staff_auth_code_limit`, `admin_auth_code_limit` and `admin_auth_entry`, which holds the restaurant an admin session has entered) belong to no restaurant: they exist before anyone has a tenant, and a credential must be unreachable from inside one. They have RLS, with the reverse of the tenant policy, so rows are visible only when no tenant is set. They are not listed in this spec's schema. S-30 in `docs/decisions.md` records them, their policy and how retention works, and S-28 which login reaches which. *(Proposed)* `booking_rate_limit` (spec 04, abuse controls) has no `restaurant_id` either and the same reverse policy, because an attempt is counted before the slug resolves, so there is no tenant yet.
 
 ## 1. Tenant, staff, platform
 
@@ -145,6 +145,10 @@ tables
   token_rotated_at      timestamptz null
   archived_at           null
   UNIQUE (restaurant_id, label) WHERE archived_at IS NULL
+  -- (proposed) archive guard (migration 0023, spec 03): an AFTER UPDATE OF archived_at trigger refuses to archive a table
+  -- while a booking holds it: status IN ('confirmed','seated') AND hold_ends_at > now() (booking_holds_table()).
+  -- It takes pg_advisory_xact_lock(hashtextextended('table_seat:' || id, 0)) first, in its own statement, so it waits for
+  -- inserts in flight and sees them.
 ```
 
 ## 4. Bookings
@@ -163,6 +167,14 @@ booking_settings                            -- one row per restaurant
   max_online_party_size int default 8
   guest_cancel_cutoff_minutes int default 120
   max_active_bookings_per_phone int default 2
+  -- (proposed) a row is made by a trigger when the restaurant is created. Also an `id` column,
+  -- UNIQUE (restaurant_id, id), because every tenant table has one for composite keys.
+  -- (proposed) every number is bounded by a CHECK: intervals and sittings 1-720 minutes (slot interval
+  -- 1-240), buffer 0-240, lead time and cancel cutoff 0-10080, days ahead 0-365, party sizes 1-100,
+  -- active bookings per phone 1-20.
+  -- (proposed) enabled = true requires a service period, a bookable non-archived table and
+  -- restaurants.contact_phone: a trigger refuses to enable without them and switches booking off
+  -- when the last one goes (spec 04 › Settings).
 
 service_periods                             -- several per day allowed (lunch, dinner)
   id, restaurant_id
@@ -173,14 +185,22 @@ service_periods                             -- several per day allowed (lunch, d
   closes_at             time                -- end of service; used for "outside hours" metric
   CHECK (opens_at <= last_booking_at AND last_booking_at < closes_at)
   -- v1: periods don't cross midnight (closes_at ≤ 23:59). Late-night venues are out of scope.
+  -- (proposed) name is 1-50 characters after trimming; CHECK (closes_at <= '23:59').
   -- No two periods on the same weekday may overlap:
   EXCLUDE USING gist (restaurant_id WITH =, weekday WITH =,
                       int4range(minutes(opens_at), minutes(closes_at)) WITH &&)
+  -- (proposed) built with whole seconds, extract(epoch from opens_at)::int, since `minutes()` isn't a function;
+  -- ranges are half-open, so two periods can touch.
 
 closures                                    -- holidays, private events
   id, restaurant_id, starts_at, ends_at, reason text null
   -- a date-only closure is stored as local midnight → next local midnight,
   -- converted with restaurants.timezone
+  -- (proposed, #38) UNIQUE (restaurant_id, id); CHECK (starts_at < ends_at); CHECK a reason is
+  -- non-blank and at most 200 characters; an index on (restaurant_id, ends_at), so a read that
+  -- starts from an instant never walks past closures. The two guards are triggers in migration
+  -- 0026: closures_cover_bookings refuses a closure over a confirmed booking's sitting, and
+  -- bookings_within_closure refuses a confirmed booking inside one (spec 04 › Settings).
 
 bookings
   id, restaurant_id
@@ -201,12 +221,30 @@ bookings
   created_at
 
   CHECK (starts_at < ends_at AND ends_at <= hold_ends_at)
+  CHECK (hold_ends_at - starts_at <= interval '960 minutes')  -- bookings_hold_capped (proposed): largest sitting 720 + largest buffer 240 (booking_settings' CHECKs); the availability read relies on it
+  -- (proposed) Finish and automatic completion (spec 04) clamp `ends_at` and `hold_ends_at` so `hold_ends_at - starts_at` stays within 960 minutes; a seated booking finished the next morning would otherwise violate this CHECK.
 
   -- THE double-booking guard (requires btree_gist):
   EXCLUDE USING gist (
     table_id WITH =,
     tstzrange(starts_at, hold_ends_at) WITH &&
   ) WHERE (status IN ('confirmed', 'seated', 'completed'))
+
+  -- (proposed) bookings_table_live (migration 0023): AFTER INSERT, and AFTER UPDATE OF table_id, status when the booking
+  -- newly claims a table, refuse a booking that holds its table (booking_holds_table()) on an archived table, and an
+  -- online one on a bookable = false table. It takes the same advisory lock SHARED first, so two inserts never wait on each
+  -- other and an archive and an insert order themselves: whichever commits second sees the other. Neither takes a row lock
+  -- on tables, so moveTable's NO KEY UPDATE and a booking's foreign key check still don't block one another.
+  -- (proposed) bookings_max_active_per_phone (migration 0024): AFTER INSERT of a confirmed online booking with a phone, it takes
+  -- an advisory lock per (restaurant, phone) and counts (spec 04 › Abuse controls). Triggers fire in name order, so an insert takes
+  -- the phone's lock, then the table's. An archive takes only the table's, and a failed attempt gives both back with its SAVEPOINT,
+  -- so neither can wait on the other in a cycle, as long as a transaction makes one booking (src/db/booking-lock-order.int.test.ts).
+  -- It fires on insert only. A move leaves the count as it was, so it needs nothing. A reopen would add a booking the rule never
+  -- saw, but nothing reopens one (spec 04: nothing leads out of cancelled): whatever adds that must decide whether the limit applies.
+  -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
+  -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
+  -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
+  -- manage_token is at least 22 base62 characters, the same as a table's QR token.
 ```
 
 The exclusion constraint makes double-booking impossible even when two guests submit at the same moment. `completed` stays inside the constraint so the reset buffer after an early finish is still respected (see spec 04, "Finish"). `cancelled` and `no_show` free the table.
@@ -273,6 +311,7 @@ order_items
 
 ### Enforced in the database
 - **Table lock:** a partial unique index allows only one open session per table.
+- *(Proposed, #38)* **Booking closures:** a closure can't be saved over a confirmed booking whose sitting runs into it, and a confirmed booking can't be made inside a closure, whichever commits first (migration 0026; one advisory lock per restaurant, as the archive guard's is per table).
 - **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path.
 - **Force-close:** one transaction voids the remaining items with a reason, then closes the session.
 - **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.

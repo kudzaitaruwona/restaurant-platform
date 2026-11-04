@@ -32,7 +32,7 @@ export async function SettingsScreen() {
       </div>
       <ActionForm
         action="/api/restaurant"
-        savedMessage="Settings saved."
+        savedMessage="Settings saved. If you cleared the contact phone, online booking has switched off."
         className="flex flex-col gap-4"
       >
         <Field label="Restaurant name">

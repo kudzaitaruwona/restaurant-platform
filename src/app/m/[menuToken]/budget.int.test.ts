@@ -3,11 +3,13 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { GET as tablePage } from "@/app/t/[qrToken]/route";
 import {
+  bookingSettings,
   categories,
   diningTables,
   exchangeRates,
   menuItems,
   restaurants,
+  servicePeriods,
   specials,
   staff,
 } from "@/db/schema";
@@ -37,6 +39,7 @@ let restaurantId = "";
 let menuToken = "";
 let body = "";
 let tableBody = "";
+let bookAgainBody = "";
 
 beforeAll(async () => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
@@ -119,13 +122,34 @@ beforeAll(async () => {
   await owner.db
     .insert(diningTables)
     .values({ restaurantId, label: "7", capacity: 4, qrToken });
-  const scanned = await tablePage(new Request(`http://localhost:3000/t/${qrToken}`), {
-    params: Promise.resolve({ qrToken }),
+  const scan = () =>
+    tablePage(new Request(`http://localhost:3000/t/${qrToken}`), {
+      params: Promise.resolve({ qrToken }),
+    });
+  tableBody = await (await scan()).text();
+
+  // The heaviest a table's page gets: booking on, so Book again shows.
+  await owner.db
+    .update(restaurants)
+    .set({ contactPhone: "+263771234567" })
+    .where(eq(restaurants.id, restaurantId));
+  await owner.db.insert(servicePeriods).values({
+    restaurantId,
+    name: "Lunch",
+    weekday: 1,
+    opensAt: "12:00",
+    lastBookingAt: "14:00",
+    closesAt: "15:00",
   });
-  tableBody = await scanned.text();
+  await owner.db
+    .update(bookingSettings)
+    .set({ enabled: true })
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+  bookAgainBody = await (await scan()).text();
 });
 
 afterAll(async () => {
+  await owner.db.delete(servicePeriods).where(inArray(servicePeriods.restaurantId, [restaurantId]));
   await owner.db.delete(specials).where(inArray(specials.restaurantId, [restaurantId]));
   await owner.db.delete(exchangeRates).where(inArray(exchangeRates.restaurantId, [restaurantId]));
   await owner.db.delete(staff).where(inArray(staff.restaurantId, [restaurantId]));
@@ -154,6 +178,12 @@ describe("public menu page weight, 30 items with photos", () => {
   it("a table's code serves the same page, so the same budget", () => {
     expect(tableBody).toBe(body);
     expect(Buffer.byteLength(tableBody)).toBeLessThan(BUDGET_BYTES);
+  });
+
+  it("a table's page with Book again is still under the budget", () => {
+    expect(bookAgainBody).toContain("Book again");
+    expect(bookAgainBody).not.toBe(body);
+    expect(Buffer.byteLength(bookAgainBody)).toBeLessThan(BUDGET_BYTES);
   });
 
   it("loads every image lazily at a fixed size, and ships no script", () => {

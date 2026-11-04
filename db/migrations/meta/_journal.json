@@ -148,6 +148,48 @@
       "when": 1793802138349,
       "tag": "0020_menu_item_visibility",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793802139349,
+      "tag": "0021_booking_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793803601244,
+      "tag": "0022_bookings",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793806957844,
+      "tag": "0023_table_archive_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793806958844,
+      "tag": "0024_booking_abuse_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793806959844,
+      "tag": "0025_booking_manage_token_lookup",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793816410511,
+      "tag": "0026_closures",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { and, eq, inArray, like, or } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { renderToStaticMarkup } from "react-dom/server";
 import sharp from "sharp";
 import {
   afterAll,
@@ -16,16 +17,26 @@ import {
 import {
   adminAuthUser,
   auditLog,
+  bookings,
+  bookingSettings,
   categories,
+  closures,
   diningTables,
   exchangeRates,
   menuItems,
   restaurants,
+  servicePeriods,
   specials,
   staff,
   staffAuthUser,
 } from "@/db/schema";
+import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
 import { signIn } from "../../../test/integration/auth";
+import {
+  aBooking,
+  bookableRestaurant,
+  bookingsOf,
+} from "../../../test/integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -66,6 +77,14 @@ vi.mock("next/headers", () => ({
 vi.mock("next/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("next/server")>()),
   after: (task: Promise<unknown>) => task,
+  // Only a real request has a connection to wait for.
+  connection: async () => {},
+}));
+
+// The day view's forms ask the App Router for a router the harness doesn't mount.
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ refresh() {} }),
 }));
 
 // Photos are stored through the app's storage interface, which is faked here so
@@ -93,12 +112,13 @@ vi.mock("next/cache", () => ({
 type Target = {
   staffId: string;
   categoryId: string;
+  tableId: string;
+  periodId: string;
   /** A second live category: where archiving a category moves its items. */
   spareCategoryId: string;
   itemId: string;
   /** A promotion on `itemId`, active, in a window long past. */
   specialId: string;
-  tableId: string;
   restaurantId: string;
 };
 
@@ -124,6 +144,10 @@ const regeneratedLabel = "Harness regenerated";
 /** A table's QR token, one for each restaurant's table the harness plants. */
 const fixtureTableToken = (restaurant: "a" | "b") =>
   `Harness${restaurant.toUpperCase()}`.padEnd(22, "0");
+
+/** A guest's manage token: one booking of each restaurant's, planted far ahead. */
+const fixtureManageToken = (restaurant: "a" | "b") =>
+  `HarnessManage${restaurant.toUpperCase()}`.padEnd(22, "0");
 
 const regeneratedToken = (restaurant: "a" | "b") =>
   `Regen${restaurant.toUpperCase()}`.padEnd(22, "0");
@@ -154,6 +178,154 @@ const plantTable = async (restaurantId: string) => {
   planted.push({ id, restaurantId });
   return id;
 };
+/** Service periods the delete route is aimed at: not the fixture period, which the edit route needs. */
+const plantedPeriodPrefix = "Harness planted period ";
+const plantedPeriods: { id: string; restaurantId: string }[] = [];
+/** Periods are one minute wide and two apart, so any number of them never overlap. */
+let periodSlot = 0;
+const slotTimes = (slot: number) => {
+  const clock = (minutes: number) =>
+    `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  return { opensAt: clock(slot * 2), closesAt: clock(slot * 2 + 1) };
+};
+const plantPeriod = async (restaurantId: string) => {
+  const id = crypto.randomUUID();
+  const { opensAt, closesAt } = slotTimes(periodSlot++);
+  await owner.db.insert(servicePeriods).values({
+    id,
+    restaurantId,
+    name: `${plantedPeriodPrefix}${id.slice(0, 8)}`,
+    weekday: 2,
+    opensAt,
+    lastBookingAt: opensAt,
+    closesAt,
+  });
+  plantedPeriods.push({ id, restaurantId });
+  return id;
+};
+const periodParams = (periodId: string) => ({ params: Promise.resolve({ periodId }) });
+/**
+ * Closures the delete route is aimed at, and the ones the add route makes: all far
+ * ahead (about 600 days, inside the two years a closure may be saved for, and
+ * before any booking another file makes) and at 03:00, so no closure here is ever
+ * over another file's booking or in the way of one. They are removed at the end.
+ */
+const plantedClosureReason = "Harness planted closure";
+const addedClosureReason = "Harness added closure";
+const farDate = (extraDays: number) =>
+  addDays(localToday(new Date(), "Africa/Harare"), 600 + extraDays);
+const plantedClosures: { id: string; restaurantId: string }[] = [];
+const plantClosure = async (restaurantId: string) => {
+  const id = crypto.randomUUID();
+  const day = farDate(1);
+  await owner.db.insert(closures).values({
+    id,
+    restaurantId,
+    // 03:00 to 03:30 in Harare, which is UTC+2.
+    startsAt: new Date(`${day}T01:00:00Z`),
+    endsAt: new Date(`${day}T01:30:00Z`),
+    reason: plantedClosureReason,
+  });
+  plantedClosures.push({ id, restaurantId });
+  return id;
+};
+const closureParams = (closureId: string) => ({ params: Promise.resolve({ closureId }) });
+const closuresIn = (restaurantId: string, reason: string) =>
+  owner.db
+    .select({ id: closures.id })
+    .from(closures)
+    .where(and(eq(closures.restaurantId, restaurantId), eq(closures.reason, reason)));
+/** Whether the closures planted since `mark` in a restaurant are all still there. */
+const closuresUnremoved = async (restaurantId: string, mark: number) =>
+  (
+    await Promise.all(
+      plantedClosures
+        .slice(mark)
+        .filter((closure) => closure.restaurantId === restaurantId)
+        .map(async ({ id }) => (await owner.db.select().from(closures).where(eq(closures.id, id))).length),
+    )
+  ).every((found) => found === 1);
+/**
+ * Bookings the day view actions are aimed at. Each call plants one of its own, in
+ * the target's restaurant and on its fixture table: an action can be taken once,
+ * so it can't be run again on the same booking. Slots are three hours apart from
+ * 2031, so no two holds overlap on the table, and nothing is near a real day list.
+ */
+const plantedBookingPrefix = "Harness booking ";
+type BookingStatus = typeof bookings.$inferSelect.status;
+const plantedBookings: { id: string; restaurantId: string; status: BookingStatus }[] = [];
+let bookingSlot = 0;
+const plantBooking = async (target: Target, status: BookingStatus) => {
+  const id = crypto.randomUUID();
+  const starts = Date.UTC(2031, 0, 1) + bookingSlot++ * 3 * 3_600_000;
+  await owner.db.insert(bookings).values({
+    ...aBooking(
+      target.restaurantId,
+      target.tableId,
+      new Date(starts).toISOString(),
+      new Date(starts + 2 * 3_600_000).toISOString(),
+    ),
+    id,
+    guestName: `${plantedBookingPrefix}${id}`,
+    status,
+  });
+  plantedBookings.push({ id, restaurantId: target.restaurantId, status });
+  return id;
+};
+const bookingParams = (bookingId: string) => ({ params: Promise.resolve({ bookingId }) });
+const bookingRoutes = {
+  seat: () => import("@/app/api/bookings/[bookingId]/seat/route"),
+  finish: () => import("@/app/api/bookings/[bookingId]/finish/route"),
+  "no-show": () => import("@/app/api/bookings/[bookingId]/no-show/route"),
+  cancel: () => import("@/app/api/bookings/[bookingId]/cancel/route"),
+};
+/** An action on a booking planted for it: the one status it can act on. */
+const bookingAction = (
+  action: keyof typeof bookingRoutes,
+  from: BookingStatus,
+): TenantRoute => ({
+  name: `POST /api/bookings/[bookingId]/${action}`,
+  ownerOnly: false,
+  call: async (target) => {
+    // A made-up id, like the malformed ones tried above, is aimed at as it is.
+    const bookingId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+      ? await plantBooking(target, from)
+      : target.tableId;
+    return postBookingAction(action, bookingId);
+  },
+});
+const postBookingAction = async (action: keyof typeof bookingRoutes, bookingId: string, query = "") =>
+  (await bookingRoutes[action]()).POST(
+    request(`/api/bookings/${bookingId}/${action}${query}`, { method: "POST" }),
+    bookingParams(bookingId),
+  );
+/** The first Sunday after today, where the fixture period (12:00 to 12:30) is, on Harare's calendar. */
+const nextSunday = () => {
+  let day = addDays(localToday(new Date(), "Africa/Harare"), 1);
+  while (weekdayOf(day) !== 0) day = addDays(day, 1);
+  return day;
+};
+const staffBookingForm = (fields: Record<string, string> = {}) =>
+  form({
+    party: "2",
+    date: nextSunday(),
+    time: "12:00",
+    name: `${plantedBookingPrefix}${crypto.randomUUID()}`,
+    ...fields,
+  });
+const postStaffBooking = async (fields: Record<string, string> = {}, init?: { path?: string; headers?: Record<string, string> }) =>
+  (await import("@/app/api/bookings/route")).POST(
+    request(init?.path ?? "/api/bookings", { method: "POST", headers: init?.headers, body: staffBookingForm(fields) }),
+  );
+const postMove = async (bookingId: string, tableId: string, init?: { path?: string; headers?: Record<string, string> }) =>
+  (await import("@/app/api/bookings/[bookingId]/move/route")).POST(
+    request(init?.path ?? `/api/bookings/${bookingId}/move`, {
+      method: "POST",
+      headers: init?.headers,
+      body: form({ tableId }),
+    }),
+    bookingParams(bookingId),
+  );
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -438,6 +610,98 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  {
+    // Idempotent: it saves the fixture period's own values.
+    name: "POST /api/bookings/periods/[periodId]",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/bookings/periods/[periodId]/route")).POST(
+        request(`/api/bookings/periods/${target.periodId}`, {
+          method: "POST",
+          body: form({
+            name: fixtureName,
+            opensAt: "12:00",
+            lastBookingAt: "12:30",
+            closesAt: "13:00",
+          }),
+        }),
+        periodParams(target.periodId),
+      ),
+  },
+  {
+    // Deleting can't be undone, so it takes a period planted in the target's
+    // restaurant for the purpose: the fixture period stays for the rest.
+    name: "POST /api/bookings/periods/[periodId]/delete",
+    ownerOnly: true,
+    call: async (target) => {
+      const periodId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantPeriod(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/periods/[periodId]/delete/route")).POST(
+        request(`/api/bookings/periods/${periodId}/delete`, { method: "POST" }),
+        periodParams(periodId),
+      );
+    },
+  },
+  {
+    // Removing can't be undone, so it takes a closure planted in the target's
+    // restaurant for the purpose.
+    name: "POST /api/bookings/closures/[closureId]/delete",
+    ownerOnly: true,
+    call: async (target) => {
+      const closureId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantClosure(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/closures/[closureId]/delete/route")).POST(
+        request(`/api/bookings/closures/${closureId}/delete`, { method: "POST" }),
+        closureParams(closureId),
+      );
+    },
+  },
+  bookingAction("seat", "confirmed"),
+  bookingAction("finish", "seated"),
+  bookingAction("no-show", "confirmed"),
+  bookingAction("cancel", "confirmed"),
+  {
+    // Each call books a table planted for it, so no call finds another's booking in its way.
+    name: "POST /api/bookings",
+    ownerOnly: false,
+    call: async (target) => {
+      const tableId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantTable(target.restaurantId)
+        : target.tableId;
+      return postStaffBooking({ tableId });
+    },
+  },
+  {
+    // Each call moves a booking planted for it to the restaurant's second fixture table.
+    name: "POST /api/bookings/[bookingId]/move",
+    ownerOnly: false,
+    call: async (target) => {
+      const bookingId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantBooking(target, "confirmed")
+        : target.tableId;
+      return postMove(bookingId, regenerationTarget(target.tableId));
+    },
+  },
+  {
+    // The table is in the form, because the form chooses it. Each call seats at a
+    // table planted for it: a walk-in holds its table, so the fixture's can't be
+    // used twice. Any other id, like the made-up ones tried below, is aimed at as it is.
+    name: "POST /api/bookings/walk-in",
+    ownerOnly: false,
+    call: async (target) => {
+      const tableId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantTable(target.restaurantId)
+        : target.tableId;
+      return (await import("@/app/api/bookings/walk-in/route")).POST(
+        request("/api/bookings/walk-in", {
+          method: "POST",
+          body: form({ tableId, party: "2" }),
+        }),
+      );
+    },
+  },
 ];
 
 /**
@@ -451,6 +715,7 @@ type SessionRoute = {
 };
 
 const addedEmailPrefix = "harness-added-";
+const addedPeriodPrefix = "Harness added period ";
 
 const sessionRoutes: SessionRoute[] = [
   {
@@ -528,6 +793,81 @@ const sessionRoutes: SessionRoute[] = [
         }),
       ),
   },
+  {
+    name: "POST /api/bookings/settings",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/settings/route")).POST(
+        request(init?.path ?? "/api/bookings/settings", {
+          method: "POST",
+          headers: init?.headers,
+          // spec 00's defaults: other test files read them.
+          body: form({
+            slotIntervalMinutes: "15",
+            sittingMinutes: "90",
+            largePartySize: "5",
+            largePartySittingMinutes: "120",
+            bufferMinutes: "15",
+            minLeadMinutes: "60",
+            maxDaysAhead: "30",
+            maxOnlinePartySize: "8",
+            guestCancelCutoffMinutes: "120",
+            maxActiveBookingsPerPhone: "2",
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  {
+    // Switching off by default: it always works, where switching on has a gate.
+    name: "POST /api/bookings/settings/enabled",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/settings/enabled/route")).POST(
+        request(init?.path ?? "/api/bookings/settings/enabled", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({ enabled: "false", ...fields }),
+        }),
+      ),
+  },
+  {
+    // Each call adds a period of its own, in a slot no other has.
+    name: "POST /api/bookings/periods",
+    call: async (fields, init) => {
+      const { opensAt, closesAt } = slotTimes(periodSlot++);
+      return (await import("@/app/api/bookings/periods/route")).POST(
+        request(init?.path ?? "/api/bookings/periods", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            name: `${addedPeriodPrefix}${crypto.randomUUID().slice(0, 8)}`,
+            weekday: "4",
+            opensAt,
+            lastBookingAt: opensAt,
+            closesAt,
+            ...fields,
+          }),
+        }),
+      );
+    },
+  },
+  {
+    // Each call adds a closure of its own, far ahead and at 03:00 (see plantClosure).
+    name: "POST /api/bookings/closures",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/closures/route")).POST(
+        request(init?.path ?? "/api/bookings/closures", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            startDate: farDate(2),
+            startTime: "03:00",
+            endTime: "03:30",
+            reason: addedClosureReason,
+            ...fields,
+          }),
+        }),
+      ),
+  },
 ];
 
 /**
@@ -564,7 +904,81 @@ const publicRoutes: PublicRoute[] = [
         { params: Promise.resolve({ qrToken }) },
       ),
   },
+  {
+    name: "GET /b/[manageToken]",
+    tokenOf: fixtureManageToken,
+    call: async (manageToken, init) =>
+      (await import("@/app/b/[manageToken]/route")).GET(
+        request(`/b/${manageToken}${init?.query ?? ""}`, { headers: init?.headers }),
+        { params: Promise.resolve({ manageToken }) },
+      ),
+  },
+  {
+    // A page, not a handler, so it goes through what the page renders.
+    name: "PAGE /r/[slug]/book",
+    tokenOf: (restaurant) => `restaurant-${restaurant}`,
+    call: async (slug, init) => {
+      const { default: Page } = await import("@/app/r/[slug]/book/page");
+      const searchParams = Object.fromEntries(new URLSearchParams(init?.query));
+      return new Response(
+        renderToStaticMarkup(
+          await Page({
+            params: Promise.resolve({ slug }),
+            searchParams: Promise.resolve(searchParams),
+          }),
+        ),
+      );
+    },
+  },
 ];
+
+/** The one public write. It takes its slug like the pages, and is tested below them. */
+const guestConfirm = "POST /api/r/[slug]/book";
+
+/** The other: a guest's cancel, by their manage token and nothing else. */
+const guestCancel = "POST /b/[manageToken]";
+
+const postCancel = async (
+  manageToken: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: FormData },
+) =>
+  (await import("@/app/b/[manageToken]/route")).POST(
+    request(`/b/${manageToken}${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body,
+    }),
+    { params: Promise.resolve({ manageToken }) },
+  );
+
+/** What a guest's browser posts, for a time that's free tomorrow at any hour of today. */
+const guestForm = (extra: Record<string, string> = {}) => {
+  const body = new FormData();
+  const fields = {
+    party: "2",
+    date: addDays(localToday(new Date(), "Africa/Harare"), 1),
+    time: "19:00",
+    name: "Harness guest",
+    phone: "0771234567",
+    consent: "on",
+    ...extra,
+  };
+  for (const [key, value] of Object.entries(fields)) body.set(key, value);
+  return body;
+};
+
+const postBooking = async (
+  slug: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: FormData },
+) =>
+  (await import("@/app/api/r/[slug]/book/route")).POST(
+    request(`/api/r/${slug}/book${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body ?? guestForm(),
+    }),
+    { params: Promise.resolve({ slug }) },
+  );
 
 type AdminRoute = {
   name: string;
@@ -642,6 +1056,7 @@ const fixtures = {
     specialId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
     regeneratedTableId: crypto.randomUUID(),
+    periodId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
@@ -652,6 +1067,7 @@ const fixtures = {
     specialId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
     regeneratedTableId: crypto.randomUUID(),
+    periodId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -720,6 +1136,19 @@ beforeAll(async () => {
       qrToken: fixtureTableToken(key),
     })),
   );
+  // The edit route is aimed at a period of each restaurant's. Sunday, so none of the
+  // others the harness adds (Tuesday, Thursday) can overlap it.
+  await owner.db.insert(servicePeriods).values(
+    (["a", "b"] as const).map((key) => ({
+      id: fixtures[key].periodId,
+      restaurantId: fixtures[key].restaurantId,
+      name: fixtureName,
+      weekday: 0,
+      opensAt: "12:00",
+      lastBookingAt: "12:30",
+      closesAt: "13:00",
+    })),
+  );
   // The regenerate route changes its table's token, so it gets tables of its own.
   await owner.db.insert(diningTables).values(
     (["a", "b"] as const).map((key) => ({
@@ -728,6 +1157,19 @@ beforeAll(async () => {
       label: regeneratedLabel,
       capacity: 2,
       qrToken: regeneratedToken(key),
+    })),
+  );
+  // The manage page is aimed at a booking of each restaurant's, far ahead of the
+  // day list's today and clear of any cutoff.
+  await owner.db.insert(bookings).values(
+    (["a", "b"] as const).map((key) => ({
+      ...aBooking(
+        fixtures[key].restaurantId,
+        fixtures[key].tableId,
+        "2031-03-04T10:00:00Z",
+        "2031-03-04T11:00:00Z",
+      ),
+      manageToken: fixtureManageToken(key),
     })),
   );
 });
@@ -741,6 +1183,9 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  await owner.db
+    .delete(bookings)
+    .where(inArray(bookings.manageToken, [fixtureManageToken("a"), fixtureManageToken("b")]));
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
@@ -751,6 +1196,11 @@ afterAll(async () => {
   await owner.db
     .delete(menuItems)
     .where(inArray(menuItems.name, [harnessItem, harnessBundle, fixtureName]));
+  await owner.db.delete(bookings).where(like(bookings.guestName, `${plantedBookingPrefix}%`));
+  // Walk-ins and bookings made on the tables the harness planted, before those go.
+  if (planted.length > 0) {
+    await owner.db.delete(bookings).where(inArray(bookings.tableId, planted.map(({ id }) => id)));
+  }
   await owner.db
     .delete(diningTables)
     .where(
@@ -761,6 +1211,18 @@ afterAll(async () => {
         like(diningTables.label, `${plantedPrefix}%`),
       ),
     );
+  await owner.db
+    .delete(servicePeriods)
+    .where(
+      or(
+        eq(servicePeriods.name, fixtureName),
+        like(servicePeriods.name, `${plantedPeriodPrefix}%`),
+        like(servicePeriods.name, `${addedPeriodPrefix}%`),
+      ),
+    );
+  await owner.db
+    .delete(closures)
+    .where(inArray(closures.reason, [plantedClosureReason, addedClosureReason]));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -965,6 +1427,53 @@ const unarchived = async (restaurantId: string, mark: number) =>
     )
   ).every((row) => row.archivedAt === null);
 
+/** What the booking routes would change in a restaurant. */
+const periodStanding = async (periodId: string) => {
+  const [row] = await owner.db
+    .select()
+    .from(servicePeriods)
+    .where(eq(servicePeriods.id, periodId));
+  return row;
+};
+const bookingSettingsOf = async (restaurantId: string) => {
+  const [row] = await owner.db
+    .select()
+    .from(bookingSettings)
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+  return row;
+};
+const periodsNamed = (restaurantId: string, prefix: string) =>
+  owner.db
+    .select({ id: servicePeriods.id })
+    .from(servicePeriods)
+    .where(
+      and(eq(servicePeriods.restaurantId, restaurantId), like(servicePeriods.name, `${prefix}%`)),
+    );
+/** Whether the periods planted since `mark` in a restaurant are all still there. */
+const unremoved = async (restaurantId: string, mark: number) =>
+  (
+    await Promise.all(
+      plantedPeriods
+        .slice(mark)
+        .filter((period) => period.restaurantId === restaurantId)
+        .map(({ id }) => periodStanding(id)),
+    )
+  ).every((row) => row !== undefined);
+
+/** Whether the bookings planted since `mark` in a restaurant are all as they were planted. */
+const bookingsAsPlanted = async (restaurantId: string, mark: number) => {
+  const rows = await Promise.all(
+    plantedBookings
+      .slice(mark)
+      .filter((booking) => booking.restaurantId === restaurantId)
+      .map(async ({ id, status }) => {
+        const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+        return row.status === status && row.cancelledBy === null;
+      }),
+  );
+  return rows.every(Boolean);
+};
+
 const harnessTables = (restaurantId: string) =>
   owner.db
     .select({ id: diningTables.id })
@@ -995,7 +1504,12 @@ describe("cross-tenant access", () => {
       const itemsInA = (await harnessItems(fixtures.a.restaurantId)).length;
       const stored = storage.calls;
       const bTable = await tableStanding(fixtures.b.tableId);
+      const bPeriod = await periodStanding(fixtures.b.periodId);
       const mark = planted.length;
+      const periodMark = plantedPeriods.length;
+      const bookingMark = plantedBookings.length;
+      const closureMark = plantedClosures.length;
+      const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1009,6 +1523,11 @@ describe("cross-tenant access", () => {
       expect(await menuFixtureState(fixtures.b)).toEqual(pristine.b);
       expect(await tableStanding(fixtures.b.tableId)).toEqual(bTable);
       expect(await unarchived(fixtures.b.restaurantId, mark)).toBe(true);
+      expect(await periodStanding(fixtures.b.periodId)).toEqual(bPeriod);
+      expect(await unremoved(fixtures.b.restaurantId, periodMark)).toBe(true);
+      expect(await bookingsAsPlanted(fixtures.b.restaurantId, bookingMark)).toBe(true);
+      expect(await closuresUnremoved(fixtures.b.restaurantId, closureMark)).toBe(true);
+      expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
     },
   );
 
@@ -1141,7 +1660,10 @@ describe("owner-only routes", () => {
       const items = (await harnessItems(fixtures.a.restaurantId)).length;
       const stored = storage.calls;
       const aTable = await tableStanding(fixtures.a.tableId);
+      const aPeriod = await periodStanding(fixtures.a.periodId);
       const mark = planted.length;
+      const periodMark = plantedPeriods.length;
+      const closureMark = plantedClosures.length;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(storage.calls).toBe(stored);
@@ -1152,6 +1674,9 @@ describe("owner-only routes", () => {
       expect(await menuFixtureState(fixtures.a)).toEqual(pristine.a);
       expect(await tableStanding(fixtures.a.tableId)).toEqual(aTable);
       expect(await unarchived(fixtures.a.restaurantId, mark)).toBe(true);
+      expect(await periodStanding(fixtures.a.periodId)).toEqual(aPeriod);
+      expect(await unremoved(fixtures.a.restaurantId, periodMark)).toBe(true);
+      expect(await closuresUnremoved(fixtures.a.restaurantId, closureMark)).toBe(true);
     },
   );
 
@@ -1162,6 +1687,72 @@ describe("owner-only routes", () => {
       expect(await statusOf(() => route.call(fixtures.a))).toBeLessThan(400);
     },
   );
+});
+
+describe("archiving a table with future bookings", () => {
+  const archivePath = (tableId: string) => `/api/tables/${tableId}/archive`;
+  const callArchive = async (tableId: string) =>
+    (await import("@/app/api/tables/[tableId]/archive/route")).POST(
+      request(archivePath(tableId), { method: "POST" }),
+      tableParams(tableId),
+    );
+
+  const plantedBookings: string[] = [];
+  /** A planted table in the restaurant with a future confirmed booking on it. */
+  const bookedTable = async (restaurantId: string) => {
+    const tableId = await plantTable(restaurantId);
+    const row = {
+      ...aBooking(
+        restaurantId,
+        tableId,
+        new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        new Date(Date.now() + 26 * 3_600_000).toISOString(),
+      ),
+      guestName: "Harness booked guest",
+      guestPhone: "+263779999999",
+    };
+    await owner.db.insert(bookings).values(row);
+    plantedBookings.push(row.manageToken);
+    return tableId;
+  };
+  afterEach(async () => {
+    await owner.db.delete(bookings).where(inArray(bookings.manageToken, plantedBookings.splice(0)));
+  });
+
+  it("restaurant A's owner gets a 404 on B's booked table: no list, no guest, nothing archived", async () => {
+    session.identity = aOwner.key;
+    const tableId = await bookedTable(fixtures.b.restaurantId);
+
+    const outcome = await callArchive(tableId).then(
+      (response) => ({ status: response.status, body: response.text() }),
+      (error: { digest?: string }) => ({ status: Number(/(\d+)$/.exec(String(error.digest))?.[1]), body: Promise.resolve("") }),
+    );
+
+    expect(outcome.status).toBe(404);
+    const body = await outcome.body;
+    expect(body).not.toContain("Harness booked guest");
+    expect(body).not.toContain("263779999999");
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
+
+  it("a staff context gets a 403 on its own restaurant's booked table", async () => {
+    session.identity = aStaff.key;
+    const tableId = await bookedTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => callArchive(tableId))).toBe(403);
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
+
+  it("the owner of that restaurant gets the 409 list, and the table stays", async () => {
+    session.identity = aOwner.key;
+    const tableId = await bookedTable(fixtures.a.restaurantId);
+
+    const response = await callArchive(tableId);
+
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).not.toContain("263779999999");
+    expect((await tableStanding(tableId)).archivedAt).toBeNull();
+  });
 });
 
 describe("routes that take no id", () => {
@@ -1557,6 +2148,198 @@ describe("the tables route", () => {
   });
 });
 
+describe("the booking routes", () => {
+  const [saveRules, enable, addPeriod, addClosure] = sessionRoutes.slice(
+    sessionRoutes.findIndex((route) => route.name === "POST /api/bookings/settings"),
+  );
+  const smuggledB = () => {
+    const id = fixtures.b.restaurantId;
+    return {
+      fields: { restaurantId: id, restaurant_id: id },
+      init: (path: string) => ({
+        headers: { "x-restaurant-id": id },
+        path: `${path}?restaurantId=${id}&restaurant_id=${id}`,
+      }),
+    };
+  };
+
+  it("the rules go to the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const theirs = await bookingSettingsOf(fixtures.b.restaurantId);
+
+    try {
+      const response = await saveRules.call(
+        { ...fields, sittingMinutes: "100" },
+        init("/api/bookings/settings"),
+      );
+
+      expect(response.status).toBeLessThan(400);
+      expect(await bookingSettingsOf(fixtures.b.restaurantId)).toEqual(theirs);
+      expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ sittingMinutes: 100 });
+    } finally {
+      await saveRules.call();
+    }
+  });
+
+  it("a staff context can't change the rules", async () => {
+    session.identity = aStaff.key;
+    const before = await bookingSettingsOf(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => saveRules.call({ sittingMinutes: "61" }))).toBe(403);
+
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toEqual(before);
+  });
+
+  it("a staff context can't turn booking on, and the owner is refused while the phone is missing", async () => {
+    session.identity = aStaff.key;
+    expect(await statusOf(() => enable.call({ enabled: "true" }))).toBe(403);
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ enabled: false });
+
+    session.identity = aOwner.key;
+    const response = await enable.call({ enabled: "true" });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("contact phone");
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ enabled: false });
+  });
+
+  it("a new period joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const name = `${addedPeriodPrefix}${crypto.randomUUID().slice(0, 8)}`;
+
+    const response = await addPeriod.call({ ...fields, name }, init("/api/bookings/periods"));
+
+    expect(response.status).toBeLessThan(400);
+    expect(await periodsNamed(fixtures.b.restaurantId, name)).toEqual([]);
+    expect(await periodsNamed(fixtures.a.restaurantId, name)).toHaveLength(1);
+  });
+
+  it("a staff context adds no period", async () => {
+    session.identity = aStaff.key;
+    const before = (await periodsNamed(fixtures.a.restaurantId, addedPeriodPrefix)).length;
+
+    expect(await statusOf(() => addPeriod.call())).toBe(403);
+
+    expect(await periodsNamed(fixtures.a.restaurantId, addedPeriodPrefix)).toHaveLength(before);
+  });
+
+  it("a new closure joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const reason = `${addedClosureReason} smuggled`;
+    const before = (await closuresIn(fixtures.a.restaurantId, reason)).length;
+
+    const response = await addClosure.call({ ...fields, reason }, init("/api/bookings/closures"));
+
+    expect(response.status).toBeLessThan(400);
+    expect(await closuresIn(fixtures.b.restaurantId, reason)).toEqual([]);
+    expect(await closuresIn(fixtures.a.restaurantId, reason)).toHaveLength(before + 1);
+    await owner.db.delete(closures).where(eq(closures.reason, reason));
+  });
+
+  it("a staff context adds no closure", async () => {
+    session.identity = aStaff.key;
+    const before = (await closuresIn(fixtures.a.restaurantId, addedClosureReason)).length;
+
+    expect(await statusOf(() => addClosure.call())).toBe(403);
+
+    expect(await closuresIn(fixtures.a.restaurantId, addedClosureReason)).toHaveLength(before);
+  });
+
+  it("restaurant B's closure can't be removed with B's id in the request either: a 404", async () => {
+    session.identity = aOwner.key;
+    const id = await plantClosure(fixtures.b.restaurantId);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/closures/[closureId]/delete/route")).POST(
+        request(`/api/bookings/closures/${id}/delete?restaurantId=${fixtures.b.restaurantId}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": fixtures.b.restaurantId },
+          body: form({ restaurantId: fixtures.b.restaurantId }),
+        }),
+        closureParams(id),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await closuresUnremoved(fixtures.b.restaurantId, plantedClosures.length - 1)).toBe(true);
+  });
+
+  it.each([
+    ["a date that isn't one", { startDate: "2026-02-31" }],
+    ["the year 0000", { startDate: "0000-01-01" }],
+    ["the last date there is", { startDate: "9999-12-31" }],
+    ["an end past the limit", { endDate: "9999-12-31" }],
+    ["a NUL in the reason", { reason: "a\0b" }],
+    ["a reason over 200 characters", { reason: "x".repeat(201) }],
+    ["half the times", { endTime: "" }],
+    ["no date", { startDate: "" }],
+  ])("a crafted closure (%s) is a 400, not an error, and saves nothing", async (_label, fields) => {
+    session.identity = aOwner.key;
+    const before = (await owner.db.select().from(closures).where(eq(closures.restaurantId, fixtures.a.restaurantId))).length;
+
+    const response = await addClosure.call(fields);
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toMatch(/\w/);
+    expect((await owner.db.select().from(closures).where(eq(closures.restaurantId, fixtures.a.restaurantId))).length).toBe(before);
+  });
+
+  it("a closure over a confirmed booking is a 409 that lists it by name, time and party, never a phone", async () => {
+    session.identity = aOwner.key;
+    const day = farDate(40);
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    const phone = "+263779998888";
+    await owner.db.insert(bookings).values({
+      ...aBooking(fixtures.a.restaurantId, tableId, `${day}T17:00:00Z`, `${day}T18:30:00Z`),
+      guestName: `${plantedBookingPrefix}Closure ${crypto.randomUUID()}`,
+      guestPhone: phone,
+      partySize: 3,
+    });
+
+    const response = await addClosure.call({ startDate: day, startTime: "19:00", endTime: "22:00" });
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.bookings).toHaveLength(1);
+    expect(body.bookings[0]).toMatchObject({ partySize: 3, summary: expect.stringContaining("19:00 · Harness booking Closure") });
+    expect(JSON.stringify(body)).not.toContain(phone);
+    const onThatDay = await owner.db
+      .select({ id: closures.id })
+      .from(closures)
+      .where(and(eq(closures.restaurantId, fixtures.a.restaurantId), eq(closures.startsAt, new Date(`${day}T17:00:00Z`))));
+    expect(onThatDay).toEqual([]);
+  });
+
+  it("an edit with restaurant B's id in the request still can't reach B's period", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.b.restaurantId;
+    const before = await periodStanding(fixtures.b.periodId);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/periods/[periodId]/route")).POST(
+        request(`/api/bookings/periods/${fixtures.b.periodId}?restaurantId=${id}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": id },
+          body: form({
+            name: "Hijacked",
+            opensAt: "10:00",
+            lastBookingAt: "11:00",
+            closesAt: "12:00",
+            restaurantId: id,
+          }),
+        }),
+        periodParams(fixtures.b.periodId),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await periodStanding(fixtures.b.periodId)).toEqual(before);
+  });
+});
+
 describe("public routes", () => {
   const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
 
@@ -1628,6 +2411,7 @@ describe("the example routes", () => {
       session.identity = aOwner.key;
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
+        // Nor is a blank table: on Add booking it means automatic.
         const categoryId = staffId || "not-a-uuid";
         const target = {
           ...fixtures.a,
@@ -1636,7 +2420,8 @@ describe("the example routes", () => {
           spareCategoryId: `${categoryId}-spare`,
           itemId: categoryId,
           specialId: categoryId,
-          tableId: staffId,
+          tableId: staffId || "not-a-uuid",
+          periodId: staffId,
         };
         expect(await statusOf(() => route.call(target))).toBe(404);
       }
@@ -1912,6 +2697,566 @@ describe("a platform admin inside restaurant A", () => {
   });
 });
 
+describe("the guest's confirm", () => {
+  it("needs no session", async () => {
+    session.identity = "";
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(await statusOf(() => postBooking(slug))).toBe(201);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is a 404 for an unknown slug, and for a NUL in one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => postBooking("no-such-restaurant"))).toBe(404);
+    expect(await statusOf(() => postBooking("a\0b"))).toBe(404);
+  });
+
+  it("a restaurant id in the query, headers or body can't stand in for the slug", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(
+      await statusOf(() =>
+        postBooking("no-such-restaurant", {
+          query: `?restaurantId=${restaurantId}`,
+          headers: { "x-restaurant-id": restaurantId },
+          body: guestForm({ restaurantId, restaurant_id: restaurantId }),
+        }),
+      ),
+    ).toBe(404);
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("the slug decides the tenant, not the query, the headers, the body or a session", async () => {
+    session.identity = aOwner.key;
+    const named = await bookableRestaurant(owner.db);
+    const other = await bookableRestaurant(owner.db);
+    const id = other.restaurantId;
+
+    const response = await postBooking(named.slug, {
+      query: `?restaurantId=${id}`,
+      headers: { "x-restaurant-id": id },
+      body: guestForm({ restaurantId: id, restaurant_id: id, tableId: other.tableIds[0] }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await bookingsOf(owner.db, id)).toEqual([]);
+    const [booked] = await bookingsOf(owner.db, named.restaurantId);
+    expect(booked.tableId).toBe(named.tableIds[0]);
+  });
+});
+
+describe("seat walk-in", () => {
+  const walkInPost = async (fields: Record<string, string>, path = "/api/bookings/walk-in") =>
+    (await import("@/app/api/bookings/walk-in/route")).POST(
+      request(path, { method: "POST", body: form(fields) }),
+    );
+  const walkInsAt = (tableId: string) =>
+    owner.db.select().from(bookings).where(eq(bookings.tableId, tableId));
+
+  it.each([aOwner, aStaff].map((who) => [who.key, who] as const))("%s: an owner or staff seats one in their restaurant (S-26)", async (_key, who) => {
+    session.identity = who.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await walkInPost({ tableId, party: "3" });
+
+    expect(response.status).toBeLessThan(400);
+    expect(await walkInsAt(tableId)).toEqual([
+      expect.objectContaining({ guestName: "Walk-in", status: "seated", source: "staff", partySize: 3 }),
+    ]);
+  });
+
+  it("another restaurant's table is a 404 and nothing is seated; a malformed or unknown one too", async () => {
+    session.identity = aOwner.key;
+    const theirs = await plantTable(fixtures.b.restaurantId);
+    for (const tableId of [theirs, "not-a-uuid", "", "'; drop table tables; --", "a\0b", crypto.randomUUID()]) {
+      expect(await statusOf(() => walkInPost({ tableId, party: "2" }))).toBe(404);
+    }
+    expect(await walkInsAt(theirs)).toEqual([]);
+  });
+
+  it("a restaurant id in the query, headers or body can't move it to B's table", async () => {
+    session.identity = aOwner.key;
+    const b = fixtures.b.restaurantId;
+    const theirs = await plantTable(b);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/walk-in/route")).POST(
+        request(`/api/bookings/walk-in?restaurantId=${b}&restaurant_id=${b}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": b },
+          body: form({ tableId: theirs, party: "2", restaurantId: b, restaurant_id: b }),
+        }),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await walkInsAt(theirs)).toEqual([]);
+  });
+
+  it.each(["", "0", "101", "-1", "2.5", "abc", "1e2"])("a party size of %j is a 400 and nothing is seated", async (party) => {
+    session.identity = aOwner.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => walkInPost({ tableId, party }))).toBe(400);
+    expect(await walkInsAt(tableId)).toEqual([]);
+  });
+
+  it("a second walk-in on the table is a 409 that says it is in use, and a booking soon gets the prompt", async () => {
+    session.identity = aStaff.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    await walkInPost({ tableId, party: "2" });
+
+    const again = await walkInPost({ tableId, party: "2" });
+
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/^Table .+ is in use until \d\d:\d\d\./);
+
+    const soon = await plantTable(fixtures.a.restaurantId);
+    const start = new Date(Date.now() + 20 * 60_000);
+    await owner.db.insert(bookings).values(
+      aBooking(fixtures.a.restaurantId, soon, start.toISOString(), new Date(start.getTime() + 3_600_000).toISOString()),
+    );
+    const prompt = await walkInPost({ tableId: soon, party: "2" });
+    expect(prompt.status).toBe(409);
+    expect((await prompt.json()).error).toMatch(
+      /^Table .+ has a booking at \d\d:\d\d — move that booking, or seat the walk-in elsewhere$/,
+    );
+    expect(await walkInsAt(soon)).toHaveLength(1);
+  });
+
+  it("is a 401 with no session, and seats nothing", async () => {
+    session.identity = "";
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => walkInPost({ tableId, party: "2" }))).toBe(401);
+    expect(await walkInsAt(tableId)).toEqual([]);
+  });
+});
+
+describe("the day view's actions", () => {
+  const actions = ["seat", "finish", "no-show", "cancel"] as const;
+  const from = { seat: "confirmed", finish: "seated", "no-show": "confirmed", cancel: "confirmed" } as const;
+  const standingOf = async (id: string) => {
+    const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+    return row;
+  };
+  const to = { seat: "seated", finish: "completed", "no-show": "no_show", cancel: "cancelled" } as const;
+
+  it.each(actions.flatMap((action) => [aOwner, aStaff].map((who) => [action, who.key, who] as const)))(
+    "%s: %s, an owner or staff, acts on a booking of their restaurant (S-26)",
+    async (action, _key, who) => {
+      session.identity = who.key;
+      const id = await plantBooking(fixtures.a, from[action]);
+
+      const response = await postBookingAction(action, id);
+
+      expect(response.status).toBeLessThan(400);
+      expect((await standingOf(id)).status).toBe(to[action]);
+    },
+  );
+
+  it.each(actions)("%s: a second tap is a 409 that says what the booking is now, and changes nothing more", async (action) => {
+    session.identity = aStaff.key;
+    const id = await plantBooking(fixtures.a, from[action]);
+    await postBookingAction(action, id);
+    const settled = await standingOf(id);
+
+    const response = await postBookingAction(action, id);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/already (seated|finished|marked as a no-show|cancelled)/);
+    expect(await standingOf(id)).toEqual(settled);
+  });
+
+  it.each(actions)("%s: a malformed or unknown id is a 404", async (action) => {
+    session.identity = aOwner.key;
+    for (const id of ["not-a-uuid", "", "'; drop table bookings; --", "a\0b", crypto.randomUUID()]) {
+      expect(await statusOf(() => postBookingAction(action, id))).toBe(404);
+    }
+  });
+
+  it.each(actions)("%s: a restaurant id in the query, headers or body can't move it to B's booking", async (action) => {
+    session.identity = aOwner.key;
+    const id = await plantBooking(fixtures.b, from[action]);
+    const b = fixtures.b.restaurantId;
+
+    const status = await statusOf(async () =>
+      (await bookingRoutes[action]()).POST(
+        request(`/api/bookings/${id}/${action}?restaurantId=${b}&restaurant_id=${b}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": b },
+          body: form({ restaurantId: b, restaurant_id: b }),
+        }),
+        bookingParams(id),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect((await standingOf(id)).status).toBe(from[action]);
+  });
+
+  const auditedFor = (id: string) =>
+    owner.db.select().from(auditLog).where(eq(auditLog.entityId, id));
+
+  it("only a cancel by staff is audited, and it names the person who did it", async () => {
+    session.identity = aStaff.key;
+    const ids = Object.fromEntries(
+      await Promise.all(actions.map(async (action) => [action, await plantBooking(fixtures.a, from[action])] as const)),
+    );
+
+    for (const action of actions) await postBookingAction(action, ids[action]);
+
+    expect(await auditedFor(ids.seat)).toEqual([]);
+    expect(await auditedFor(ids.finish)).toEqual([]);
+    expect(await auditedFor(ids["no-show"])).toEqual([]);
+    const [entry] = await auditedFor(ids.cancel);
+    expect(entry).toMatchObject({
+      restaurantId: fixtures.a.restaurantId,
+      actorType: "staff",
+      action: "booking.cancel",
+      entityType: "booking",
+    });
+    const [{ id: staffId }] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(and(eq(staff.restaurantId, fixtures.a.restaurantId), eq(staff.email, emailOf(aStaff.key))));
+    expect(entry.actorId).toBe(staffId);
+  });
+
+  it("is a 401 with no session, and changes nothing", async () => {
+    session.identity = "";
+    const id = await plantBooking(fixtures.a, "confirmed");
+    for (const action of actions) expect(await statusOf(() => postBookingAction(action, id))).toBe(401);
+    expect((await standingOf(id)).status).toBe("confirmed");
+  });
+});
+
+describe("staff add and move", () => {
+  const standingOf = async (id: string) => {
+    const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+    return row;
+  };
+  const nameOf = () => `${plantedBookingPrefix}${crypto.randomUUID()}`;
+  const bookedAs = (guestName: string) =>
+    owner.db.select().from(bookings).where(eq(bookings.guestName, guestName));
+
+  it.each([aOwner, aStaff])("%s: owners and staff both add a booking, as source staff, on their restaurant's table", async (who) => {
+    session.identity = who.key;
+    const guestName = nameOf();
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await postStaffBooking({ guestName, name: guestName, tableId });
+
+    expect(response.status).toBeLessThan(400);
+    expect(await bookedAs(guestName)).toEqual([
+      expect.objectContaining({ restaurantId: fixtures.a.restaurantId, tableId, source: "staff", status: "confirmed", guestPhone: null }),
+    ]);
+  });
+
+  it("a table of restaurant B is a 404 and books nothing in either restaurant", async () => {
+    session.identity = aOwner.key;
+    const guestName = nameOf();
+
+    const status = await statusOf(() => postStaffBooking({ name: guestName, tableId: fixtures.b.tableId }));
+
+    expect(status).toBe(404);
+    expect(await bookedAs(guestName)).toEqual([]);
+  });
+
+  it("a restaurant id in the query, headers or body can't send the booking to B", async () => {
+    session.identity = aOwner.key;
+    const guestName = nameOf();
+    const b = fixtures.b.restaurantId;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await postStaffBooking(
+      { name: guestName, tableId, restaurantId: b, restaurant_id: b },
+      { path: `/api/bookings?restaurantId=${b}&restaurant_id=${b}`, headers: { "x-restaurant-id": b } },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect((await bookedAs(guestName)).map((row) => row.restaurantId)).toEqual([fixtures.a.restaurantId]);
+  });
+
+  it.each([
+    ["party", { party: "0" }], ["a crafted date", { date: "2026-02-31" }], ["a date far away", { date: "9999-12-31" }],
+    ["a crafted time", { time: "25:99" }], ["a NUL in the name", { name: "a\0b" }], ["a bad phone", { phone: "x" }],
+  ])("%s is a refusal, not a 500", async (_label, fields) => {
+    session.identity = aStaff.key;
+    const status = await statusOf(() => postStaffBooking(fields));
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(status).toBeLessThan(500);
+  });
+
+  it("a taken table is a 409 with a message, not a 500", async () => {
+    session.identity = aStaff.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    expect((await postStaffBooking({ tableId })).status).toBeLessThan(400);
+
+    const second = await postStaffBooking({ tableId });
+
+    expect(second.status).toBe(409);
+    expect((await second.json()).error).toMatch(/free|taken/);
+  });
+
+  it.each([aOwner, aStaff])("%s: moves a booking, and the move is audited with who did it", async (who) => {
+    session.identity = who.key;
+    const id = await plantBooking(fixtures.a, "confirmed");
+
+    const response = await postMove(id, fixtures.a.regeneratedTableId);
+
+    expect(response.status).toBeLessThan(400);
+    expect((await standingOf(id)).tableId).toBe(fixtures.a.regeneratedTableId);
+    const [entry] = await owner.db.select().from(auditLog).where(eq(auditLog.entityId, id));
+    expect(entry).toMatchObject({ restaurantId: fixtures.a.restaurantId, actorType: "staff", action: "booking.move" });
+  });
+
+  it("A's booking can't be moved onto B's table, and B's booking can't be moved at all", async () => {
+    session.identity = aOwner.key;
+    const mine = await plantBooking(fixtures.a, "confirmed");
+    const theirs = await plantBooking(fixtures.b, "confirmed");
+
+    expect(await statusOf(() => postMove(mine, fixtures.b.regeneratedTableId))).toBe(404);
+    expect(await statusOf(() => postMove(theirs, fixtures.a.regeneratedTableId))).toBe(404);
+    expect(await statusOf(() => postMove(theirs, fixtures.b.regeneratedTableId))).toBe(404);
+
+    expect((await standingOf(mine)).tableId).toBe(fixtures.a.tableId);
+    expect((await standingOf(theirs)).tableId).toBe(fixtures.b.tableId);
+  });
+
+  it("a restaurant id in the query, headers or body can't move B's booking", async () => {
+    session.identity = aOwner.key;
+    const theirs = await plantBooking(fixtures.b, "confirmed");
+    const b = fixtures.b.restaurantId;
+
+    const status = await statusOf(() =>
+      postMove(theirs, fixtures.b.regeneratedTableId, {
+        path: `/api/bookings/${theirs}/move?restaurantId=${b}`,
+        headers: { "x-restaurant-id": b },
+      }),
+    );
+
+    expect(status).toBe(404);
+    expect((await standingOf(theirs)).tableId).toBe(fixtures.b.tableId);
+  });
+
+  it("a malformed booking or table id is a 404, a missing table a 400, and a seated booking a 409", async () => {
+    session.identity = aOwner.key;
+    const id = await plantBooking(fixtures.a, "confirmed");
+    const seated = await plantBooking(fixtures.a, "seated");
+
+    for (const bad of ["not-a-uuid", "a\0b", "'; drop table bookings; --"]) {
+      expect(await statusOf(() => postMove(bad, fixtures.a.regeneratedTableId))).toBe(404);
+      expect(await statusOf(() => postMove(id, bad))).toBe(404);
+    }
+    expect(await statusOf(() => postMove(id, ""))).toBe(400);
+    const refused = await postMove(seated, fixtures.a.regeneratedTableId);
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/already seated/);
+    expect((await standingOf(seated)).tableId).toBe(fixtures.a.tableId);
+  });
+
+  it("is a 401 with no session, and changes nothing", async () => {
+    session.identity = "";
+    const id = await plantBooking(fixtures.a, "confirmed");
+    const guestName = nameOf();
+
+    expect(await statusOf(() => postMove(id, fixtures.a.regeneratedTableId))).toBe(401);
+    expect(await statusOf(() => postStaffBooking({ name: guestName }))).toBe(401);
+
+    expect((await standingOf(id)).tableId).toBe(fixtures.a.tableId);
+    expect(await bookedAs(guestName)).toEqual([]);
+  });
+});
+
+describe("the guest's confirm: the new refusals stay inside the slug's restaurant", () => {
+  it("counts a phone's bookings at the named restaurant only, and refuses nothing for another's", async () => {
+    session.identity = "";
+    const named = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const other = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    for (const day of [3, 4]) {
+      await owner.db.insert(bookings).values({
+        ...aBooking(
+          other.restaurantId,
+          other.tableIds[0],
+          `${addDays(localToday(new Date(), "Africa/Harare"), day)}T10:00:00Z`,
+          `${addDays(localToday(new Date(), "Africa/Harare"), day)}T11:00:00Z`,
+        ),
+        guestPhone: "+263771234567",
+      });
+    }
+
+    const response = await postBooking(named.slug, {
+      query: `?restaurantId=${other.restaurantId}`,
+      headers: { "x-restaurant-id": other.restaurantId },
+      body: guestForm({ restaurantId: other.restaurantId, phone: "0771234567" }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await bookingsOf(owner.db, named.restaurantId)).toHaveLength(1);
+    expect(await bookingsOf(owner.db, other.restaurantId)).toHaveLength(2);
+  });
+
+  it("answers a large party with the named restaurant's number, never another's", async () => {
+    session.identity = "";
+    const named = await bookableRestaurant(owner.db);
+    const other = await bookableRestaurant(owner.db);
+    await owner.db
+      .update(restaurants)
+      .set({ contactPhone: "+263779999999" })
+      .where(eq(restaurants.id, other.restaurantId));
+
+    const response = await postBooking(named.slug, {
+      headers: { "x-restaurant-id": other.restaurantId },
+      body: guestForm({ party: "9", restaurantId: other.restaurantId }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(JSON.stringify(await response.json())).not.toContain("9999999");
+  });
+});
+
+describe("the guest's cancel", () => {
+  const MINUTE = 60_000;
+  /** A booking far enough ahead to cancel, on a restaurant of its own. */
+  async function booked() {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const start = new Date(Date.now() + 300 * MINUTE).toISOString();
+    const row = aBooking(restaurantId, tableIds[0], start, new Date(Date.now() + 390 * MINUTE).toISOString());
+    await owner.db.insert(bookings).values(row);
+    return { restaurantId, token: row.manageToken };
+  }
+  const statusIn = async (restaurantId: string) =>
+    (await bookingsOf(owner.db, restaurantId))[0].status;
+
+  it("needs no session", async () => {
+    session.identity = "";
+    const { restaurantId, token } = await booked();
+
+    expect(await statusOf(() => postCancel(token))).toBe(200);
+    expect(await statusIn(restaurantId)).toBe("cancelled");
+  });
+
+  it("is a 404 for an unknown token, and for a NUL in one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => postCancel("no-such-token"))).toBe(404);
+    expect(await statusOf(() => postCancel("a\0b"))).toBe(404);
+  });
+
+  it("a restaurant id in the query, headers or body can't stand in for the token", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId } = await booked();
+    const id = fixtures.a.restaurantId;
+    const body = new FormData();
+    body.set("restaurantId", id);
+    body.set("restaurant_id", id);
+
+    expect(
+      await statusOf(() =>
+        postCancel("no-such-token", {
+          query: `?restaurantId=${id}`,
+          headers: { "x-restaurant-id": id },
+          body,
+        }),
+      ),
+    ).toBe(404);
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("restaurant B's token cancels B's booking only, whoever is signed in", async () => {
+    session.identity = aOwner.key;
+    const mine = await booked();
+    const theirs = await booked();
+
+    const response = await postCancel(theirs.token, {
+      query: `?restaurantId=${mine.restaurantId}`,
+      headers: { "x-restaurant-id": mine.restaurantId },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await statusIn(theirs.restaurantId)).toBe("cancelled");
+    expect(await statusIn(mine.restaurantId)).toBe("confirmed");
+  });
+
+  it("one restaurant's token is a 404 for a booking of another's: nothing crosses", async () => {
+    session.identity = "";
+    const aBooked = await owner.db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.manageToken, fixtureManageToken("a")));
+
+    const response = await postCancel(fixtureManageToken("b"));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain("Restaurant A");
+    const [stillThere] = await owner.db
+      .select()
+      .from(bookings)
+      .where(eq(bookings.manageToken, fixtureManageToken("a")));
+    expect(stillThere).toEqual(aBooked[0]);
+    // Restore B's, which the cancel above spent.
+    await owner.db
+      .update(bookings)
+      .set({ status: "confirmed", cancelledBy: null, cancelledAt: null })
+      .where(eq(bookings.manageToken, fixtureManageToken("b")));
+  });
+});
+
+describe("the day list", () => {
+  const screen = async () => {
+    const { BookingsScreen } = await import("@/app/dashboard/bookings/bookings-screen");
+    return renderToStaticMarkup(await BookingsScreen({ searchParams: Promise.resolve({}) }));
+  };
+
+  const today = () => localToday(new Date(), "Africa/Harare");
+
+  /** A booking today on restaurant B's harness table, gone again however the test ends. */
+  async function withBookingInB(run: () => Promise<void>) {
+    const name = `Guest of B ${crypto.randomUUID()}`;
+    const row = {
+      ...aBooking(
+        fixtures.b.restaurantId,
+        fixtures.b.tableId,
+        `${today()}T10:00:00Z`,
+        `${today()}T11:00:00Z`,
+      ),
+      guestName: name,
+    };
+    await owner.db.insert(bookings).values(row);
+    try {
+      await run();
+    } finally {
+      await owner.db.delete(bookings).where(eq(bookings.guestName, name));
+    }
+    return name;
+  }
+
+  it("needs a session", async () => {
+    session.identity = "";
+    expect(await statusOf(screen)).toBe(401);
+  });
+
+  it("shows each restaurant its own bookings, to owners and staff alike", async () => {
+    let seenByB = "";
+    let seenByBStaff = "";
+    let seenByA = "";
+    const name = await withBookingInB(async () => {
+      session.identity = bOwner.key;
+      seenByB = await screen();
+      session.identity = bStaff.key;
+      seenByBStaff = await screen();
+      session.identity = aOwner.key;
+      seenByA = await screen();
+    });
+
+    expect(seenByB).toContain(name);
+    expect(seenByBStaff).toContain(name);
+    expect(seenByA).not.toContain(name);
+  });
+});
+
 describe("harness coverage", () => {
   const appDirectory = join(process.cwd(), "src", "app");
   const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -1924,6 +3269,10 @@ describe("harness coverage", () => {
   const routePath = (file: string) =>
     `/${file.split(sep).slice(0, -1).join("/")}`;
 
+  const pagesWithParams = appFiles.filter(
+    (file) => /(^|\/)page\.tsx?$/.test(file) && file.includes("["),
+  );
+
   it("every route handler in src/app is in the harness", async () => {
     const found: string[] = [];
     for (const file of appFiles.filter((file) => /(^|\/)route\.tsx?$/.test(file))) {
@@ -1934,28 +3283,32 @@ describe("harness coverage", () => {
         if (handlers[method]) found.push(`${method} ${routePath(file)}`);
       }
     }
+    found.push(...pagesWithParams.map((file) => `PAGE ${routePath(file)}`));
 
     const covered = [
       ...routes.map((route) => route.name),
       ...adminRoutes.map((route) => route.name),
       ...sessionRoutes.map((route) => route.name),
       ...publicRoutes.map((route) => route.name),
+      guestConfirm,
+      guestCancel,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
   });
 
-  it("no page takes an id and no Server Function exists that the harness doesn't know about", () => {
-    // None yet. The first one needs a way in: add a TenantRoute that calls it.
-    const pagesWithParams = appFiles.filter(
-      (file) => /(^|\/)page\.tsx?$/.test(file) && file.includes("["),
+  it("no page takes an id but a public one and no Server Function exists that the harness doesn't know about", () => {
+    // The only pages with params so far are public, in `publicRoutes`, and take a
+    // slug. The first to take an id needs a way in: add a TenantRoute that calls it.
+    const pagesWithIds = pagesWithParams.filter(
+      (file) => !publicRoutes.some((route) => route.name === `PAGE ${routePath(file)}`),
     );
     const serverFunctions = appFiles.filter(
       (file) =>
         /\.tsx?$/.test(file) &&
         readFileSync(join(appDirectory, file), "utf8").includes("use server"),
     );
-    expect([...pagesWithParams, ...serverFunctions]).toEqual([]);
+    expect([...pagesWithIds, ...serverFunctions]).toEqual([]);
   });
 
   it("only the platform-admin seam calls the privileged functions", () => {

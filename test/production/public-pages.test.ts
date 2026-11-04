@@ -5,12 +5,16 @@ import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   categories,
+  bookings,
   diningTables,
   menuItems,
   restaurants,
+  servicePeriods,
   staff,
   staffAuthRateLimit,
 } from "../../src/db/schema";
+import { addDays, localToday } from "../../src/lib/booking-engine";
+import { aBooking, bookableRestaurant, bookingsOf } from "../integration/bookings";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -272,6 +276,227 @@ describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
   });
 });
 
+/**
+ * Not one of `publicPages` above: a list of free tables must never come from a
+ * cache, so this page's rule is the opposite of theirs.
+ */
+describe("the booking page", () => {
+  const date = () => addDays(localToday(new Date(), "Africa/Harare"), 1);
+  const timesPage = (slug: string) => `${origin}/r/${slug}/book?party=2&date=${date()}`;
+
+  const book = (slug: string) => {
+    const body = new FormData();
+    for (const [key, value] of Object.entries({
+      party: "2",
+      date: date(),
+      time: "19:00",
+      name: "Production guest",
+      phone: "0771234567",
+      consent: "on",
+    })) {
+      body.set(key, value);
+    }
+    // An address of its own: the rate limit's count outlives this run, in the
+    // database, so a second run inside ten minutes would otherwise spend the first's.
+    const address = crypto.getRandomValues(new Uint8Array(3)).join(".");
+    return fetch(`${origin}/api/r/${slug}/book`, {
+      method: "POST",
+      headers: { "x-forwarded-for": `10.${address}` },
+      body,
+    });
+  };
+
+  // An App Router page sends its prerendered shell, and so its 200, before the
+  // slug can be looked up. This is the status that says so: spec 04 records it.
+  it.each(["no-such-restaurant", "a%00b"])(
+    "gives the friendly not-found page, out of search engines, for the slug %s",
+    async (slug) => {
+      const response = await fetch(`${origin}/r/${slug}/book`);
+      expect(response.status).toBe(200);
+      const page = await response.text();
+      expect(page).toContain("Restaurant not found");
+      expect(page).toContain('name="robots" content="noindex"');
+    },
+  );
+
+  it("is a page, not an error, while online booking is off", async () => {
+    const { slug } = await bookableRestaurant(owner.db, { rules: { enabled: false } });
+    const response = await fetch(`${origin}/r/${slug}/book`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("isn&#x27;t available right now");
+  });
+
+  it("shows a time until it's booked, and not one visit longer", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    expect(await (await fetch(timesPage(slug))).text()).toContain("time=19:00");
+
+    expect((await book(slug)).status).toBe(201);
+
+    expect(await (await fetch(timesPage(slug))).text()).not.toContain("time=19:00");
+  });
+
+  it("can't be taken down by a post to the page", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    await fetch(timesPage(slug), { method: "POST" });
+
+    const response = await fetch(timesPage(slug));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("time=19:00");
+  });
+
+  it("confirms over real HTTP, refuses the second, and logs neither guest", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+
+    const first = await book(slug);
+    const second = await book(slug);
+
+    expect(first.status).toBe(201);
+    const { confirmation } = await first.json();
+    expect(second.status).toBe(409);
+    expect((await second.json()).error).toContain("just booked");
+    const [booked] = await bookingsOf(owner.db, restaurantId);
+    expect(booked.guestPhone).toBe("+263771234567");
+    expect(serverOutput).not.toContain("771234567");
+    expect(serverOutput).not.toContain(confirmation.manageToken);
+  });
+
+  it("doesn't reach the database from Next.js's prerender of a new path", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    await fetch(`${origin}/r/${slug}/book`);
+    // Next.js prerenders a newly seen path after answering it.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(serverOutput).not.toContain('Route "/r/[slug]/book"');
+  });
+
+  it("refuses a post from another site", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const response = await fetch(`${origin}/api/r/${slug}/book`, {
+      method: "POST",
+      headers: { origin: "https://elsewhere.example" },
+      body: new FormData(),
+    });
+    expect(response.status).toBe(403);
+  });
+});
+
+/**
+ * A guest's manage link holds a bearer secret in its URL: nothing may store the
+ * page, nothing may pass the URL on, and only a POST may cancel.
+ */
+describe("the manage page", () => {
+  const MINUTE = 60_000;
+  async function booked(startsInMinutes = 300) {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const row = aBooking(
+      restaurantId,
+      tableIds[0],
+      new Date(Date.now() + startsInMinutes * MINUTE).toISOString(),
+      new Date(Date.now() + (startsInMinutes + 90) * MINUTE).toISOString(),
+    );
+    await owner.db.insert(bookings).values(row);
+    return { restaurantId, token: row.manageToken };
+  }
+  const statusIn = async (restaurantId: string) =>
+    (await bookingsOf(owner.db, restaurantId))[0].status;
+
+  it("is never stored by a cache, and never reaches another site in a Referer", async () => {
+    const { token } = await booked();
+
+    for (const response of [await visit(`/b/${token}`), await visit(`/b/${token}`)]) {
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("referrer-policy")).toBe("same-origin");
+      expect(response.headers.get("x-nextjs-cache")).not.toBe("HIT");
+      expect(response.headers.get("x-robots-tag")).toContain("noindex");
+    }
+  });
+
+  it("shows the booking as it is now, not as it was on the last visit", async () => {
+    const { restaurantId, token } = await booked();
+    expect(await (await visit(`/b/${token}`)).text()).toContain("Cancel booking");
+
+    await owner.db
+      .update(bookings)
+      .set({ status: "seated" })
+      .where(eq(bookings.restaurantId, restaurantId));
+
+    const after = await (await visit(`/b/${token}`)).text();
+    expect(after).not.toContain("Cancel booking");
+    expect(after).toContain("seated");
+  });
+
+  it("is a real 404, still with its headers, for an unknown token and a NUL", async () => {
+    for (const token of [`no-such-token-${crypto.randomUUID()}`, "a%00b"]) {
+      const response = await visit(`/b/${token}`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("referrer-policy")).toBe("same-origin");
+    }
+  });
+
+  it("is only read by a GET, so a link preview or a prefetch can't cancel", async () => {
+    const { restaurantId, token } = await booked();
+
+    await visit(`/b/${token}`);
+    await visit(`/b/${token}`, { method: "HEAD" });
+    await visit(`/b/${token}?cancel=1&_method=POST`);
+
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("cancels on a POST, says so the second time too, and caches neither", async () => {
+    const { restaurantId, token } = await booked();
+
+    const first = await visit(`/b/${token}`, { method: "POST" });
+    const second = await visit(`/b/${token}`, { method: "POST" });
+
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("Your booking is cancelled.");
+    expect(second.status).toBe(200);
+    expect(await second.text()).toContain("This booking was already cancelled.");
+    expect(first.headers.get("cache-control")).toBe("private, no-store");
+    expect(await statusIn(restaurantId)).toBe("cancelled");
+    expect(await (await visit(`/b/${token}`)).text()).toContain("cancelled");
+  });
+
+  it("takes the cancel a browser sends from the page, naming its own origin", async () => {
+    const { restaurantId, token } = await booked();
+
+    const response = await visit(`/b/${token}`, { method: "POST", headers: { origin } });
+
+    expect(response.status).toBe(200);
+    expect(await statusIn(restaurantId)).toBe("cancelled");
+  });
+
+  it.each(["https://elsewhere.example", "null"])(
+    "refuses a cancel from Origin %s",
+    async (from) => {
+      const { restaurantId, token } = await booked();
+
+      const response = await visit(`/b/${token}`, { method: "POST", headers: { origin: from } });
+
+      expect(response.status).toBe(403);
+      expect(await statusIn(restaurantId)).toBe("confirmed");
+    },
+  );
+
+  it("refuses a cancel inside the cutoff, on the server's own clock", async () => {
+    const { restaurantId, token } = await booked(60);
+
+    const response = await visit(`/b/${token}`, { method: "POST", headers: { "x-now": "2000-01-01" } });
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("Too late to cancel online — please call.");
+    expect(await statusIn(restaurantId)).toBe("confirmed");
+  });
+
+  it("holds no manage token in the server's output", async () => {
+    const { token } = await booked();
+    await visit(`/b/${token}`, { method: "POST" });
+    expect(serverOutput).not.toContain(token);
+  });
+});
+
 describe("archiving a table", () => {
   it("stops its printed code working at once, not when the cached page expires", async () => {
     const restaurant = await newRestaurant("Stew");
@@ -306,6 +531,65 @@ describe("archiving a table", () => {
       .where(eq(diningTables.restaurantId, mine.id));
 
     await visit(`/api/tables/${tableId}/archive`, { method: "POST", headers: { origin, cookie } });
+
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
+  });
+});
+
+describe("Book again on a table's page", () => {
+  /** What the gate asks for, so that turning booking on can succeed. */
+  async function readyForBooking(restaurantId: string) {
+    await owner.db
+      .update(restaurants)
+      .set({ contactPhone: "+263771234567" })
+      .where(eq(restaurants.id, restaurantId));
+    await owner.db.insert(servicePeriods).values({
+      restaurantId,
+      name: "Lunch",
+      weekday: 1,
+      opensAt: "12:00",
+      lastBookingAt: "14:00",
+      closesAt: "15:00",
+    });
+  }
+
+  const setBooking = (restaurant: { cookie: string }, enabled: boolean) =>
+    visit("/api/bookings/settings/enabled", {
+      method: "POST",
+      headers: { origin, cookie: restaurant.cookie },
+      body: new URLSearchParams({ enabled: String(enabled) }),
+    });
+
+  it("appears at once when booking is turned on, and goes at once when it's turned off", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const cookie = await signInAsOwnerOf(restaurant.id);
+    await readyForBooking(restaurant.id);
+    const scan = () => visit(`/t/${restaurant.qrToken}`);
+    const bookAgain = `href="/r/${restaurant.menuToken}/book"`;
+    expect(await (await scan()).text()).not.toContain("Book again");
+    expect(cacheStatus(await scan())).toBe("HIT");
+
+    const on = await setBooking({ cookie }, true);
+    expect(on.status).toBe(303);
+    const whileOn = await scan();
+    expect(cacheStatus(whileOn)).toBe("MISS");
+    expect(await whileOn.text()).toContain(bookAgain);
+
+    const off = await setBooking({ cookie }, false);
+    expect(off.status).toBe(303);
+    const whileOff = await scan();
+    expect(cacheStatus(whileOff)).toBe("MISS");
+    expect(await whileOff.text()).not.toContain("Book again");
+  });
+
+  it("leaves another restaurant's cached table page where it was", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+    await readyForBooking(mine.id);
+
+    expect((await setBooking({ cookie }, true)).status).toBe(303);
 
     expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
   });
