@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { menuItems, restaurants, specials } from "@/db/schema";
 import { optionalPrice } from "@/lib/menu";
@@ -211,7 +211,7 @@ export async function setSpecialActive(
   try {
     const saved = await withTenant(ctx, async (tx) => {
       const [live] = await tx
-        .select({ id: specials.id })
+        .select({ id: specials.id, menuItemId: specials.menuItemId })
         .from(specials)
         .innerJoin(
           menuItems,
@@ -229,6 +229,23 @@ export async function setSpecialActive(
         );
       if (!live) return false;
 
+      // D-05: a special that is over never blocks. Over ones stay active (the
+      // page already hides them), so turning another on first switches them
+      // off. If the overlap check below refuses, this rolls back with it.
+      if (active) {
+        await tx
+          .update(specials)
+          .set({ active: false })
+          .where(
+            and(
+              eq(specials.restaurantId, restaurantId),
+              eq(specials.menuItemId, live.menuItemId),
+              ne(specials.id, specialId),
+              eq(specials.active, true),
+              lte(specials.endsAt, sql`now()`),
+            ),
+          );
+      }
       await tx
         .update(specials)
         .set({ active })

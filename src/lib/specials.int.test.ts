@@ -305,6 +305,62 @@ describe("D-05, as the app answers it", () => {
     expect((await rowsOf(tenant.restaurantId)).find(({ id }) => id === first.id)?.active).toBe(false);
   });
 
+  it("turning an open-ended special back on isn't blocked by a dated one that is over", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+    await createSpecial(tenant, promotion(itemId));
+    const [open] = await rowsOf(tenant.restaurantId);
+    await setSpecialActive(tenant, open.id, false);
+    // It began long ago, so a dated special since then lies inside its span.
+    await owner.db.update(specials).set({ startsAt: at("2019-01-01T00:00:00Z") }).where(eq(specials.id, open.id));
+    // Written directly: a window that has already ended, left active as the app leaves it.
+    const [over] = await owner.db
+      .insert(specials)
+      .values({
+        restaurantId: tenant.restaurantId,
+        menuItemId: itemId,
+        specialPriceUsd: "5",
+        startsAt: at("2020-01-01T00:00:00Z"),
+        endsAt: at("2020-01-08T00:00:00Z"),
+      })
+      .returning({ id: specials.id });
+
+    expect(await setSpecialActive(tenant, open.id, true)).toBe("saved");
+
+    const rows = await rowsOf(tenant.restaurantId);
+    expect(rows.find(({ id }) => id === open.id)?.active).toBe(true);
+    // The finished one was already off the page; it is now off for good.
+    expect(rows.find(({ id }) => id === over.id)?.active).toBe(false);
+  });
+
+  it("turning one on over a live or future special still refuses, and leaves a finished one alone", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+    await createSpecial(tenant, promotion(itemId));
+    const [open] = await rowsOf(tenant.restaurantId);
+    await setSpecialActive(tenant, open.id, false);
+    await owner.db.update(specials).set({ startsAt: at("2019-01-01T00:00:00Z") }).where(eq(specials.id, open.id));
+    const [over] = await owner.db
+      .insert(specials)
+      .values({
+        restaurantId: tenant.restaurantId,
+        menuItemId: itemId,
+        specialPriceUsd: "5",
+        startsAt: at("2020-01-01T00:00:00Z"),
+        endsAt: at("2020-01-08T00:00:00Z"),
+      })
+      .returning({ id: specials.id });
+    expect(
+      await createSpecial(tenant, promotion(itemId, { startDate: "2099-01-01", endDate: "2099-01-02" })),
+    ).toBe("saved");
+
+    expect(await setSpecialActive(tenant, open.id, true)).toBe("overlap");
+
+    const rows = await rowsOf(tenant.restaurantId);
+    expect(rows.find(({ id }) => id === open.id)?.active).toBe(false);
+    expect(rows.find(({ id }) => id === over.id)?.active).toBe(true);
+  });
+
   it("an item with no end date blocks every later special until it is turned off", async () => {
     const tenant = await newRestaurant();
     const itemId = await newItem(tenant);
