@@ -125,6 +125,7 @@ describe("getPrintHeader", () => {
       name: "Mama's Kitchen",
       wifiName: "Guest",
       wifiPassword: "sadza",
+      menuToken: `tables-${tenant.restaurantId}`,
     });
   });
 });

@@ -5,7 +5,7 @@ import { getTenantContext, withTenant } from "@/lib/tenant";
 
 /**
  * Says so whenever a platform admin is inside a restaurant (spec 01), on every
- * staff page. A plain form, so leaving lands on /admin rather than refreshing a
+ * staff page except on paper: a printed sheet is for the tables, not the admin. A plain form, so leaving lands on /admin rather than refreshing a
  * page they're no longer allowed to see.
  */
 export async function ActingAsAdminBanner() {
@@ -22,7 +22,7 @@ export async function ActingAsAdminBanner() {
   return (
     <div
       role="status"
-      className="flex flex-wrap items-center justify-between gap-2 bg-primary px-4 py-2 text-sm text-primary-foreground"
+      className="flex flex-wrap print:hidden items-center justify-between gap-2 bg-primary px-4 py-2 text-sm text-primary-foreground"
     >
       <p>Acting as admin in {restaurant.name}</p>
       <form method="post" action="/api/admin/leave">
