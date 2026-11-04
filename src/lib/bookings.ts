@@ -364,7 +364,7 @@ export type ConfirmOutcome =
     }
   | { outcome: "closed" };
 
-/** The trigger in migration 0016 saying this phone is at its limit. */
+/** The trigger in migration 0017 saying this phone is at its limit. */
 const isPhoneLimit = (error: unknown) => {
   const cause = dbErrorOf(error);
   return cause?.code === "23514" && cause.constraint === "bookings_max_active_per_phone";
@@ -399,7 +399,7 @@ async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phon
  * the rate limit and the bot check before any of this.
  *
  * The per-phone count here is for the guest's message. The rule is the trigger in
- * migration 0016, which serialises per phone: two confirms for one phone can't
+ * migration 0017, which serialises per phone: two confirms for one phone can't
  * both pass, and the one that loses is answered below as if the count had caught it.
  */
 export async function confirmBooking(

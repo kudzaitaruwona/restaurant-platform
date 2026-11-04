@@ -10,7 +10,7 @@ import { openOwnerDatabase, openTestDatabase } from "../../test/integration/data
 import { bookings } from "./schema";
 
 /**
- * The per-phone limit is a trigger (migration 0016), because counting first and
+ * The per-phone limit is a trigger (migration 0017), because counting first and
  * inserting after is a race. Rows go straight at Postgres as app_tenant.
  */
 const app = openTestDatabase();
