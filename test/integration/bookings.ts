@@ -46,19 +46,15 @@ export async function bookableRestaurant(
     contactPhone: "+263771234567",
     timezone,
   });
-  const tableIds = await Promise.all(
-    tables.map(async ({ label, ...table }, index) => {
-      const id = crypto.randomUUID();
-      await owner.insert(diningTables).values({
-        id,
-        restaurantId,
-        label: label ?? `T${index + 1}`,
-        qrToken: token(),
-        ...table,
-      });
-      return id;
-    }),
-  );
+  const rows = tables.map(({ label, ...table }, index) => ({
+    id: crypto.randomUUID(),
+    restaurantId,
+    label: label ?? `T${index + 1}`,
+    qrToken: token(),
+    ...table,
+  }));
+  const tableIds = rows.map(({ id }) => id);
+  if (rows.length > 0) await owner.insert(diningTables).values(rows);
   await owner.insert(servicePeriods).values(
     [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
       restaurantId,

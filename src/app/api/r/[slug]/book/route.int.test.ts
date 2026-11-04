@@ -108,6 +108,27 @@ describe("POST /api/r/[slug]/book", () => {
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
 
+  it("saves nothing for a native form post before the script has run", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    // What the browser sends with no script: the visible fields only, no
+    // party, date or time (the script adds those).
+    const body = new URLSearchParams({
+      name: "Tariro",
+      countryCode: "+263",
+      phone: "0771234567",
+      note: "",
+      consent: "on",
+    });
+
+    const response = await POST(
+      new Request("http://localhost/x", { method: "POST", body }),
+      { params: Promise.resolve({ slug }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+  });
+
   it("is a refusal, not a 500, for a NUL in what the guest typed", async () => {
     const { slug } = await bookableRestaurant(owner.db);
 

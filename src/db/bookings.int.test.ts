@@ -139,9 +139,20 @@ describe("a booking's rows", () => {
     ["a note over 200 characters", "bookings_guest_note_length", { guestNote: "x".repeat(201) }],
     ["an end before the start", "bookings_times_ordered", { endsAt: new Date("2026-11-06T16:00:00Z") }],
     ["a hold that ends before the sitting", "bookings_times_ordered", { endsAt: new Date("2026-11-06T19:30:00Z") }],
+    [
+      "a hold over 16 hours",
+      "bookings_hold_capped",
+      { endsAt: new Date("2026-11-07T09:01:00Z"), holdEndsAt: new Date("2026-11-07T09:01:00Z") },
+    ],
     ["a short manage token", "bookings_manage_token_shape", { manageToken: "short" }],
   ])("refuses %s", async (_what, constraint, change) => {
     await refused(constraint, change);
+  });
+
+  it("takes a hold of exactly 16 hours, the longest the availability read looks back for", async () => {
+    const { restaurantId, tableIds: [tableId] } = await bookableRestaurant(owner.db);
+    await insert(aBooking(restaurantId, tableId, SEVEN, "2026-11-07T09:00:00Z"));
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
   });
 
   it("takes a null phone, as a walk-in has", async () => {

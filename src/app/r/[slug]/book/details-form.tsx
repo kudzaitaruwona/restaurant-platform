@@ -1,9 +1,14 @@
 "use client";
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useState, useSyncExternalStore } from "react";
 import { Field, inputClassName } from "@/app/dashboard/field";
 import type { Confirmation, TimeChoice } from "@/lib/bookings";
 import { postForm } from "@/lib/form-response";
+
+const noSubscription = () => () => {};
+/** False in the server's markup and until the browser has hydrated the form. */
+const useHydrated = () =>
+  useSyncExternalStore(noSubscription, () => true, () => false);
 
 /**
  * The details step and what follows it. A refusal shows here with everything the
@@ -27,6 +32,11 @@ export function DetailsForm({
   const [refusal, setRefusal] = useState<{ error: string; times?: TimeChoice[] }>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [pending, setPending] = useState(false);
+  // Until the script is running, a submit would be a native post and the guest
+  // would see raw JSON. The post is safe (method and action below: nothing goes in
+  // a URL, and without party, date and time the route stores nothing), but a
+  // disabled button spares them the JSON.
+  const hydrated = useHydrated();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,7 +61,7 @@ export function DetailsForm({
   if (confirmation) return <Confirmed confirmation={confirmation} />;
 
   return (
-    <form onSubmit={submit}>
+    <form method="post" action={action} onSubmit={submit}>
       <fieldset disabled={pending} className="flex flex-col gap-3">
         <legend className="mb-3 text-sm font-medium">
           Table for {party} on {dateLabel} at {time}
@@ -89,6 +99,7 @@ export function DetailsForm({
         </label>
         <button
           type="submit"
+          disabled={!hydrated}
           className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
         >
           Confirm booking
@@ -121,7 +132,7 @@ export function DetailsForm({
   );
 }
 
-function Confirmed({ confirmation }: { confirmation: Confirmation }) {
+export function Confirmed({ confirmation }: { confirmation: Confirmation }) {
   const { restaurantName, dateLabel, time, party, manageToken, contactPhone } = confirmation;
   return (
     <section role="status" className="flex flex-col gap-2">

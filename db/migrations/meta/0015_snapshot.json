@@ -1053,6 +1053,10 @@
           "name": "bookings_times_ordered",
           "value": "\"bookings\".\"starts_at\" < \"bookings\".\"ends_at\" and \"bookings\".\"ends_at\" <= \"bookings\".\"hold_ends_at\""
         },
+        "bookings_hold_capped": {
+          "name": "bookings_hold_capped",
+          "value": "\"bookings\".\"hold_ends_at\" - \"bookings\".\"starts_at\" <= interval '960 minutes'"
+        },
         "bookings_manage_token_shape": {
           "name": "bookings_manage_token_shape",
           "value": "\"bookings\".\"manage_token\" ~ '^[0-9A-Za-z]{22,}$'"

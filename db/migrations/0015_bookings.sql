@@ -26,6 +26,7 @@ CREATE TABLE "bookings" (
 	CONSTRAINT "bookings_party_size_positive" CHECK ("bookings"."party_size" > 0),
 	CONSTRAINT "bookings_guest_note_length" CHECK (length("bookings"."guest_note") <= 200),
 	CONSTRAINT "bookings_times_ordered" CHECK ("bookings"."starts_at" < "bookings"."ends_at" and "bookings"."ends_at" <= "bookings"."hold_ends_at"),
+	CONSTRAINT "bookings_hold_capped" CHECK ("bookings"."hold_ends_at" - "bookings"."starts_at" <= interval '960 minutes'),
 	CONSTRAINT "bookings_manage_token_shape" CHECK ("bookings"."manage_token" ~ '^[0-9A-Za-z]{22,}$')
 );
 --> statement-breakpoint

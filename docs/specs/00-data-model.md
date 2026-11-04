@@ -201,6 +201,7 @@ bookings
   created_at
 
   CHECK (starts_at < ends_at AND ends_at <= hold_ends_at)
+  CHECK (hold_ends_at - starts_at <= interval '960 minutes')  -- largest sitting 720 + largest buffer 240 (booking_settings' CHECKs); the availability read relies on it
 
   -- THE double-booking guard (requires btree_gist):
   EXCLUDE USING gist (

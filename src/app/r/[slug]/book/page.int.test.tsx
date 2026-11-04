@@ -10,6 +10,7 @@ import {
 } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
 import Page from "./page";
+import { Confirmed } from "./details-form";
 
 // Only a real request has a connection to wait for.
 vi.mock("next/server", async (original) => ({
@@ -133,6 +134,22 @@ describe("the booking page", () => {
     expect(field("note")).not.toContain("required");
   });
 
+  it("posts to the route, never gets, so nothing typed can reach a URL before the script runs", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+
+    const page = await render(slug, { party: "2", date: tomorrow(), time: "19:00" });
+
+    // The details form, not the party-and-date one above it, which is meant to be a GET.
+    const form = [...page.matchAll(/<form[^>]*>/g)]
+      .map((match) => match[0])
+      .find((tag) => tag.includes("/api/r/"));
+    expect(form).toContain('method="post"');
+    expect(form).toContain(`action="/api/r/${slug}/book"`);
+    // And the button waits for the script, so a guest isn't sent to raw JSON.
+    const submit = [...page.matchAll(/<button[^>]*type="submit"[^>]*>/g)].map((match) => match[0]);
+    expect(submit.at(-1)).toContain("disabled");
+  });
+
   it("doesn't ask for details for a time that can't be seated", async () => {
     const { slug } = await bookableRestaurant(owner.db);
 
@@ -149,5 +166,34 @@ describe("the booking page", () => {
 
     expect(page).toContain(mine.restaurantId);
     expect(page).not.toContain(theirs.restaurantId);
+  });
+});
+
+describe("the confirmation", () => {
+  const confirmation = {
+    restaurantName: "Mbira Kitchen",
+    dateLabel: "Fri 6 Nov",
+    time: "19:00",
+    party: 4,
+    manageToken: "AbCdEfGhIjKlMnOpQrStUv",
+    contactPhone: "+263771234567",
+  };
+
+  it("shows restaurant, date, time and party, the cancel link and the contact number", () => {
+    const html = renderToStaticMarkup(<Confirmed confirmation={confirmation} />);
+
+    expect(html).toContain("Mbira Kitchen, Fri 6 Nov at 19:00, party of 4");
+    expect(html).toMatch(/<a[^>]*href="\/b\/AbCdEfGhIjKlMnOpQrStUv"[^>]*>Cancel booking<\/a>/);
+    expect(html).toContain('href="tel:+263771234567"');
+  });
+
+  it("leaves the phone line out when the restaurant has none, and never shows a table", () => {
+    const html = renderToStaticMarkup(
+      <Confirmed confirmation={{ ...confirmation, contactPhone: null }} />,
+    );
+
+    expect(html).not.toContain("tel:");
+    expect(html).toContain("Cancel booking");
+    expect(html.toLowerCase()).not.toContain("table");
   });
 });

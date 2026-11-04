@@ -44,9 +44,12 @@ const choices = (times: readonly AvailableTime[]): TimeChoice[] =>
  * Longest possible hold: bounded by booking_settings' CHECKs (sitting 720, buffer
  * 240). A booking from the night before can still reach into a date's first slot,
  * and a slot's hold into the next date's bookings, so a date's holds are read by
- * overlap with this wider window, never by the date they start on.
+ * overlap with this wider window, never by the date they start on. The read also
+ * stops looking back at MAX_HOLD_MS before the date, so it doesn't scan a
+ * restaurant's whole history; bookings_hold_capped (migration 0015) is what makes
+ * that safe: no hold can be longer, however a booking is made.
  */
-const MAX_HOLD_MS = (720 + 240) * 60_000;
+export const MAX_HOLD_MS = (720 + 240) * 60_000;
 
 /** Everything about the restaurant the engine needs, bar the bookings. */
 async function readRules(tx: TenantTransaction, { restaurantId }: Tenant) {
@@ -116,6 +119,7 @@ async function timesOn(
     .where(
       and(
         eq(bookings.restaurantId, restaurantId),
+        gt(bookings.startsAt, new Date(dayStarts.getTime() - MAX_HOLD_MS)),
         lt(bookings.startsAt, new Date(dayEnds.getTime() + MAX_HOLD_MS)),
         gt(bookings.holdEndsAt, dayStarts),
       ),

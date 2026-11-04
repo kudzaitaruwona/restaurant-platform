@@ -1,6 +1,7 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { bookings, bookingSettings, diningTables } from "@/db/schema";
+import { bookings, bookingSettings, diningTables, servicePeriods } from "@/db/schema";
+import { settingFields } from "@/lib/booking-settings";
 import {
   aBooking,
   asTenant,
@@ -18,6 +19,7 @@ import {
   getBookingPage,
   type GuestRequest,
   listTodaysBookings,
+  MAX_HOLD_MS,
   parseGuestRequest,
 } from "./bookings";
 
@@ -556,21 +558,60 @@ describe("the list and confirm agree", () => {
       await owner.db
         .update(bookings)
         .set({ status: "cancelled" })
-        .where(eq(bookings.guestName, "Tariro"));
+        .where(and(eq(bookings.restaurantId, restaurantId), eq(bookings.guestName, "Tariro")));
     }
   });
 
   it("sees a booking from the night before that reaches into the first slot", async () => {
     const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
     await owner.db.update(bookingSettings).set({ maxDaysAhead: 5 }).where(eq(bookingSettings.restaurantId, restaurantId));
-    // Starts on the 5th in Harare, runs well past 18:00 on the 6th.
+    await owner.db
+      .update(servicePeriods)
+      .set({ opensAt: "12:00", lastBookingAt: "15:00" })
+      .where(eq(servicePeriods.restaurantId, restaurantId));
+    // Starts at 23:00 on the 5th in Harare and holds for 15 hours, to 14:00 on the
+    // 6th: the date's first slots, 12:00 to 13:30, are inside it.
     await owner.db
       .insert(bookings)
-      .values(aBooking(restaurantId, tableIds[0], "2026-11-05T21:00:00Z", "2026-11-06T16:45:00Z"));
+      .values(aBooking(restaurantId, tableIds[0], "2026-11-05T21:00:00Z", "2026-11-06T12:00:00Z"));
 
     const page = await getBookingPage({ restaurantId }, { party: "2", date }, now);
 
-    expect(page.times?.map((slot) => slot.time)).toEqual(["19:00", "19:30", "20:00", "20:30", "21:00"]);
+    expect(page.times?.map((slot) => slot.time)).toEqual(["14:00", "14:30", "15:00"]);
+  });
+
+  it("sees the longest hold there can be, started 15 hours before the date, into its first slot", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    await owner.db
+      .update(servicePeriods)
+      .set({ opensAt: "00:00", lastBookingAt: "02:00" })
+      .where(eq(servicePeriods.restaurantId, restaurantId));
+    // 09:00 on the 5th in Harare, 16 hours: the hold ends at 01:00 on the 6th.
+    await owner.db
+      .insert(bookings)
+      .values(aBooking(restaurantId, tableIds[0], "2026-11-05T07:00:00Z", "2026-11-05T23:00:00Z"));
+
+    const page = await getBookingPage({ restaurantId }, { party: "2", date }, now);
+
+    expect(page.times?.map((slot) => slot.time)).toEqual(["01:00", "01:30", "02:00"]);
+  });
+
+  it("looks back exactly as far as the longest hold the settings and the database allow", () => {
+    const max = (key: string) => settingFields.find((field) => field.key === key)!.max;
+    expect(MAX_HOLD_MS).toBe(
+      (Math.max(max("sittingMinutes"), max("largePartySittingMinutes")) + max("bufferMinutes")) *
+        60_000,
+    );
+  });
+
+  it("is told by the database no hold is longer than that look-back", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select pg_get_constraintdef(oid) as definition from pg_constraint
+      where conname = 'bookings_hold_capped'
+    `);
+    // Postgres prints the 960 minutes as '16:00:00'::interval.
+    const hours = /'(\d+):00:00'::interval/.exec(String(rows[0]?.definition))?.[1];
+    expect(Number(hours) * 3_600_000).toBe(MAX_HOLD_MS);
   });
 
   it("sees a booking on the next date that a late slot's hold would reach", async () => {

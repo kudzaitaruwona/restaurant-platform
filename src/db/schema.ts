@@ -492,6 +492,10 @@ export const bookings = pgTable(
       "bookings_times_ordered",
       sql`${table.startsAt} < ${table.endsAt} and ${table.endsAt} <= ${table.holdEndsAt}`,
     ),
+    // The availability read looks back only this far for a hold that reaches into
+    // a date (MAX_HOLD_MS in lib/bookings.ts: the largest sitting plus the largest
+    // buffer, 720 + 240 minutes). The cap keeps that bound from hiding a hold.
+    check("bookings_hold_capped", sql`${table.holdEndsAt} - ${table.startsAt} <= interval '960 minutes'`),
     // The same 131 bits as a table's QR token, for the same reason.
     check("bookings_manage_token_shape", sql`${table.manageToken} ~ '^[0-9A-Za-z]{22,}$'`),
     tenantPolicy("restaurant_id"),
