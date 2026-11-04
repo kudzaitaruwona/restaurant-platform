@@ -4,10 +4,12 @@ import { z } from "zod";
  * Environment variables, validated with zod.
  *
  * Required: what the app needs to serve any request today (database, public
- * URL, photo storage). Optional: variables owned by later tickets (auth,
- * WhatsApp, Turnstile, the scheduled job) and the migration/system database
- * URLs, which only scripts and specific routes load. A later ticket that
- * starts depending on one of them makes it required here.
+ * URL, photo storage). Required in production: sign-in, which development can
+ * do without (it has the dev bypass, and prints emails to the console).
+ * Optional: variables owned by later tickets (WhatsApp, Turnstile, the
+ * scheduled job) and the migration/system database URLs, which only scripts and
+ * specific routes load. A later ticket that starts depending on one of them
+ * makes it required here.
  *
  * An empty value (`KEY=` in a .env file) counts as unset.
  */
@@ -75,10 +77,15 @@ const configShape = {
   // S-25: returns a seeded identity instead of a login. Refused in production.
   DEV_AUTH_BYPASS: optional(text()),
 
-  // Staff auth (Better Auth, implemented last per S-25).
-  AUTH_SECRET: optional(text()),
+  // Staff and platform-admin sign-in (S-27). Signs the session cookies.
+  AUTH_SECRET: optional(
+    text().min(32, { error: "must be at least 32 characters" }),
+  ),
   GOOGLE_CLIENT_ID: optional(text()),
   GOOGLE_CLIENT_SECRET: optional(text()),
+  // Sends the magic links and sign-in codes (D-09, proposed).
+  RESEND_API_KEY: optional(text()),
+  EMAIL_FROM: optional(text()),
 
   NEXT_PUBLIC_APP_URL: required(httpUrl()),
 
@@ -105,6 +112,14 @@ const configShape = {
 
 const developmentOnlyKeys = ["DEV_AUTH_BYPASS", "NEON_WS_PROXY"] as const;
 
+const productionOnlyKeys = [
+  "AUTH_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "RESEND_API_KEY",
+  "EMAIL_FROM",
+] as const;
+
 export const envSchema = z
   .object({
     ...configShape,
@@ -120,6 +135,14 @@ export const envSchema = z
         code: "custom",
         path: [key],
         message: "must not be set in production",
+      });
+    }
+    for (const key of productionOnlyKeys) {
+      if (env[key] !== undefined) continue;
+      context.addIssue({
+        code: "custom",
+        path: [key],
+        message: "is required in production",
       });
     }
   });

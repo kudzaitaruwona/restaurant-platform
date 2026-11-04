@@ -11,6 +11,15 @@ const valid = {
   R2_PUBLIC_BASE_URL: "https://images.example.test",
 };
 
+// Sign-in has to work in production, so production can't start without these.
+const auth = {
+  AUTH_SECRET: "a-secret-of-at-least-thirty-two-characters",
+  GOOGLE_CLIENT_ID: "client-id",
+  GOOGLE_CLIENT_SECRET: "client-secret",
+  RESEND_API_KEY: "re_key",
+  EMAIL_FROM: "Sign-in <sign-in@example.test>",
+};
+
 function errorFrom(source: Record<string, string | undefined>) {
   try {
     parseEnv(source);
@@ -118,7 +127,7 @@ describe("parseEnv", () => {
     ["VERCEL_ENV=production", { VERCEL_ENV: "production" }],
   ])("with %s", (_name, production) => {
     it("refuses DEV_AUTH_BYPASS (S-25)", () => {
-      const error = errorFrom({ ...valid, ...production, DEV_AUTH_BYPASS: "1" });
+      const error = errorFrom({ ...valid, ...auth, ...production, DEV_AUTH_BYPASS: "1" });
       expect(error.message).toMatch(/DEV_AUTH_BYPASS must not be set in production/);
     });
 
@@ -138,9 +147,39 @@ describe("parseEnv", () => {
 
     it("accepts both left blank", () => {
       expect(() =>
-        parseEnv({ ...valid, ...production, DEV_AUTH_BYPASS: "", NEON_WS_PROXY: "" }),
+        parseEnv({ ...valid, ...auth, ...production, DEV_AUTH_BYPASS: "", NEON_WS_PROXY: "" }),
       ).not.toThrow();
     });
+  });
+
+  describe.each([
+    ["NODE_ENV=production", { NODE_ENV: "production" }],
+    ["VERCEL_ENV=production", { VERCEL_ENV: "production" }],
+    ["a Vercel preview", { NODE_ENV: "production", VERCEL_ENV: "preview" }],
+  ])("sign-in with %s", (_name, production) => {
+    it.each(Object.keys(auth))("refuses to run without %s", (key) => {
+      const error = errorFrom({ ...valid, ...auth, ...production, [key]: "" });
+      expect(error.message).toContain(`${key} is required in production`);
+    });
+
+    it("names everything missing at once", () => {
+      const error = errorFrom({ ...valid, ...production });
+      for (const key of Object.keys(auth)) expect(error.message).toContain(key);
+    });
+
+    it("accepts a complete environment", () => {
+      expect(() => parseEnv({ ...valid, ...auth, ...production })).not.toThrow();
+    });
+  });
+
+  it("doesn't echo the auth secret back", () => {
+    const error = errorFrom({ ...valid, AUTH_SECRET: "too-short-to-be-safe" });
+    expect(error.message).toMatch(/AUTH_SECRET must be at least 32 characters/);
+    expect(error.message).not.toContain("too-short-to-be-safe");
+  });
+
+  it("doesn't need sign-in configured outside production", () => {
+    expect(() => parseEnv(valid)).not.toThrow();
   });
 
   it("allows DEV_AUTH_BYPASS and NEON_WS_PROXY outside production", () => {

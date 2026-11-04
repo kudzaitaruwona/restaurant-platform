@@ -1,10 +1,13 @@
 import "server-only";
+import { cache } from "react";
 import { and, eq, sql } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
 import { getDb } from "@/db";
 import type { Database } from "@/db/client";
 import { staff } from "@/db/schema";
+import { sessionEmail } from "@/lib/auth";
+import { findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
 import {
   defaultDevIdentity,
@@ -45,11 +48,19 @@ export function withTenant<T>(
 }
 
 /**
- * Who is signed in. Real login (ticket 1.6) replaces this function and nothing
- * else. Until then, the only identities are the dev bypass's.
+ * Who the real session says this is. findStaffIdentity runs on every request,
+ * not just at sign-in, so deactivating someone logs them out on their next one.
  */
+async function sessionIdentity() {
+  // First, because reading headers is what keeps pages that call this out of
+  // `next build`, which has no secrets to build a session with.
+  const requestHeaders = await headers();
+  const email = await sessionEmail("staff", requestHeaders);
+  return email ? findStaffIdentity(email) : undefined;
+}
+
+/** The dev bypass's identity (S-25). `next build` compiles this out of production. */
 async function currentIdentity() {
-  if (!devAuthBypassEnabled()) return undefined;
   const chosen = (await cookies()).get(DEV_IDENTITY_COOKIE);
   return chosen ? findDevIdentity(chosen.value) : defaultDevIdentity;
 }
@@ -59,7 +70,13 @@ async function currentIdentity() {
  * never from request input. Ends the request with a 401 for anyone without an
  * active staff record.
  */
-export async function getTenantContext(): Promise<TenantContext> {
+export const getTenantContext = cache(async (): Promise<TenantContext> => {
+  if (!devAuthBypassEnabled()) {
+    const member = await sessionIdentity();
+    if (!member) unauthorized();
+    return member;
+  }
+
   const identity = await currentIdentity();
   if (!identity) unauthorized();
 
@@ -79,7 +96,7 @@ export async function getTenantContext(): Promise<TenantContext> {
   if (!member) unauthorized();
 
   return { restaurantId, staffId, role: member.role };
-}
+});
 
 /** Guards owner-only actions (S-26). RLS is tenant-only, so roles live here. */
 export function requireOwner(ctx: TenantContext) {

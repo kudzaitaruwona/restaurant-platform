@@ -30,7 +30,7 @@ restaurants
 staff
   id, restaurant_id → restaurants
   kind                  enum(staff, platform_admin) default 'staff'
-  email                 text unique null     -- global, used for sign-in; null for platform_admin rows
+  email                 text unique null     -- global and case-insensitive (S-28), used for sign-in; null for platform_admin rows
   -- S-27: passwordless sign-in (magic link, email code, Google). No password column.
   CHECK (kind = 'platform_admin' OR email IS NOT NULL)
   -- platform_admin rows never count toward the soft limit, which counts owner logins only (S-26)
@@ -43,7 +43,7 @@ staff
   created_at
 
 platform_admins                               -- Kudzai, for hand-onboarding
-  id, email unique, created_at                -- passwordless sign-in (S-27)
+  id, email unique, created_at                -- case-insensitive; passwordless sign-in (S-27)
 
 audit_log
   id, restaurant_id
