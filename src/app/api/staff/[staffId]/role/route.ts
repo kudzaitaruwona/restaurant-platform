@@ -17,5 +17,8 @@ export async function POST(
     return Response.json({ error: role.message }, { status: 400 });
   }
 
-  return staffChangeResponse(await changeStaffRole(tenant, staffId, role.data));
+  return staffChangeResponse(
+    await changeStaffRole(tenant, staffId, role.data),
+    request,
+  );
 }

@@ -5,12 +5,12 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Deactivates a colleague, from /dashboard/staff. Owner only (S-26). */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   context: RouteContext<"/api/staff/[staffId]/deactivate">,
 ) {
   const tenant = await getTenantContext();
   requireOwner(tenant);
   const staffId = await staffIdFrom(context.params);
 
-  return staffChangeResponse(await deactivateStaff(tenant, staffId));
+  return staffChangeResponse(await deactivateStaff(tenant, staffId), request);
 }

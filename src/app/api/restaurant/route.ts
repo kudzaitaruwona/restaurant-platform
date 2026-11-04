@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { formSaved } from "@/lib/form-response";
 import {
   parseRestaurantSettings,
   updateRestaurantSettings,
@@ -19,8 +20,5 @@ export async function POST(request: NextRequest) {
 
   await updateRestaurantSettings(tenant, settings.data);
 
-  return new Response(null, {
-    status: 303,
-    headers: { Location: "/dashboard/settings" },
-  });
+  return formSaved(request, "/dashboard/settings");
 }

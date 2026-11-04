@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useState } from "react";
+import { postForm } from "@/lib/form-response";
 
 /**
  * A form that posts to a route handler and shows the refusal in place, keeping
@@ -37,7 +38,7 @@ export function ActionForm({
     setError(undefined);
     setSaved(false);
     try {
-      const response = await fetch(action, { method: "POST", body });
+      const response = await postForm(action, body);
       if (response.ok) {
         if (resetOnSuccess) form.reset();
         setSaved(true);

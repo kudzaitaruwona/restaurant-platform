@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { formSaved } from "@/lib/form-response";
 import { addStaff, parseNewStaff } from "@/lib/staff-management";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
@@ -22,8 +23,5 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return new Response(null, {
-    status: 303,
-    headers: { Location: "/dashboard/staff" },
-  });
+  return formSaved(request, "/dashboard/staff");
 }

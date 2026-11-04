@@ -1,6 +1,7 @@
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FORM_FETCH_HEADER } from "./lib/form-response";
 import { config, proxy } from "./proxy";
 
 const request = (
@@ -53,6 +54,26 @@ describe("cross-site writes (S-30)", () => {
       request(path, { method: "POST", headers: { origin: "https://evil.example.test" } }),
     );
     expect(response.status).toBe(403);
+  });
+
+  it("isn't talked out of it by the header ActionForm sends", () => {
+    const response = proxy(
+      request("/api/staff", {
+        method: "POST",
+        headers: { origin: "https://evil.example.test", [FORM_FETCH_HEADER]: "1" },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("lets ActionForm's own post through", () => {
+    const response = proxy(
+      request("/api/staff", {
+        method: "POST",
+        headers: { origin: "http://app.example.test", [FORM_FETCH_HEADER]: "1" },
+      }),
+    );
+    expect(response.status).toBe(200);
   });
 
   it("refuses a sibling subdomain, which SameSite doesn't stop", () => {

@@ -7,6 +7,7 @@ import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
 import { restaurants, staff } from "@/db/schema";
+import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
   openOwnerDatabase,
@@ -68,10 +69,18 @@ beforeEach(async () => {
   session.tenant = tenant;
 });
 
-const post = (path: string, fields: Record<string, string> = {}) => {
+const post = (
+  path: string,
+  fields: Record<string, string> = {},
+  headers: Record<string, string> = {},
+) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
-  return new NextRequest(new URL(path, "http://localhost:3000"), { method: "POST", body });
+  return new NextRequest(new URL(path, "http://localhost:3000"), {
+    method: "POST",
+    body,
+    headers,
+  });
 };
 
 const params = (staffId: string) => ({ params: Promise.resolve({ staffId }) });
@@ -93,6 +102,76 @@ const settings = {
   currencyMode: "usd_only",
   timezone: "Africa/Harare",
 };
+
+describe("how a saved form is answered", () => {
+  const madeBy = {
+    plainPost: {},
+    actionForm: { [FORM_FETCH_HEADER]: "1" },
+  };
+
+  /** Each route on a colleague of its own, since a change can't be made twice. */
+  const colleague = async () => {
+    const person = newPerson("staff");
+    await addStaff(post("/api/staff", person));
+    const [{ id }] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(eq(staff.email, person.email));
+    return id;
+  };
+
+  const routes: [string, string, (headers: Record<string, string>) => Promise<Response>][] = [
+    [
+      "POST /api/restaurant",
+      "/dashboard/settings",
+      (headers) => saveSettings(post("/api/restaurant", settings, headers)),
+    ],
+    [
+      "POST /api/staff",
+      "/dashboard/staff",
+      (headers) => addStaff(post("/api/staff", newPerson("staff"), headers)),
+    ],
+    [
+      "POST /api/staff/[staffId]/role",
+      "/dashboard/staff",
+      async (headers) => {
+        const id = await colleague();
+        return changeRole(
+          post(`/api/staff/${id}/role`, { role: "owner" }, headers),
+          params(id),
+        );
+      },
+    ],
+    [
+      "POST /api/staff/[staffId]/deactivate",
+      "/dashboard/staff",
+      async (headers) => {
+        const id = await colleague();
+        return deactivate(post(`/api/staff/${id}/deactivate`, {}, headers), params(id));
+      },
+    ],
+  ];
+
+  it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
+    const response = await send(madeBy.plainPost);
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(page);
+  });
+
+  it.each(routes)("%s tells the form without a redirect", async (_route, _page, send) => {
+    const response = await send(madeBy.actionForm);
+    expect(response.status).toBe(204);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("still refuses a bad form with its reason", async () => {
+    const response = await saveSettings(
+      post("/api/restaurant", { ...settings, timezone: "Mars/Olympus" }, madeBy.actionForm),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expect.any(String) });
+  });
+});
 
 describe("/dashboard/staff", () => {
   it("lists the team with what an owner can do to each member", async () => {
