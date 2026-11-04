@@ -1,6 +1,13 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { adminAuthUser, platformAdmins, staff, staffAuthUser } from "@/db/schema";
+import {
+  adminAuthRateLimit,
+  adminAuthUser,
+  platformAdmins,
+  staff,
+  staffAuthRateLimit,
+  staffAuthUser,
+} from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { postAuth } from "../../../test/integration/auth";
 import {
@@ -34,7 +41,16 @@ const people = {
 
 let services: ReturnType<typeof installFakeServices>;
 
+// The limiter is on in this file, in the database, keyed by IP and path, with
+// a window of a minute. Rows left by an earlier run would refuse this one, and
+// no other file runs with the limiter on, so these tables are this file's to empty.
+const clearLimiter = async () => {
+  await owner.db.delete(staffAuthRateLimit);
+  await owner.db.delete(adminAuthRateLimit);
+};
+
 beforeAll(async () => {
+  await clearLimiter();
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
   vi.stubEnv("DEV_AUTH_BYPASS", "");
   services = installFakeServices();
@@ -52,6 +68,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await clearLimiter();
   await owner.db.delete(staffAuthUser).where(eq(staffAuthUser.email, people.staff));
   await owner.db.delete(adminAuthUser).where(eq(adminAuthUser.email, people.admin));
   await owner.db.delete(staff).where(eq(staff.email, people.staff));
