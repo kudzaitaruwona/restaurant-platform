@@ -35,7 +35,7 @@ staff
   email                 text unique null     -- global and case-insensitive (S-30), used for sign-in; null for platform_admin rows
   -- S-27: passwordless sign-in (magic link, email code, Google). No password column.
   CHECK (kind = 'platform_admin' OR email IS NOT NULL)
-  CHECK (kind = 'staff' OR (email IS NULL AND role = 'owner' AND active))   -- S-28
+  CHECK (kind = 'staff' OR (email IS NULL AND role = 'owner' AND active))   -- S-28; `AND active` (proposed)
   UNIQUE (restaurant_id) WHERE kind = 'platform_admin'                      -- S-28: one shadow row each
   -- platform_admin rows never count toward the soft limit, which counts owner logins only (S-26)
   display_name          text                 -- appears in the audit log

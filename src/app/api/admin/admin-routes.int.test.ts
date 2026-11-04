@@ -64,6 +64,17 @@ async function createOwner(restaurantId: string, fields: Record<string, string>)
   });
 }
 
+async function enter(restaurantId: string) {
+  const { POST } = await import("./restaurants/[restaurantId]/enter/route");
+  return POST(
+    new NextRequest(
+      new URL(`/api/admin/restaurants/${restaurantId}/enter`, "http://localhost:3000"),
+      { method: "POST" },
+    ),
+    { params: Promise.resolve({ restaurantId }) },
+  );
+}
+
 const restaurantRow = async (id: string) =>
   (await owner.db.select().from(restaurants).where(eq(restaurants.id, id)))[0];
 
@@ -287,6 +298,19 @@ describe("POST /api/admin/restaurants/[restaurantId]/owner", () => {
       expect(
         await statusOf(() => createOwner(restaurantId, validOwner())),
       ).toBe(404);
+    },
+  );
+});
+
+describe("POST /api/admin/restaurants/[restaurantId]/enter", () => {
+  it("is a 404 for a restaurant that doesn't exist", async () => {
+    expect(await statusOf(() => enter(crypto.randomUUID()))).toBe(404);
+  });
+
+  it.each(["not-a-uuid", "", "'; drop table staff; --"])(
+    "a malformed id is a 404, not an error: %j",
+    async (restaurantId) => {
+      expect(await statusOf(() => enter(restaurantId))).toBe(404);
     },
   );
 });
