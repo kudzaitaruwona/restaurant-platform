@@ -1019,6 +1019,31 @@ describe("regenerating a table's code", () => {
     expect(html).not.toContain((await url(old)).trim());
   });
 
+  it("flows a regenerated token into the selected-tables sheet", async () => {
+    const id = await tableIdOf("7");
+    const old = await tokenOfTable(id);
+    await regenerateTable(post(`/api/tables/${id}/regenerate`), tableParams(id));
+
+    const fresh = await tokenOfTable(id);
+    const html = await screen(() => PrintSheet({ searchParams: Promise.resolve({ scope: "selected", table: [id] }) }));
+    const url = (token: string) => qrSvg(tableCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, token));
+    expect(html).toContain((await url(fresh)).trim());
+    expect(html).not.toContain((await url(old)).trim());
+  });
+
+  it("drops an archived table from the selected-tables sheet, though its id is still ticked", async () => {
+    const gone = await tableIdOf("Gone");
+    const kept = await tableIdOf("Kept");
+    await archive(post(`/api/tables/${gone}/archive`), tableParams(gone));
+
+    const html = await screen(() =>
+      PrintSheet({ searchParams: Promise.resolve({ scope: "selected", table: [gone, kept] }) }),
+    );
+
+    expect(html).toContain(">Kept</p>");
+    expect(html).not.toContain(">Gone</p>");
+  });
+
   it.each(["not-a-uuid", crypto.randomUUID()])("is a 404 for a table that isn't there: %s", async (id) => {
     expect(await statusOf(() => regenerateTable(post(`/api/tables/${id}/regenerate`), tableParams(id)))).toBe(404);
   });
