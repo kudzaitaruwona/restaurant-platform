@@ -2,7 +2,9 @@ import { and, asc, eq } from "drizzle-orm";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { restaurants, staff } from "@/db/schema";
+import { getCurrentRate } from "@/lib/exchange-rate";
 import { getTenantContext, withTenant } from "@/lib/tenant";
+import { ExchangeRateStatus } from "./exchange-rate-status";
 
 /** The current restaurant and identity, and the example owner-only action. */
 export async function Dashboard() {
@@ -30,6 +32,9 @@ export async function Dashboard() {
     return { restaurant, team };
   });
 
+  // Owner only (S-26), like the menu it belongs to.
+  const rate = tenant.role === "owner" ? await getCurrentRate(tenant) : null;
+
   const me = tenant.platformAdminId
     ? "platform admin"
     : team.find((member) => member.id === tenant.staffId)?.displayName;
@@ -51,6 +56,17 @@ export async function Dashboard() {
           </nav>
         )}
       </div>
+      {tenant.role === "owner" && (
+        <section className="flex flex-col gap-1">
+          <ExchangeRateStatus
+            rate={rate?.usdToZig ?? null}
+            setAt={rate?.setAt ?? null}
+          />
+          <Link href="/dashboard/menu" className="text-sm underline">
+            Change the exchange rate
+          </Link>
+        </section>
+      )}
       <ul className="flex flex-col gap-3">
         {team.map((member) => (
           <li key={member.id} className="flex flex-col gap-1">

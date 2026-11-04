@@ -2,6 +2,7 @@ import "server-only";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { categories, menuItems, restaurants } from "@/db/schema";
+import { latestRate } from "@/lib/exchange-rate";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, withTenant } from "@/lib/tenant/scope";
@@ -25,6 +26,8 @@ const messages = {
   itemName: "Enter the item's name, up to 200 characters.",
   description: "Enter a description of up to 1000 characters.",
   priceUsd: "Enter the USD price as a number, like 8.50.",
+  priceZig: "Enter the ZiG price as a number, like 210.",
+  price: "Enter a USD price, a ZiG price, or both.",
   category: "Choose a category.",
 };
 
@@ -37,25 +40,41 @@ const newCategory = z.object({
     .max(200, messages.categoryName),
 });
 
-const newMenuItem = z.object({
-  name: z
-    .string(messages.itemName)
-    .trim()
-    .min(1, messages.itemName)
-    .max(200, messages.itemName),
-  description: z
-    .string(messages.description)
-    .trim()
-    .max(1000, messages.description),
-  // Postgres would also take 1e3, NaN and Infinity as numeric.
-  priceUsd: z
-    .string(messages.priceUsd)
-    .trim()
-    .regex(/^[0-9]{1,6}(\.[0-9]{1,2})?$/, messages.priceUsd),
-  // Only that one was chosen. Whether it's this restaurant's is addMenuItem's
-  // question, so another restaurant's id gets the 404 an unknown one does.
-  categoryId: z.string(messages.category).min(1, messages.category),
-});
+// A price field left blank is no price. Postgres would also take 1e3, NaN and
+// Infinity as numeric, so the spelling is checked here.
+const optionalPrice = (pattern: RegExp, message: string) =>
+  z.preprocess(
+    (value) => (value === undefined ? "" : value),
+    z
+      .string(message)
+      .trim()
+      .refine((value) => value === "" || pattern.test(value), message)
+      .transform((value) => value || null),
+  );
+
+const newMenuItem = z
+  .object({
+    name: z
+      .string(messages.itemName)
+      .trim()
+      .min(1, messages.itemName)
+      .max(200, messages.itemName),
+    description: z
+      .string(messages.description)
+      .trim()
+      .max(1000, messages.description),
+    priceUsd: optionalPrice(/^[0-9]{1,6}(\.[0-9]{1,2})?$/, messages.priceUsd),
+    // Set means a fixed ZiG price. Blank means calculated from the rate (S-10).
+    priceZig: optionalPrice(/^[0-9]{1,9}(\.[0-9]{1,2})?$/, messages.priceZig),
+    // Only that one was chosen. Whether it's this restaurant's is addMenuItem's
+    // question, so another restaurant's id gets the 404 an unknown one does.
+    categoryId: z.string(messages.category).min(1, messages.category),
+  })
+  // The database refuses an item with neither, too: this gives the reason.
+  .refine((item) => item.priceUsd !== null || item.priceZig !== null, {
+    message: messages.price,
+    path: ["priceUsd"],
+  });
 
 export type NewCategory = z.output<typeof newCategory>;
 export type NewMenuItem = z.output<typeof newMenuItem>;
@@ -71,13 +90,6 @@ export const parseNewCategory = (form: FormData) =>
 export const parseNewMenuItem = (form: FormData) =>
   parsed(newMenuItem.safeParse(Object.fromEntries(form)));
 
-/** Issue 20 replaces this with display by `currency_mode`. */
-export const formatUsd = (price: string) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(Number(price));
-
 export type Menu = Awaited<ReturnType<typeof getMenu>>;
 
 /** A restaurant's whole menu, with empty categories, for the editor and the page. */
@@ -85,7 +97,13 @@ export function getMenu(ctx: Tenant) {
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
     const [restaurant] = await tx
-      .select({ name: restaurants.name, menuToken: restaurants.menuToken })
+      .select({
+        name: restaurants.name,
+        menuToken: restaurants.menuToken,
+        currencyMode: restaurants.currencyMode,
+        zigStep: restaurants.zigRoundingStep,
+        usdStep: restaurants.usdRoundingStep,
+      })
       .from(restaurants)
       .where(eq(restaurants.id, restaurantId));
     const groups = await tx
@@ -106,10 +124,20 @@ export function getMenu(ctx: Tenant) {
       .where(eq(menuItems.restaurantId, restaurantId))
       .orderBy(asc(menuItems.sortOrder), asc(menuItems.name));
 
+    const rate = await latestRate(tx, restaurantId);
+
     const itemsByCategory = Map.groupBy(items, (item) => item.categoryId);
     return {
       restaurantName: restaurant.name,
       menuToken: restaurant.menuToken,
+      currencyMode: restaurant.currencyMode,
+      // Everything an effective price is computed from (spec 00): see "@/lib/pricing".
+      pricing: {
+        rate: rate?.usdToZig ?? null,
+        zigStep: restaurant.zigStep,
+        usdStep: restaurant.usdStep,
+      },
+      rateSetAt: rate?.setAt ?? null,
       categories: groups.map((group) => ({
         ...group,
         items: itemsByCategory.get(group.id) ?? [],

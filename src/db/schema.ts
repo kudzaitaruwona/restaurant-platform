@@ -101,6 +101,12 @@ export const restaurants = pgTable(
       "restaurants_contact_phone_e164",
       sql`${table.contactPhone} ~ '^[+][1-9][0-9]{1,14}$'`,
     ),
+    // A step of 0 divides by zero in the effective-price formula (spec 00), and
+    // numeric takes NaN and Infinity, so each needs both bounds.
+    check(
+      "restaurants_rounding_steps_positive_finite",
+      sql`${table.zigRoundingStep} > 0 and ${table.zigRoundingStep} < 'Infinity' and ${table.usdRoundingStep} > 0 and ${table.usdRoundingStep} < 'Infinity'`,
+    ),
     tenantPolicy("id"),
   ],
 );
@@ -266,6 +272,43 @@ export const menuItems = pgTable(
     check(
       "menu_items_prices_finite",
       sql`${table.priceUsd} < 'Infinity' and ${table.priceZig} < 'Infinity'`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * The rate history (spec 00, 2): the current rate is the latest row, and a change
+ * is a new row, never an update.
+ */
+export const exchangeRates = pgTable(
+  "exchange_rates",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    usdToZig: numeric("usd_to_zig").notNull(),
+    setBy: uuid("set_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "exchange_rates_set_by_fk",
+      columns: [table.restaurantId, table.setBy],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.createdAt),
+    // > 0 alone lets NaN and Infinity through, and < 'Infinity' alone lets
+    // negatives through: both together are finite and positive.
+    check(
+      "exchange_rates_usd_to_zig_finite",
+      sql`${table.usdToZig} > 0 and ${table.usdToZig} < 'Infinity'`,
     ),
     tenantPolicy("restaurant_id"),
   ],

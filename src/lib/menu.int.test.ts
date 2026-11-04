@@ -40,6 +40,7 @@ const itemIn = (categoryId: string, name = "Sadza") => ({
   name,
   description: "With greens",
   priceUsd: "8.50",
+  priceZig: null,
   categoryId,
 });
 
@@ -68,6 +69,10 @@ describe("a menu", () => {
     expect(await getMenu(tenant)).toEqual({
       restaurantName: "Mama's Kitchen",
       menuToken: `menu-${tenant.restaurantId}`,
+      currencyMode: "usd_only",
+      // No rate yet, and the restaurant's default steps.
+      pricing: { rate: null, zigStep: "10", usdStep: "0.01" },
+      rateSetAt: null,
       categories: [],
     });
   });
@@ -95,6 +100,23 @@ describe("a menu", () => {
       priceUsd: "8.50",
       priceZig: null,
     });
+  });
+
+  it("keeps a fixed ZiG price beside the USD one, and an item with only ZiG", async () => {
+    const tenant = await newRestaurant();
+    await addCategory(tenant, { name: "Mains" });
+    const category = await categoryIdOf(tenant, "Mains");
+    await addMenuItem(tenant, { ...itemIn(category, "Both"), priceZig: "200" });
+    await addMenuItem(tenant, {
+      ...itemIn(category, "ZiG only"),
+      priceUsd: null,
+      priceZig: "210",
+    });
+
+    expect((await getMenu(tenant)).categories[0].items).toMatchObject([
+      { name: "Both", priceUsd: "8.50", priceZig: "200" },
+      { name: "ZiG only", priceUsd: null, priceZig: "210" },
+    ]);
   });
 
   it("keeps an empty category: the owner still has to fill it", async () => {

@@ -3,12 +3,13 @@ import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as addCategory } from "@/app/api/menu/categories/route";
+import { POST as setRate } from "@/app/api/menu/exchange-rate/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { categories, restaurants, staff } from "@/db/schema";
+import { auditLog, categories, exchangeRates, restaurants, staff } from "@/db/schema";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -16,6 +17,7 @@ import {
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
+import { Dashboard } from "./dashboard";
 import { MenuScreen } from "./menu/menu-screen";
 import { SettingsScreen } from "./settings/settings-screen";
 import { StaffScreen } from "./staff/staff-screen";
@@ -185,6 +187,12 @@ describe("how a saved form is answered", () => {
         return addItem(post("/api/menu/items", item(categoryId), headers));
       },
     ],
+    [
+      "POST /api/menu/exchange-rate",
+      "/dashboard/menu",
+      (headers) =>
+        setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }, headers)),
+    ],
   ];
 
   it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
@@ -263,6 +271,123 @@ describe("the menu routes", () => {
   it("refuse a blank category name with a reason", async () => {
     const response = await addCategory(post("/api/menu/categories", { name: " " }));
     expect(response.status).toBe(400);
+  });
+});
+
+describe("the exchange rate", () => {
+  const savedRates = () =>
+    owner.db
+      .select()
+      .from(exchangeRates)
+      .where(eq(exchangeRates.restaurantId, tenant.restaurantId));
+
+  /** Backdates the newest rate, as if it had been set that long ago. */
+  const setDaysAgo = (days: number) =>
+    owner.db
+      .update(exchangeRates)
+      .set({ createdAt: new Date(Date.now() - days * 24 * 3_600_000) })
+      .where(eq(exchangeRates.restaurantId, tenant.restaurantId));
+
+  it("is set from the menu screen, which posts to its route", async () => {
+    await newCategory();
+    const html = await screen(MenuScreen);
+    expect(html).toContain('action="/api/menu/exchange-rate"');
+    expect(html).toContain("1 USD = ZiG");
+    expect(html).toContain("No exchange rate is set");
+  });
+
+  it("saves a new row and an audit entry for each change", async () => {
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "27" }));
+
+    expect((await savedRates()).map((row) => row.usdToZig).sort()).toEqual(["26.2", "27"]);
+    const entries = await owner.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.restaurantId, tenant.restaurantId));
+    expect(entries.filter((entry) => entry.action === "exchange_rate.set")).toHaveLength(2);
+  });
+
+  it.each(["", "0", "-5", "abc", "NaN"])(
+    "refuses the rate %j with a reason, and saves nothing",
+    async (usdToZig) => {
+      const response = await setRate(post("/api/menu/exchange-rate", { usdToZig }));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+      expect(await savedRates()).toEqual([]);
+    },
+  );
+
+  it("shows on the menu screen, with the item's calculated ZiG price", async () => {
+    const categoryId = await newCategory();
+    await addItem(post("/api/menu/items", item(categoryId)));
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("1 USD = ZiG 26.2, last updated today");
+    expect(html).toContain("ZiG 230 (calculated)");
+    expect(html).not.toContain("more than 7 days old");
+  });
+
+  it("shows on the dashboard: how old it is, with no warning yet", async () => {
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    await setDaysAgo(6);
+
+    const html = await screen(Dashboard);
+
+    expect(html).toContain("1 USD = ZiG 26.2, last updated 6 days ago");
+    expect(html).not.toContain("more than 7 days old");
+  });
+
+  it("warns on the dashboard and the menu screen once it is more than 7 days old", async () => {
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    await setDaysAgo(8);
+
+    for (const Screen of [Dashboard, MenuScreen]) {
+      expect(await screen(Screen)).toContain("more than 7 days old");
+    }
+  });
+
+  it("warns on the dashboard when none was ever set", async () => {
+    expect(await screen(Dashboard)).toContain("No exchange rate is set");
+  });
+
+  it("is kept off a staff member's dashboard", async () => {
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+    session.tenant = { ...tenant, role: "staff" };
+
+    expect(await screen(Dashboard)).not.toContain("1 USD = ZiG");
+  });
+
+  it("takes an item with only a ZiG price", async () => {
+    const categoryId = await newCategory();
+
+    const response = await addItem(
+      post("/api/menu/items", { ...item(categoryId), priceUsd: "", priceZig: "210" }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(await screen(MenuScreen)).toContain("ZiG 210");
+  });
+
+  it("refuses an item with no price at all, with a reason", async () => {
+    const categoryId = await newCategory();
+
+    const response = await addItem(
+      post("/api/menu/items", { ...item(categoryId), priceUsd: "", priceZig: "" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Enter a USD price, a ZiG price, or both.",
+    });
+  });
+
+  it("offers the ZiG field to the item form", async () => {
+    await newCategory();
+    expect(await screen(MenuScreen)).toContain('name="priceZig"');
   });
 });
 

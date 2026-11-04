@@ -85,7 +85,7 @@ afterAll(async () => {
   await owner.pool.end();
 });
 
-async function newRestaurant(dish: string) {
+async function newRestaurant(dish: string, currencyMode: "usd_only" | "zig_only" = "usd_only") {
   const id = crypto.randomUUID();
   const menuToken = `production-${id}`;
   await owner.db.insert(restaurants).values({
@@ -93,7 +93,7 @@ async function newRestaurant(dish: string) {
     name: `Restaurant ${id}`,
     slug: menuToken,
     menuToken,
-    currencyMode: "usd_only",
+    currencyMode,
   });
   const categoryId = crypto.randomUUID();
   await owner.db.insert(categories).values({ id: categoryId, restaurantId: id, name: "Mains" });
@@ -218,5 +218,27 @@ describe.each(publicPages)("$route", ({ url }) => {
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
     expect(cacheStatus(await visit(url(theirs.menuToken)))).toBe("HIT");
+  });
+
+  it("changing the exchange rate reprices the calculated ZiG prices on the next visit", async () => {
+    const mine = await newRestaurant("Stew", "zig_only");
+    const cookie = await signInAsOwnerOf(mine.id);
+    const setRate = (usdToZig: string) =>
+      visit("/api/menu/exchange-rate", {
+        method: "POST",
+        headers: { origin, cookie },
+        body: new URLSearchParams({ usdToZig }),
+      });
+    expect((await setRate("26.2")).status).toBe(303);
+    expect(await (await visit(url(mine.menuToken))).text()).toContain("ZiG 210");
+    expect(cacheStatus(await visit(url(mine.menuToken)))).toBe("HIT");
+
+    expect((await setRate("30")).status).toBe(303);
+
+    const repriced = await visit(url(mine.menuToken));
+    expect(cacheStatus(repriced)).toBe("MISS");
+    const body = await repriced.text();
+    expect(body).toContain("ZiG 240");
+    expect(body).not.toContain("ZiG 210");
   });
 });

@@ -1,8 +1,9 @@
 import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
 import { html, trusted } from "@/lib/html";
-import { formatUsd, getMenu, type Menu } from "@/lib/menu";
+import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
+import { priceDisplay } from "@/lib/pricing";
 import { type PublicTokenKind, resolvePublicToken } from "@/lib/tenant/public";
 
 /**
@@ -29,7 +30,8 @@ h2{margin:2rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);fon
 ul{margin:0;padding:0;list-style:none}
 li{padding:.75rem 0;border-bottom:1px solid var(--line)}
 .item{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
-.price{white-space:nowrap}
+.price{white-space:nowrap;text-align:right}
+.sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
 p{margin:.25rem 0 0;color:var(--muted)}
 `;
 
@@ -50,12 +52,13 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 
 type Item = Menu["categories"][number]["items"][number];
 
-/** Issue 20 replaces this with display by `currency_mode`. */
-const priceOf = ({ priceUsd, priceZig }: Item) =>
-  priceUsd !== null ? formatUsd(priceUsd) : `ZiG ${priceZig}`;
+const priceCell = (item: Item, { currencyMode, pricing }: Menu) => {
+  const { main, sub } = priceDisplay(item, currencyMode, pricing);
+  return html`<span class="price">${main}${sub && html`<span class="sub">${sub}</span>`}</span>`;
+};
 
-const itemRow = (item: Item) => html`<li>
-<div class="item"><span>${item.name}</span><span class="price">${priceOf(item)}</span></div>
+const itemRow = (item: Item, menu: Menu) => html`<li>
+<div class="item"><span>${item.name}</span>${priceCell(item, menu)}</div>
 ${item.description && html`<p>${item.description}</p>`}
 </li>`;
 
@@ -65,7 +68,7 @@ function menuPage(menu: Menu) {
     .map(
       (category) => html`<section>
 <h2>${category.name}</h2>
-<ul>${category.items.map(itemRow)}</ul>
+<ul>${category.items.map((item) => itemRow(item, menu))}</ul>
 </section>`,
     );
 

@@ -26,7 +26,7 @@ restaurants
   currency_mode         enum(usd_only, zig_only, usd_primary, zig_primary, both)
   zig_rounding_step     numeric default 10   -- computed ZiG prices round UP to this
   usd_rounding_step     numeric default 0.01
-  CHECK (zig_rounding_step > 0 AND zig_rounding_step < 'Infinity' AND usd_rounding_step > 0 AND usd_rounding_step < 'Infinity')  -- restaurants_rounding_steps_positive_finite (proposed): > 0 because a step of 0 divides by zero in the effective-price formula, and negative or -Infinity is not a step. OWED by issue 20, which computes with both steps: the table exists without either check (migration 0001, schema.ts), so its migration adds it
+  CHECK (zig_rounding_step > 0 AND zig_rounding_step < 'Infinity' AND usd_rounding_step > 0 AND usd_rounding_step < 'Infinity')  -- restaurants_rounding_steps_positive_finite (proposed): > 0 because a step of 0 divides by zero in the effective-price formula, and negative or -Infinity is not a step. Added by issue 20, which computes with both steps, in migration 0012 (the table existed without either check)
   wifi_name, wifi_password  text null        -- printed on the table QR sheet
   created_at
 
