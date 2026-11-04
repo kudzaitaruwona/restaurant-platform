@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EnvValidationError, parseEnv } from "./env";
 
 const valid = {
-  DATABASE_URL: "postgres://app:app@localhost:5499/restaurant_dev",
+  DATABASE_URL: "postgres://app_tenant:app_tenant@localhost:5499/restaurant_dev",
   NEXT_PUBLIC_APP_URL: "http://localhost:3000",
   R2_ACCOUNT_ID: "account",
   R2_ACCESS_KEY_ID: "key",
@@ -102,5 +102,89 @@ describe("parseEnv", () => {
       DATABASE_URL: "mysql://user:hunter2@host/db",
     });
     expect(error.message).not.toMatch(/hunter2/);
+  });
+
+  it("rejects an app connection that isn't the RLS-bound role: any other role could skip tenant isolation", () => {
+    const error = errorFrom({
+      ...valid,
+      DATABASE_URL: "postgres://neondb_owner:secret@host/db",
+    });
+    expect(error.message).toMatch(/DATABASE_URL must connect as app_tenant/);
+    expect(error.message).not.toMatch(/secret/);
+  });
+
+  describe.each([
+    ["NODE_ENV=production", { NODE_ENV: "production" }],
+    ["VERCEL_ENV=production", { VERCEL_ENV: "production" }],
+  ])("with %s", (_name, production) => {
+    it("refuses DEV_AUTH_BYPASS (S-25)", () => {
+      const error = errorFrom({ ...valid, ...production, DEV_AUTH_BYPASS: "1" });
+      expect(error.message).toMatch(/DEV_AUTH_BYPASS must not be set in production/);
+    });
+
+    it("refuses DEV_AUTH_BYPASS whatever its value: set is set", () => {
+      const error = errorFrom({ ...valid, ...production, DEV_AUTH_BYPASS: "false" });
+      expect(error.message).toMatch(/DEV_AUTH_BYPASS/);
+    });
+
+    it("refuses NEON_WS_PROXY, which would turn off TLS to the database", () => {
+      const error = errorFrom({
+        ...valid,
+        ...production,
+        NEON_WS_PROXY: "localhost:5498/v1",
+      });
+      expect(error.message).toMatch(/NEON_WS_PROXY must not be set in production/);
+    });
+
+    it("accepts both left blank", () => {
+      expect(() =>
+        parseEnv({ ...valid, ...production, DEV_AUTH_BYPASS: "", NEON_WS_PROXY: "" }),
+      ).not.toThrow();
+    });
+  });
+
+  it("allows DEV_AUTH_BYPASS and NEON_WS_PROXY outside production", () => {
+    const env = parseEnv({
+      ...valid,
+      NODE_ENV: "development",
+      VERCEL_ENV: "preview",
+      DEV_AUTH_BYPASS: "1",
+      NEON_WS_PROXY: "localhost:5498/v1",
+    });
+    expect(env.DEV_AUTH_BYPASS).toBe("1");
+    expect(env.NEON_WS_PROXY).toBe("localhost:5498/v1");
+  });
+});
+
+describe("devAuthBypassEnabled", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const stubValidEnv = () => {
+    for (const [key, value] of Object.entries(valid)) vi.stubEnv(key, value);
+  };
+
+  async function enabled() {
+    vi.resetModules(); // fresh env cache per test
+    const { devAuthBypassEnabled } = await import("./env");
+    return devAuthBypassEnabled();
+  }
+
+  it("is on outside production when the variable is set", async () => {
+    stubValidEnv();
+    vi.stubEnv("DEV_AUTH_BYPASS", "1");
+    expect(await enabled()).toBe(true);
+  });
+
+  it("is off when the variable is blank", async () => {
+    stubValidEnv();
+    vi.stubEnv("DEV_AUTH_BYPASS", "");
+    expect(await enabled()).toBe(false);
+  });
+
+  it("is off in production even if startup validation never ran", async () => {
+    stubValidEnv();
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("DEV_AUTH_BYPASS", "1");
+    expect(await enabled()).toBe(false);
   });
 });
