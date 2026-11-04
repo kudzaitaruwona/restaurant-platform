@@ -26,6 +26,7 @@ restaurants
   currency_mode         enum(usd_only, zig_only, usd_primary, zig_primary, both)
   zig_rounding_step     numeric default 10   -- computed ZiG prices round UP to this
   usd_rounding_step     numeric default 0.01
+  CHECK (zig_rounding_step < 'Infinity' AND usd_rounding_step < 'Infinity')  -- restaurants_rounding_steps_finite. OWED: the table exists without it (migration 0001, schema.ts), so a later migration adds it
   wifi_name, wifi_password  text null        -- printed on the table QR sheet
   created_at
 
@@ -72,7 +73,7 @@ menu_items
   price_zig             numeric null                -- set = fixed ZiG price
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)
   CHECK (price_usd >= 0 AND price_zig >= 0)
-  CHECK (price_usd < 'Infinity' AND price_zig < 'Infinity')  -- menu_items_prices_finite: every money column needs this finite check, because NaN and Infinity pass > 0 in Postgres numeric
+  CHECK (price_usd < 'Infinity' AND price_zig < 'Infinity')  -- menu_items_prices_finite: every money column needs this finite check, because NaN and Infinity both pass >= 0 and > 0 in Postgres numeric (NaN sorts above Infinity, so `< 'Infinity'` rejects both)
   visibility            enum(regular, special_only) default 'regular'
   is_available          bool default true           -- "kitchen ran out"
   sort_order
@@ -83,6 +84,7 @@ specials
   title                 text null          -- badge text: "Taco Tuesday"
   special_price_usd     numeric null       -- null = keep the item's normal price
   special_price_zig     numeric null       -- same fallback-to-rate rule as items
+  CHECK (special_price_usd < 'Infinity' AND special_price_zig < 'Infinity')  -- specials_prices_finite
   starts_at, ends_at    timestamptz null   -- null ends_at = until turned off
   days_of_week          int[] null         -- D-04: column now, logic later
   daily_start, daily_end time null         -- D-04
@@ -91,7 +93,7 @@ specials
 
 exchange_rates                              -- history; the current rate is the latest row
   id, restaurant_id
-  usd_to_zig            numeric CHECK (> 0)
+  usd_to_zig            numeric CHECK (> 0 AND < 'Infinity')   -- exchange_rates_usd_to_zig_finite: > 0 alone lets NaN and Infinity through
   set_by → staff
   created_at
 ```
@@ -235,6 +237,7 @@ orders
   id, restaurant_id, session_id
   customer_name         text not null CHECK (trim(customer_name) <> '')
   rate_used             numeric null       -- exchange rate frozen at order time
+  CHECK (rate_used < 'Infinity')           -- orders_rate_used_finite
   placed_at
 
 order_items
@@ -243,6 +246,7 @@ order_items
   name_snapshot         text
   quantity              int CHECK (> 0)
   unit_price_usd, unit_price_zig  numeric  -- frozen
+  CHECK (unit_price_usd < 'Infinity' AND unit_price_zig < 'Infinity')  -- order_items_prices_finite
   zig_source            enum(fixed, calculated)
   note                  text null          -- per item: "no onions"
   status                enum(placed, cooking, done, delivered, voided)

@@ -6,6 +6,7 @@ import {
   openTestDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
+import { getDb } from "@/db";
 import { devRestaurants } from "./dev-identities";
 import { resolvePublicToken } from "./public";
 import { withTenant } from "./scope";
@@ -61,8 +62,12 @@ describe("resolvePublicToken", () => {
   });
 
   it("leaves no tenant behind on the connection", async () => {
+    // The lookup runs on getDb()'s pool, so the check must too: a different
+    // pool is a different connection, and would never see a leaked setting.
+    // Back-to-back calls on one pool reuse its idle connection.
+    const db = getDb();
     await resolvePublicToken("menu", menuTokenOf(restaurantA));
-    const { rows } = await app.db.execute(sql`select id from restaurants`);
+    const { rows } = await db.execute(sql`select id from restaurants`);
     expect(rows).toEqual([]);
   });
 });
