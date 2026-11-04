@@ -8,7 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { categories, menuItems, restaurants } from "@/db/schema";
+import { auditLog, categories, menuItems, restaurants } from "@/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -54,6 +54,7 @@ beforeAll(() => {
 beforeEach(() => revalidateTag.mockClear());
 
 afterAll(async () => {
+  await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, created));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, created));
   await owner.db.delete(categories).where(inArray(categories.restaurantId, created));
   await owner.db.delete(restaurants).where(inArray(restaurants.id, created));
@@ -152,6 +153,77 @@ describe("tenant scope", () => {
       expect(await addMenuItem(tenant, itemIn(categoryId))).toBe("no_such_category");
     },
   );
+});
+
+describe("an entered platform admin's writes", () => {
+  const platformAdminId = crypto.randomUUID();
+
+  const auditEntries = ({ restaurantId }: { restaurantId: string }) =>
+    owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, restaurantId));
+
+  it("audits a new category, naming it and the admin", async () => {
+    const tenant = await newRestaurant();
+
+    await addCategory({ ...tenant, platformAdminId }, { name: "Mains" });
+
+    expect(await auditEntries(tenant)).toMatchObject([
+      {
+        actorType: "platform_admin",
+        actorId: platformAdminId,
+        action: "category.create",
+        entityType: "category",
+        entityId: await categoryIdOf(tenant, "Mains"),
+      },
+    ]);
+  });
+
+  it("audits a new item, naming it and the admin", async () => {
+    const tenant = await newRestaurant();
+    await addCategory(tenant, { name: "Mains" });
+    const category = await categoryIdOf(tenant, "Mains");
+
+    await addMenuItem({ ...tenant, platformAdminId }, itemIn(category));
+
+    const [item] = await owner.db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(eq(menuItems.categoryId, category));
+    expect(await auditEntries(tenant)).toMatchObject([
+      {
+        actorType: "platform_admin",
+        actorId: platformAdminId,
+        action: "menu_item.create",
+        entityType: "menu_item",
+        entityId: item.id,
+      },
+    ]);
+  });
+
+  it("audits nothing when an item is refused", async () => {
+    const tenant = await newRestaurant();
+
+    await addMenuItem({ ...tenant, platformAdminId }, itemIn(crypto.randomUUID()));
+
+    expect(await auditEntries(tenant)).toEqual([]);
+  });
+
+  it("adds nothing it can't audit", async () => {
+    const tenant = await newRestaurant();
+    const unauditable = { ...tenant, platformAdminId: "not-a-uuid" };
+
+    await expect(addCategory(unauditable, { name: "Mains" })).rejects.toThrow();
+
+    expect((await getMenu(tenant)).categories).toEqual([]);
+  });
+
+  it("leaves an owner's own edits out of the log, as spec 01's list does", async () => {
+    const tenant = await newRestaurant();
+
+    await addCategory(tenant, { name: "Mains" });
+    await addMenuItem(tenant, itemIn(await categoryIdOf(tenant, "Mains")));
+
+    expect(await auditEntries(tenant)).toEqual([]);
+  });
 });
 
 describe("the public page's cache", () => {

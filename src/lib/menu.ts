@@ -3,6 +3,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { categories, menuItems, restaurants } from "@/db/schema";
 import { revalidateMenu } from "@/lib/menu-cache";
+import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 /**
@@ -10,11 +11,12 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
  * requireOwner(ctx). A public route reads this too, so it imports the tenant
  * scope rather than "@/lib/tenant", which would load sign-in (S-32).
  *
- * Every write here calls revalidateMenu, so a route can't forget to. Not audited:
- * spec 01's list doesn't include menu edits.
+ * Every write here calls revalidateMenu, so a route can't forget to. Spec 01's
+ * audit list doesn't include menu edits, so only a platform admin's are audited.
  */
 
 type Tenant = Pick<TenantContext, "restaurantId">;
+type Writer = Tenant & Pick<TenantContext, "platformAdminId">;
 
 const FOREIGN_KEY_VIOLATION = "23503";
 
@@ -116,18 +118,26 @@ export function getMenu(ctx: Tenant) {
   });
 }
 
-export async function addCategory(ctx: Tenant, category: NewCategory) {
+export async function addCategory(ctx: Writer, category: NewCategory) {
   const { restaurantId } = ctx;
-  await withTenant(ctx, (tx) =>
-    tx.insert(categories).values({
-      restaurantId,
-      name: category.name,
-      sortOrder: sql`(
-        select coalesce(max(${categories.sortOrder}), -1) + 1 from ${categories}
-        where ${eq(categories.restaurantId, restaurantId)}
-      )`,
-    }),
-  );
+  await withTenant(ctx, async (tx) => {
+    const [added] = await tx
+      .insert(categories)
+      .values({
+        restaurantId,
+        name: category.name,
+        sortOrder: sql`(
+          select coalesce(max(${categories.sortOrder}), -1) + 1 from ${categories}
+          where ${eq(categories.restaurantId, restaurantId)}
+        )`,
+      })
+      .returning({ id: categories.id });
+    await recordAdminAction(tx, ctx, {
+      action: "category.create",
+      entityType: "category",
+      entityId: added.id,
+    });
+  });
   revalidateMenu(ctx);
 }
 
@@ -137,27 +147,35 @@ export async function addCategory(ctx: Tenant, category: NewCategory) {
  * the row being written.
  */
 export async function addMenuItem(
-  ctx: Tenant,
+  ctx: Writer,
   { categoryId, ...item }: NewMenuItem,
 ): Promise<"saved" | "no_such_category"> {
   if (!z.uuid().safeParse(categoryId).success) return "no_such_category";
 
   const { restaurantId } = ctx;
   try {
-    await withTenant(ctx, (tx) =>
-      tx.insert(menuItems).values({
-        ...item,
-        restaurantId,
-        categoryId,
-        sortOrder: sql`(
-          select coalesce(max(${menuItems.sortOrder}), -1) + 1 from ${menuItems}
-          where ${and(
-            eq(menuItems.restaurantId, restaurantId),
-            eq(menuItems.categoryId, categoryId),
-          )}
-        )`,
-      }),
-    );
+    await withTenant(ctx, async (tx) => {
+      const [added] = await tx
+        .insert(menuItems)
+        .values({
+          ...item,
+          restaurantId,
+          categoryId,
+          sortOrder: sql`(
+            select coalesce(max(${menuItems.sortOrder}), -1) + 1 from ${menuItems}
+            where ${and(
+              eq(menuItems.restaurantId, restaurantId),
+              eq(menuItems.categoryId, categoryId),
+            )}
+          )`,
+        })
+        .returning({ id: menuItems.id });
+      await recordAdminAction(tx, ctx, {
+        action: "menu_item.create",
+        entityType: "menu_item",
+        entityId: added.id,
+      });
+    });
   } catch (error) {
     const { code } = (error as { cause?: { code?: string } }).cause ?? {};
     if (code === FOREIGN_KEY_VIOLATION) return "no_such_category";
