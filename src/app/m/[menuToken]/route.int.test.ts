@@ -61,7 +61,7 @@ async function addCategory(restaurantId: string, name: string, sortOrder = 0) {
 const addItem = (
   restaurantId: string,
   categoryId: string,
-  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; sortOrder?: number },
+  item: { name: string; description?: string; priceUsd?: string; priceZig?: string; sortOrder?: number; available?: boolean },
 ) => owner.db.insert(menuItems).values({ restaurantId, categoryId, ...item });
 
 const visit = (menuToken: string) =>
@@ -253,5 +253,47 @@ describe("the build", () => {
 
   it("answers the sample without a restaurant: the build has no database", async () => {
     expect((await visit(BUILD_SAMPLE_TOKEN)).status).toBe(404);
+  });
+});
+
+describe("a sold-out item", () => {
+  it("is labelled, and stays on the page", async () => {
+    const { id, menuToken } = await newRestaurant("Sold out");
+    await addItem(id, await addCategory(id, "Mains"), {
+      name: "Beef stew",
+      priceUsd: "8.50",
+      available: false,
+    });
+
+    const body = await page(menuToken);
+
+    expect(body).toContain("Beef stew");
+    expect(body).toContain("Sold out");
+    expect(body).toContain('class="sold-out"');
+  });
+
+  it("is greyed out and sorted after the items still on", async () => {
+    const { id, menuToken } = await newRestaurant("Sorted last");
+    const mains = await addCategory(id, "Mains");
+    await addItem(id, mains, { name: "Gone steak", priceUsd: "21", sortOrder: 0, available: false });
+    await addItem(id, mains, { name: "Stew", priceUsd: "8", sortOrder: 1 });
+    await addItem(id, mains, { name: "Chicken", priceUsd: "9", sortOrder: 2 });
+
+    const body = await page(menuToken);
+
+    const positions = ["Stew", "Chicken", "Gone steak"].map((text) => body.indexOf(text));
+    expect(positions).not.toContain(-1);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(body).toMatch(/class="sold-out"[\s\S]*Gone steak/);
+  });
+
+  it("doesn't mark an available item", async () => {
+    const { id, menuToken } = await newRestaurant("Still on");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", priceUsd: "8" });
+
+    const body = await page(menuToken);
+
+    expect(body).not.toContain("Sold out");
+    expect(body).not.toContain('class="sold-out"');
   });
 });

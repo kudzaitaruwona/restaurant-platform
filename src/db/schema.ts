@@ -237,6 +237,8 @@ export const menuItems = pgTable(
     priceUsd: numeric("price_usd"),
     // Set means a fixed ZiG price (S-10).
     priceZig: numeric("price_zig"),
+    // False while the kitchen has run out (S-26). Staff toggle it from the item list.
+    available: boolean().notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
   },
   (table) => [

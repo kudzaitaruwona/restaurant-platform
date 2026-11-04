@@ -43,13 +43,15 @@ export async function Dashboard() {
         <p className="text-muted-foreground">
           Signed in as {me} ({tenant.role})
         </p>
-        {tenant.role === "owner" && (
-          <nav className="mt-2 flex gap-4 text-sm underline">
-            <Link href="/dashboard/menu">Menu</Link>
-            <Link href="/dashboard/settings">Restaurant settings</Link>
-            <Link href="/dashboard/staff">Staff</Link>
-          </nav>
-        )}
+        <nav className="mt-2 flex gap-4 text-sm underline">
+          <Link href="/dashboard/menu">Menu</Link>
+          {tenant.role === "owner" && (
+            <>
+              <Link href="/dashboard/settings">Restaurant settings</Link>
+              <Link href="/dashboard/staff">Staff</Link>
+            </>
+          )}
+        </nav>
       </div>
       <ul className="flex flex-col gap-3">
         {team.map((member) => (

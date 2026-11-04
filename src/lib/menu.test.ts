@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatUsd, parseNewCategory, parseNewMenuItem } from "./menu";
+import {
+  formatUsd,
+  parseAvailability,
+  parseNewCategory,
+  parseNewMenuItem,
+} from "./menu";
 
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
@@ -89,5 +94,27 @@ describe("formatUsd", () => {
     ["1250", "$1,250.00"],
   ])("shows %s as %s", (value, shown) => {
     expect(formatUsd(value)).toBe(shown);
+  });
+});
+
+describe("parseAvailability", () => {
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("reads %j as %s", (value, available) => {
+    expect(parseAvailability(form({ available: value }))).toEqual({
+      success: true,
+      data: available,
+    });
+  });
+
+  it.each(["", "yes", "1", "TRUE", "toggle"])("refuses %j", (value) => {
+    expect(parseAvailability(form({ available: value }))).toMatchObject({
+      success: false,
+    });
+  });
+
+  it("refuses a form with no availability at all", () => {
+    expect(parseAvailability(form({}))).toMatchObject({ success: false });
   });
 });

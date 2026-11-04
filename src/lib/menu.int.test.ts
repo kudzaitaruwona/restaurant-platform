@@ -13,7 +13,12 @@ import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../test/integration/database";
-import { addCategory, addMenuItem, getMenu } from "./menu";
+import {
+  addCategory,
+  addMenuItem,
+  getMenu,
+  setItemAvailability,
+} from "./menu";
 import { menuTag } from "./menu-cache";
 
 const revalidateTag = vi.hoisted(() => vi.fn());
@@ -260,5 +265,105 @@ describe("the public page's cache", () => {
 
   it("gets a different tag for each restaurant", () => {
     expect(menuTag("a")).not.toBe(menuTag("b"));
+  });
+});
+
+describe("an item's availability", () => {
+  const platformAdminId = crypto.randomUUID();
+
+  const addSadza = async (tenant: { restaurantId: string }) => {
+    await addCategory(tenant, { name: "Mains" });
+    const categoryId = await categoryIdOf(tenant, "Mains");
+    await addMenuItem(tenant, itemIn(categoryId));
+    return (await getMenu(tenant)).categories[0].items[0].id;
+  };
+
+  const availableOf = async (tenant: { restaurantId: string }, itemId: string) =>
+    (await getMenu(tenant)).categories[0].items.find((item) => item.id === itemId)?.available;
+
+  it("starts available", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+    expect(await availableOf(tenant, itemId)).toBe(true);
+  });
+
+  it("is marked sold out and back on, by the restaurant's own staff", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+
+    expect(await setItemAvailability(tenant, itemId, false)).toBe("saved");
+    expect(await availableOf(tenant, itemId)).toBe(false);
+
+    expect(await setItemAvailability(tenant, itemId, true)).toBe("saved");
+    expect(await availableOf(tenant, itemId)).toBe(true);
+  });
+
+  it("is refused for another restaurant's item, and that item is left alone", async () => {
+    const [mine, theirs] = [await newRestaurant(), await newRestaurant()];
+    const itemId = await addSadza(theirs);
+
+    expect(await setItemAvailability(mine, itemId, false)).toBe("no_such_item");
+    expect(await availableOf(theirs, itemId)).toBe(true);
+  });
+
+  it.each(["not-a-uuid", "'; drop table menu_items; --", ""])(
+    "treats the malformed id %j like an unknown one",
+    async (itemId) => {
+      const tenant = await newRestaurant();
+      expect(await setItemAvailability(tenant, itemId, false)).toBe("no_such_item");
+    },
+  );
+
+  it("revalidates this restaurant's public page once it's saved", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+    revalidateTag.mockClear();
+
+    await setItemAvailability(tenant, itemId, false);
+
+    expect(revalidateTag.mock.calls).toEqual([
+      [menuTag(tenant.restaurantId), { expire: 0 }],
+    ]);
+  });
+
+  it("is left alone, and the page not revalidated, when refused", async () => {
+    const [mine, theirs] = [await newRestaurant(), await newRestaurant()];
+    const itemId = await addSadza(theirs);
+    revalidateTag.mockClear();
+
+    await setItemAvailability(mine, itemId, false);
+
+    expect(revalidateTag).not.toHaveBeenCalled();
+  });
+
+  it("is not audited for an owner or staff member, as spec 01's list leaves it out", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+
+    await setItemAvailability(tenant, itemId, false);
+
+    expect(
+      await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, tenant.restaurantId)),
+    ).toEqual([]);
+  });
+
+  it("is audited for an entered platform admin, naming the item and the admin", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+
+    await setItemAvailability({ ...tenant, platformAdminId }, itemId, false);
+
+    expect(
+      await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, tenant.restaurantId)),
+    ).toMatchObject([
+      {
+        actorType: "platform_admin",
+        actorId: platformAdminId,
+        action: "menu_item.availability",
+        entityType: "menu_item",
+        entityId: itemId,
+        details: { available: false },
+      },
+    ]);
   });
 });
