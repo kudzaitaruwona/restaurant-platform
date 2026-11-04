@@ -127,6 +127,7 @@ Proposed: **Resend**, for magic links and sign-in codes. Safe to build on, and t
 ### D-10: Where staff pages live — **proposed, not yet confirmed by Kudzai**
 Proposed: staff pages live under `/dashboard/*`, and `/admin` is the platform console. `/admin` is the platform admin's separate console and session (S-28, S-30), so the `/admin/*` staff paths in specs 03 (`/admin/tables/print`), 04 (`/admin/bookings`, `/admin/bookings/settings`) and 07 (`/admin/kitchen`) mean `/dashboard/tables/print`, `/dashboard/bookings`, `/dashboard/bookings/settings` and `/dashboard/kitchen`. Safe to build on, and to be confirmed before going live.
 - Ticket #27 built the print sheet at `/dashboard/tables/print`. Spec 03 is corrected; specs 04 and 07 are corrected when those tickets are built.
+- Ticket #31 built booking settings at `/dashboard/bookings/settings`. Spec 04's Settings heading is corrected; its day view (`/admin/bookings`) and spec 07 are corrected when those tickets are built.
 
 ### D-08: Product name and plan pricing
 The repo is named `restaurant-platform` as a working name. Pricing is undefined: the "standard plan" soft limit needs a plan to attach to. Per S-26, the soft limit counts **owner** logins only; staff logins are unlimited. Until plans exist, the app treats the standard plan as the only one and uses spec 01's number, one owner login, for every restaurant (`OWNER_LOGIN_SOFT_LIMIT`).

@@ -99,6 +99,13 @@
       "when": 1793796186446,
       "tag": "0013_table_token_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793800932626,
+      "tag": "0014_booking_settings",
+      "breakpoints": true
     }
   ]
 }

@@ -15,10 +15,12 @@ import {
 import {
   adminAuthUser,
   auditLog,
+  bookingSettings,
   categories,
   diningTables,
   menuItems,
   restaurants,
+  servicePeriods,
   staff,
   staffAuthUser,
 } from "@/db/schema";
@@ -73,7 +75,13 @@ vi.mock("next/cache", () => ({
 }));
 
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string; categoryId: string; tableId: string; restaurantId: string };
+type Target = {
+  staffId: string;
+  categoryId: string;
+  tableId: string;
+  periodId: string;
+  restaurantId: string;
+};
 
 type TenantRoute = {
   name: string;
@@ -121,6 +129,32 @@ const plantTable = async (restaurantId: string) => {
   planted.push({ id, restaurantId });
   return id;
 };
+/** Service periods the delete route is aimed at: not the fixture period, which the edit route needs. */
+const plantedPeriodPrefix = "Harness planted period ";
+const plantedPeriods: { id: string; restaurantId: string }[] = [];
+/** Periods are one minute wide and two apart, so any number of them never overlap. */
+let periodSlot = 0;
+const slotTimes = (slot: number) => {
+  const clock = (minutes: number) =>
+    `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  return { opensAt: clock(slot * 2), closesAt: clock(slot * 2 + 1) };
+};
+const plantPeriod = async (restaurantId: string) => {
+  const id = crypto.randomUUID();
+  const { opensAt, closesAt } = slotTimes(periodSlot++);
+  await owner.db.insert(servicePeriods).values({
+    id,
+    restaurantId,
+    name: `${plantedPeriodPrefix}${id.slice(0, 8)}`,
+    weekday: 2,
+    opensAt,
+    lastBookingAt: opensAt,
+    closesAt,
+  });
+  plantedPeriods.push({ id, restaurantId });
+  return id;
+};
+const periodParams = (periodId: string) => ({ params: Promise.resolve({ periodId }) });
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -243,6 +277,39 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  {
+    // Idempotent: it saves the fixture period's own values.
+    name: "POST /api/bookings/periods/[periodId]",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/bookings/periods/[periodId]/route")).POST(
+        request(`/api/bookings/periods/${target.periodId}`, {
+          method: "POST",
+          body: form({
+            name: fixtureName,
+            opensAt: "12:00",
+            lastBookingAt: "12:30",
+            closesAt: "13:00",
+          }),
+        }),
+        periodParams(target.periodId),
+      ),
+  },
+  {
+    // Deleting can't be undone, so it takes a period planted in the target's
+    // restaurant for the purpose: the fixture period stays for the rest.
+    name: "POST /api/bookings/periods/[periodId]/delete",
+    ownerOnly: true,
+    call: async (target) => {
+      const periodId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantPeriod(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/periods/[periodId]/delete/route")).POST(
+        request(`/api/bookings/periods/${periodId}/delete`, { method: "POST" }),
+        periodParams(periodId),
+      );
+    },
+  },
 ];
 
 /**
@@ -256,6 +323,7 @@ type SessionRoute = {
 };
 
 const addedEmailPrefix = "harness-added-";
+const addedPeriodPrefix = "Harness added period ";
 
 const sessionRoutes: SessionRoute[] = [
   {
@@ -320,6 +388,63 @@ const sessionRoutes: SessionRoute[] = [
           }),
         }),
       ),
+  },
+  {
+    name: "POST /api/bookings/settings",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/settings/route")).POST(
+        request(init?.path ?? "/api/bookings/settings", {
+          method: "POST",
+          headers: init?.headers,
+          // spec 00's defaults: other test files read them.
+          body: form({
+            slotIntervalMinutes: "15",
+            sittingMinutes: "90",
+            largePartySize: "5",
+            largePartySittingMinutes: "120",
+            bufferMinutes: "15",
+            minLeadMinutes: "60",
+            maxDaysAhead: "30",
+            maxOnlinePartySize: "8",
+            guestCancelCutoffMinutes: "120",
+            maxActiveBookingsPerPhone: "2",
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  {
+    // Switching off by default: it always works, where switching on has a gate.
+    name: "POST /api/bookings/settings/enabled",
+    call: async (fields, init) =>
+      (await import("@/app/api/bookings/settings/enabled/route")).POST(
+        request(init?.path ?? "/api/bookings/settings/enabled", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({ enabled: "false", ...fields }),
+        }),
+      ),
+  },
+  {
+    // Each call adds a period of its own, in a slot no other has.
+    name: "POST /api/bookings/periods",
+    call: async (fields, init) => {
+      const { opensAt, closesAt } = slotTimes(periodSlot++);
+      return (await import("@/app/api/bookings/periods/route")).POST(
+        request(init?.path ?? "/api/bookings/periods", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            name: `${addedPeriodPrefix}${crypto.randomUUID().slice(0, 8)}`,
+            weekday: "4",
+            opensAt,
+            lastBookingAt: opensAt,
+            closesAt,
+            ...fields,
+          }),
+        }),
+      );
+    },
   },
 ];
 
@@ -432,6 +557,7 @@ const fixtures = {
     categoryId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
     regeneratedTableId: crypto.randomUUID(),
+    periodId: crypto.randomUUID(),
     restaurantId: aOwner.restaurantId,
   },
   b: {
@@ -439,6 +565,7 @@ const fixtures = {
     categoryId: crypto.randomUUID(),
     tableId: crypto.randomUUID(),
     regeneratedTableId: crypto.randomUUID(),
+    periodId: crypto.randomUUID(),
     restaurantId: bOwner.restaurantId,
   },
 };
@@ -480,6 +607,19 @@ beforeAll(async () => {
       qrToken: fixtureTableToken(key),
     })),
   );
+  // The edit route is aimed at a period of each restaurant's. Sunday, so none of the
+  // others the harness adds (Tuesday, Thursday) can overlap it.
+  await owner.db.insert(servicePeriods).values(
+    (["a", "b"] as const).map((key) => ({
+      id: fixtures[key].periodId,
+      restaurantId: fixtures[key].restaurantId,
+      name: fixtureName,
+      weekday: 0,
+      opensAt: "12:00",
+      lastBookingAt: "12:30",
+      closesAt: "13:00",
+    })),
+  );
   // The regenerate route changes its table's token, so it gets tables of its own.
   await owner.db.insert(diningTables).values(
     (["a", "b"] as const).map((key) => ({
@@ -512,6 +652,15 @@ afterAll(async () => {
         eq(diningTables.label, regeneratedLabel),
         like(diningTables.label, `${harnessTablePrefix}%`),
         like(diningTables.label, `${plantedPrefix}%`),
+      ),
+    );
+  await owner.db
+    .delete(servicePeriods)
+    .where(
+      or(
+        eq(servicePeriods.name, fixtureName),
+        like(servicePeriods.name, `${plantedPeriodPrefix}%`),
+        like(servicePeriods.name, `${addedPeriodPrefix}%`),
       ),
     );
   await owner.db
@@ -631,6 +780,39 @@ const unarchived = async (restaurantId: string, mark: number) =>
     )
   ).every((row) => row.archivedAt === null);
 
+/** What the booking routes would change in a restaurant. */
+const periodStanding = async (periodId: string) => {
+  const [row] = await owner.db
+    .select()
+    .from(servicePeriods)
+    .where(eq(servicePeriods.id, periodId));
+  return row;
+};
+const bookingSettingsOf = async (restaurantId: string) => {
+  const [row] = await owner.db
+    .select()
+    .from(bookingSettings)
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+  return row;
+};
+const periodsNamed = (restaurantId: string, prefix: string) =>
+  owner.db
+    .select({ id: servicePeriods.id })
+    .from(servicePeriods)
+    .where(
+      and(eq(servicePeriods.restaurantId, restaurantId), like(servicePeriods.name, `${prefix}%`)),
+    );
+/** Whether the periods planted since `mark` in a restaurant are all still there. */
+const unremoved = async (restaurantId: string, mark: number) =>
+  (
+    await Promise.all(
+      plantedPeriods
+        .slice(mark)
+        .filter((period) => period.restaurantId === restaurantId)
+        .map(({ id }) => periodStanding(id)),
+    )
+  ).every((row) => row !== undefined);
+
 const harnessTables = (restaurantId: string) =>
   owner.db
     .select({ id: diningTables.id })
@@ -660,7 +842,9 @@ describe("cross-tenant access", () => {
       session.identity = key;
       const itemsInA = (await harnessItems(fixtures.a.restaurantId)).length;
       const bTable = await tableStanding(fixtures.b.tableId);
+      const bPeriod = await periodStanding(fixtures.b.periodId);
       const mark = planted.length;
+      const periodMark = plantedPeriods.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -671,6 +855,8 @@ describe("cross-tenant access", () => {
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(itemsInA);
       expect(await tableStanding(fixtures.b.tableId)).toEqual(bTable);
       expect(await unarchived(fixtures.b.restaurantId, mark)).toBe(true);
+      expect(await periodStanding(fixtures.b.periodId)).toEqual(bPeriod);
+      expect(await unremoved(fixtures.b.restaurantId, periodMark)).toBe(true);
     },
   );
 
@@ -802,7 +988,9 @@ describe("owner-only routes", () => {
       session.identity = aStaff.key;
       const items = (await harnessItems(fixtures.a.restaurantId)).length;
       const aTable = await tableStanding(fixtures.a.tableId);
+      const aPeriod = await periodStanding(fixtures.a.periodId);
       const mark = planted.length;
+      const periodMark = plantedPeriods.length;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
@@ -810,6 +998,8 @@ describe("owner-only routes", () => {
       expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(items);
       expect(await tableStanding(fixtures.a.tableId)).toEqual(aTable);
       expect(await unarchived(fixtures.a.restaurantId, mark)).toBe(true);
+      expect(await periodStanding(fixtures.a.periodId)).toEqual(aPeriod);
+      expect(await unremoved(fixtures.a.restaurantId, periodMark)).toBe(true);
     },
   );
 
@@ -1030,6 +1220,108 @@ describe("the tables route", () => {
   });
 });
 
+describe("the booking routes", () => {
+  const [saveRules, enable, addPeriod] = sessionRoutes.slice(4);
+  const smuggledB = () => {
+    const id = fixtures.b.restaurantId;
+    return {
+      fields: { restaurantId: id, restaurant_id: id },
+      init: (path: string) => ({
+        headers: { "x-restaurant-id": id },
+        path: `${path}?restaurantId=${id}&restaurant_id=${id}`,
+      }),
+    };
+  };
+
+  it("the rules go to the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const theirs = await bookingSettingsOf(fixtures.b.restaurantId);
+
+    try {
+      const response = await saveRules.call(
+        { ...fields, sittingMinutes: "100" },
+        init("/api/bookings/settings"),
+      );
+
+      expect(response.status).toBeLessThan(400);
+      expect(await bookingSettingsOf(fixtures.b.restaurantId)).toEqual(theirs);
+      expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ sittingMinutes: 100 });
+    } finally {
+      await saveRules.call();
+    }
+  });
+
+  it("a staff context can't change the rules", async () => {
+    session.identity = aStaff.key;
+    const before = await bookingSettingsOf(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => saveRules.call({ sittingMinutes: "61" }))).toBe(403);
+
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toEqual(before);
+  });
+
+  it("a staff context can't turn booking on, and the owner is refused while the phone is missing", async () => {
+    session.identity = aStaff.key;
+    expect(await statusOf(() => enable.call({ enabled: "true" }))).toBe(403);
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ enabled: false });
+
+    session.identity = aOwner.key;
+    const response = await enable.call({ enabled: "true" });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("contact phone");
+    expect(await bookingSettingsOf(fixtures.a.restaurantId)).toMatchObject({ enabled: false });
+  });
+
+  it("a new period joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const { fields, init } = smuggledB();
+    const name = `${addedPeriodPrefix}${crypto.randomUUID().slice(0, 8)}`;
+
+    const response = await addPeriod.call({ ...fields, name }, init("/api/bookings/periods"));
+
+    expect(response.status).toBeLessThan(400);
+    expect(await periodsNamed(fixtures.b.restaurantId, name)).toEqual([]);
+    expect(await periodsNamed(fixtures.a.restaurantId, name)).toHaveLength(1);
+  });
+
+  it("a staff context adds no period", async () => {
+    session.identity = aStaff.key;
+    const before = (await periodsNamed(fixtures.a.restaurantId, addedPeriodPrefix)).length;
+
+    expect(await statusOf(() => addPeriod.call())).toBe(403);
+
+    expect(await periodsNamed(fixtures.a.restaurantId, addedPeriodPrefix)).toHaveLength(before);
+  });
+
+  it("an edit with restaurant B's id in the request still can't reach B's period", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.b.restaurantId;
+    const before = await periodStanding(fixtures.b.periodId);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/periods/[periodId]/route")).POST(
+        request(`/api/bookings/periods/${fixtures.b.periodId}?restaurantId=${id}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": id },
+          body: form({
+            name: "Hijacked",
+            opensAt: "10:00",
+            lastBookingAt: "11:00",
+            closesAt: "12:00",
+            restaurantId: id,
+          }),
+        }),
+        periodParams(fixtures.b.periodId),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await periodStanding(fixtures.b.periodId)).toEqual(before);
+  });
+});
+
 describe("public routes", () => {
   const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
 
@@ -1102,7 +1394,7 @@ describe("the example routes", () => {
       for (const route of routes) {
         // A blank category isn't a bad id, it's no choice: see the menu routes.
         const categoryId = staffId || "not-a-uuid";
-        expect(await statusOf(() => route.call({ ...fixtures.a, staffId, categoryId, tableId: staffId }))).toBe(404);
+        expect(await statusOf(() => route.call({ ...fixtures.a, staffId, categoryId, tableId: staffId, periodId: staffId }))).toBe(404);
       }
     },
   );

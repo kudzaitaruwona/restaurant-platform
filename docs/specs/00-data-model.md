@@ -152,6 +152,14 @@ booking_settings                            -- one row per restaurant
   max_online_party_size int default 8
   guest_cancel_cutoff_minutes int default 120
   max_active_bookings_per_phone int default 2
+  -- (proposed) a row is made by a trigger when the restaurant is created. Also an `id` column,
+  -- UNIQUE (restaurant_id, id), because every tenant table has one for composite keys.
+  -- (proposed) every number is bounded by a CHECK: intervals and sittings 1-720 minutes (slot interval
+  -- 1-240), buffer 0-240, lead time and cancel cutoff 0-10080, days ahead 0-365, party sizes 1-100,
+  -- active bookings per phone 1-20.
+  -- (proposed) enabled = true requires a service period, a bookable non-archived table and
+  -- restaurants.contact_phone: a trigger refuses to enable without them and switches booking off
+  -- when the last one goes (spec 04 › Settings).
 
 service_periods                             -- several per day allowed (lunch, dinner)
   id, restaurant_id
@@ -162,9 +170,12 @@ service_periods                             -- several per day allowed (lunch, d
   closes_at             time                -- end of service; used for "outside hours" metric
   CHECK (opens_at <= last_booking_at AND last_booking_at < closes_at)
   -- v1: periods don't cross midnight (closes_at ≤ 23:59). Late-night venues are out of scope.
+  -- (proposed) name is 1-50 characters after trimming; CHECK (closes_at <= '23:59').
   -- No two periods on the same weekday may overlap:
   EXCLUDE USING gist (restaurant_id WITH =, weekday WITH =,
                       int4range(minutes(opens_at), minutes(closes_at)) WITH &&)
+  -- (proposed) built with whole seconds, extract(epoch from opens_at)::int, since `minutes()` isn't a function;
+  -- ranges are half-open, so two periods can touch.
 
 closures                                    -- holidays, private events
   id, restaurant_id, starts_at, ends_at, reason text null

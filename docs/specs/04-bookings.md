@@ -100,9 +100,11 @@ Changing a booking's time in v1 means cancel plus a new booking. That keeps the 
 
 These run on the same scheduled job as notifications (spec 05).
 
-### Settings `/admin/bookings/settings`
+### Settings `/dashboard/bookings/settings` (D-10)
 - Enable or disable online booking. Enabling is blocked until at least one service period, one bookable table, and `restaurants.contact_phone` all exist. The contact number appears on the large-party message and in cancellation messages.
 - Service periods per weekday, with several allowed (lunch and dinner), each with a name, opening time, last booking time, and closing time. Periods can't overlap or cross midnight in v1.
+- *(Proposed)* Enabling is enforced by Postgres, not just the screen: a trigger refuses to set `enabled` while any of the three is missing, and the refusal names what is missing. The same three are rechecked when the last service period is deleted, the last bookable table is archived or made walk-ins only, or `contact_phone` is cleared: booking is then **switched off automatically**, so enabling at the moment the last table is archived can't commit with nothing to book.
+- *(Proposed)* A period's name is 1 to 50 characters, and its closing time is no later than 23:59. Periods are `[opens_at, closes_at)`, so one may close at the minute the next opens.
 - Closures (date or datetime ranges, with a reason). **Saving a closure that covers existing confirmed bookings** lists those bookings first. Staff must move or cancel each one (cancelling sends the guest a cancellation message) before the closure saves.
 - Sitting lengths, buffer, lead time, days ahead, max online party size, and cancel cutoff (all from `booking_settings`).
 - A **copy-able booking link** and a QR code to share on Instagram, WhatsApp status or a Google profile.
