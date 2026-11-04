@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like, or } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
@@ -16,6 +16,7 @@ import {
   adminAuthUser,
   auditLog,
   categories,
+  diningTables,
   menuItems,
   restaurants,
   staff,
@@ -82,6 +83,10 @@ type TenantRoute = {
 
 const harnessItem = "Harness item";
 const harnessCategory = "Harness category";
+const harnessTablePrefix = "Harness table ";
+/** A table's QR token, one for each restaurant's table the harness plants. */
+const fixtureTableToken = (restaurant: "a" | "b") =>
+  `Harness${restaurant.toUpperCase()}`.padEnd(22, "0");
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -217,6 +222,22 @@ const sessionRoutes: SessionRoute[] = [
         }),
       ),
   },
+  {
+    // Labels are unique, so each call is a new table.
+    name: "POST /api/tables",
+    call: async (fields, init) =>
+      (await import("@/app/api/tables/route")).POST(
+        request(init?.path ?? "/api/tables", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            label: `${harnessTablePrefix}${crypto.randomUUID()}`,
+            capacity: "4",
+            ...fields,
+          }),
+        }),
+      ),
+  },
 ];
 
 /**
@@ -226,6 +247,8 @@ const sessionRoutes: SessionRoute[] = [
  */
 type PublicRoute = {
   name: string;
+  /** The token of restaurant A's or B's seeded page. */
+  tokenOf: (restaurant: "a" | "b") => string;
   call: (
     token: string,
     init?: { query?: string; headers?: Record<string, string> },
@@ -235,10 +258,20 @@ type PublicRoute = {
 const publicRoutes: PublicRoute[] = [
   {
     name: "GET /m/[menuToken]",
+    tokenOf: (restaurant) => `dev-menu-restaurant-${restaurant}`,
     call: async (menuToken, init) =>
       (await import("@/app/m/[menuToken]/route")).GET(
         request(`/m/${menuToken}${init?.query ?? ""}`, { headers: init?.headers }),
         { params: Promise.resolve({ menuToken }) },
+      ),
+  },
+  {
+    name: "GET /t/[qrToken]",
+    tokenOf: fixtureTableToken,
+    call: async (qrToken, init) =>
+      (await import("@/app/t/[qrToken]/route")).GET(
+        request(`/t/${qrToken}${init?.query ?? ""}`, { headers: init?.headers }),
+        { params: Promise.resolve({ qrToken }) },
       ),
   },
 ];
@@ -351,6 +384,14 @@ beforeAll(async () => {
       name: fixtureName,
     })),
   );
+  await owner.db.insert(diningTables).values(
+    (["a", "b"] as const).map((key) => ({
+      restaurantId: fixtures[key].restaurantId,
+      label: fixtureName,
+      capacity: 2,
+      qrToken: fixtureTableToken(key),
+    })),
+  );
 });
 
 afterEach(async () => {
@@ -365,6 +406,14 @@ afterAll(async () => {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
   await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
+  await owner.db
+    .delete(diningTables)
+    .where(
+      or(
+        eq(diningTables.label, fixtureName),
+        like(diningTables.label, `${harnessTablePrefix}%`),
+      ),
+    );
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -454,6 +503,17 @@ const harnessCategories = (restaurantId: string) =>
       and(
         eq(categories.restaurantId, restaurantId),
         eq(categories.name, harnessCategory),
+      ),
+    );
+
+const harnessTables = (restaurantId: string) =>
+  owner.db
+    .select({ id: diningTables.id })
+    .from(diningTables)
+    .where(
+      and(
+        eq(diningTables.restaurantId, restaurantId),
+        like(diningTables.label, `${harnessTablePrefix}%`),
       ),
     );
 
@@ -584,6 +644,7 @@ describe("routes that take no id", () => {
       const before = await restaurantRow(aStaff.restaurantId);
       const added = (await addedStaff()).length;
       const newCategories = (await harnessCategories(aStaff.restaurantId)).length;
+      const newTables = (await harnessTables(aStaff.restaurantId)).length;
 
       expect(
         await statusOf(() => route.call({ contactPhone: "+263771234567" })),
@@ -592,6 +653,7 @@ describe("routes that take no id", () => {
       expect(await restaurantRow(aStaff.restaurantId)).toEqual(before);
       expect(await addedStaff()).toHaveLength(added);
       expect(await harnessCategories(aStaff.restaurantId)).toHaveLength(newCategories);
+      expect(await harnessTables(aStaff.restaurantId)).toHaveLength(newTables);
     },
   );
 
@@ -715,13 +777,59 @@ describe("the menu routes", () => {
   });
 });
 
+describe("the tables route", () => {
+  const addTable = sessionRoutes[3];
+
+  it("a new table joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const before = (await harnessTables(fixtures.a.restaurantId)).length;
+    const id = fixtures.b.restaurantId;
+
+    const response = await addTable.call(
+      { restaurantId: id, restaurant_id: id },
+      {
+        headers: { "x-restaurant-id": id },
+        path: `/api/tables?restaurantId=${id}&restaurant_id=${id}`,
+      },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await harnessTables(fixtures.b.restaurantId)).toEqual([]);
+    expect(await harnessTables(fixtures.a.restaurantId)).toHaveLength(before + 1);
+  });
+
+  it("a new table gets a token of its own, 22 characters of base62", async () => {
+    session.identity = aOwner.key;
+    const label = `${harnessTablePrefix}${crypto.randomUUID()}`;
+
+    await addTable.call({ label });
+
+    const [table] = await owner.db
+      .select({ qrToken: diningTables.qrToken })
+      .from(diningTables)
+      .where(eq(diningTables.label, label));
+    expect(table.qrToken).toMatch(/^[0-9A-Za-z]{22}$/);
+  });
+
+  it("a label a live table has is a 409 and adds nothing", async () => {
+    session.identity = aOwner.key;
+    const label = `${harnessTablePrefix}${crypto.randomUUID()}`;
+    await addTable.call({ label });
+    const before = (await harnessTables(fixtures.a.restaurantId)).length;
+
+    const response = await addTable.call({ label });
+
+    expect(response.status).toBe(409);
+    expect(await harnessTables(fixtures.a.restaurantId)).toHaveLength(before);
+  });
+});
+
 describe("public routes", () => {
-  const tokenOf = (restaurant: "a" | "b") => `dev-menu-restaurant-${restaurant}`;
   const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
 
   it.each(eachPublic)("%s: needs no session", async (_name, route) => {
     session.identity = "";
-    expect(await statusOf(() => route.call(tokenOf("a")))).toBe(200);
+    expect(await statusOf(() => route.call(route.tokenOf("a")))).toBe(200);
   });
 
   it.each(eachPublic)("%s: an unknown token is a 404", async (_name, route) => {
@@ -752,7 +860,7 @@ describe("public routes", () => {
       session.identity = aOwner.key;
       const id = fixtures.a.restaurantId;
 
-      const response = await route.call(tokenOf("b"), {
+      const response = await route.call(route.tokenOf("b"), {
         query: `?restaurantId=${id}`,
         headers: { "x-restaurant-id": id },
       });

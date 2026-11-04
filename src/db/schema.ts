@@ -272,6 +272,41 @@ export const menuItems = pgTable(
 );
 
 /**
+ * Tables (spec 00, 3). `qr_token` is unique across the platform, so a token on
+ * its own names the table and the restaurant (spec 03). Archiving frees the
+ * label but the table keeps its token, which stops working (see the lookup).
+ */
+export const diningTables = pgTable(
+  "tables",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    label: text().notNull(),
+    capacity: integer().notNull(),
+    // false = walk-ins only
+    bookable: boolean().notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    qrToken: text("qr_token").notNull().unique(),
+    tokenRotatedAt: timestamp("token_rotated_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    uniqueIndex("tables_restaurant_id_label_unique")
+      .on(table.restaurantId, table.label)
+      .where(sql`${table.archivedAt} is null`),
+    check("tables_capacity_positive", sql`${table.capacity} > 0`),
+    // 22 base62 characters is 131 bits; the minting code can't make a shorter one.
+    check("tables_qr_token_shape", sql`${table.qrToken} ~ '^[0-9A-Za-z]{22,}$'`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
  * Better Auth's tables, one set per session type (S-30): a staff session, link
  * or code means nothing to the platform-admin sign-in, and the other way round.
  *

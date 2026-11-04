@@ -82,6 +82,13 @@ const noSuchMenu = page(
 <p>Check the link, or ask a member of staff for the menu.</p>`,
 );
 
+/** A table's code that no longer leads anywhere: regenerated, archived or never made. */
+const codeOutOfDate = page(
+  "Code out of date",
+  html`<h1>This code is out of date</h1>
+<p>Ask a member of staff for help.</p>`,
+);
+
 /**
  * The page for a token, or null if it names no restaurant. Everything the token
  * leads to is in here, so the response caches whole. Its tag is the restaurant's,
@@ -109,7 +116,8 @@ async function cachedPage(kind: PublicTokenKind, token: string) {
 
 export async function publicMenuResponse(kind: PublicTokenKind, token: string) {
   const menu = await cachedPage(kind, token);
-  return new Response(menu ?? noSuchMenu.toString(), {
+  const missing = kind === "table" ? codeOutOfDate : noSuchMenu;
+  return new Response(menu ?? missing.toString(), {
     status: menu === null ? 404 : 200,
     headers: { "content-type": "text/html; charset=utf-8" },
   });

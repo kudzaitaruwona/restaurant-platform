@@ -14,7 +14,7 @@ import {
  * counting towards keeping a session alive.
  */
 export const config = {
-  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+"],
+  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*", "/m/:path+", "/t/:path+"],
 };
 
 /**
@@ -24,7 +24,7 @@ export const config = {
  * this runs ahead of the cache on each visit, which is why a public page does
  * nothing else here: no cookies, no session. Each one also needs its matcher.
  */
-const publicPagePrefixes = ["/m/"];
+const publicPagePrefixes = ["/m/", "/t/"];
 const cacheableMethods = new Set(["GET", "HEAD"]);
 
 const isPublicPage = (request: NextRequest) =>

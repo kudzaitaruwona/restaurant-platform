@@ -8,8 +8,11 @@ import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { categories, restaurants, staff } from "@/db/schema";
+import { POST as addTable } from "@/app/api/tables/route";
+import { categories, diningTables, restaurants, staff } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
+import { qrSvg, tableCodeUrl } from "@/lib/qr-code";
 import type { TenantContext } from "@/lib/tenant";
 import {
   openOwnerDatabase,
@@ -17,6 +20,8 @@ import {
 } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
 import { MenuScreen } from "./menu/menu-screen";
+import { TablesScreen } from "./tables/tables-screen";
+import { PrintSheet } from "./tables/print/print-sheet";
 import { SettingsScreen } from "./settings/settings-screen";
 import { StaffScreen } from "./staff/staff-screen";
 
@@ -185,6 +190,11 @@ describe("how a saved form is answered", () => {
         return addItem(post("/api/menu/items", item(categoryId), headers));
       },
     ],
+    [
+      "POST /api/tables",
+      "/dashboard/tables",
+      (headers) => addTable(post("/api/tables", { label: "7", capacity: "4" }, headers)),
+    ],
   ];
 
   it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
@@ -263,6 +273,147 @@ describe("the menu routes", () => {
   it("refuse a blank category name with a reason", async () => {
     const response = await addCategory(post("/api/menu/categories", { name: " " }));
     expect(response.status).toBe(400);
+  });
+});
+
+const newTable = (label = "7", capacity = "4") =>
+  addTable(post("/api/tables", { label, capacity }));
+
+describe("/dashboard/tables", () => {
+  it("lists the tables an owner has added", async () => {
+    await newTable("7", "4");
+    await newTable("Patio 1", "6");
+
+    const html = await screen(TablesScreen);
+
+    expect(html).toContain("Patio 1");
+    expect(html).toContain("Seats 6");
+    expect(html.indexOf(">7<")).toBeLessThan(html.indexOf("Patio 1"));
+    expect(html).toContain('href="/dashboard/tables/print"');
+  });
+
+  it("posts to the route behind it", async () => {
+    expect(await screen(TablesScreen)).toContain('action="/api/tables"');
+  });
+
+  it("offers no print sheet until there's a table", async () => {
+    const html = await screen(TablesScreen);
+    expect(html).toContain("No tables yet");
+    expect(html).not.toContain("/dashboard/tables/print");
+  });
+
+  it("refuses staff with forbidden(), before any data renders", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => TablesScreen())).toBe(403);
+  });
+});
+
+describe("the tables route", () => {
+  it("refuses an unusable capacity with a reason, and saves nothing", async () => {
+    const response = await newTable("7", "0");
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(await screen(TablesScreen)).toContain("No tables yet");
+  });
+
+  it("refuses a blank label with a reason", async () => {
+    expect((await newTable("  ", "4")).status).toBe(400);
+  });
+
+  it("refuses a label a live table has, with a reason the form can show", async () => {
+    await newTable("7");
+
+    const response = await newTable("7", "2");
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Another table already has that label." });
+  });
+});
+
+describe("/dashboard/tables/print", () => {
+  const scanned = (html: string) =>
+    [...html.matchAll(/\/t\/([0-9A-Za-z]{22})/g)].map((match) => match[1]);
+
+  it("has a card for a table the moment it is added: restaurant, label, instruction and Wi-Fi", async () => {
+    await newTable("Patio 1");
+
+    const html = await screen(PrintSheet);
+
+    expect(html).toContain("Mama&#x27;s Kitchen");
+    expect(html).toContain("Patio 1");
+    expect(html).toContain("Scan to see the menu");
+    expect(html).toContain("Wi-Fi: Mamas Guest, password sadza-and-stew");
+    expect(html).toContain("<svg");
+  });
+
+  it("encodes the app's address and the table's token, and nothing of the table or restaurant", async () => {
+    await newTable("Patio 1");
+    const [{ qrToken }] = await owner.db
+      .select({ qrToken: diningTables.qrToken })
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, tenant.restaurantId));
+    const expected = await qrSvg(tableCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, qrToken));
+
+    const html = await screen(PrintSheet);
+
+    expect(html).toContain(expected.trim());
+    expect(html).not.toContain(tenant.restaurantId);
+  });
+
+  it("is at least 3cm wide, and one card each for the tables", async () => {
+    await newTable("1");
+    await newTable("2");
+    await newTable("3");
+
+    const html = await screen(PrintSheet);
+
+    expect(html.match(/w-\[5cm\]/g)).toHaveLength(3);
+  });
+
+  it("is a page of its own sheet: A4, and the cards don't split", async () => {
+    await newTable("1");
+    const html = await screen(PrintSheet);
+    expect(html).toContain("size:A4");
+    expect(html).toContain("break-inside-avoid");
+  });
+
+  it("holds only this restaurant's tables", async () => {
+    await newTable("Mine");
+    const otherId = crypto.randomUUID();
+    await owner.db.insert(restaurants).values({
+      id: otherId,
+      name: "Other place",
+      slug: `screens-${otherId}`,
+      menuToken: otherId,
+      currencyMode: "usd_only",
+    });
+    await owner.db.insert(diningTables).values({
+      restaurantId: otherId,
+      label: "Theirs",
+      capacity: 2,
+      qrToken: "T".repeat(22),
+    });
+    try {
+      const html = await screen(PrintSheet);
+
+      expect(html).toContain("Mine");
+      expect(html).not.toContain("Theirs");
+      expect(scanned(html)).not.toContain("T".repeat(22));
+    } finally {
+      await owner.db.delete(diningTables).where(eq(diningTables.restaurantId, otherId));
+      await owner.db.delete(restaurants).where(eq(restaurants.id, otherId));
+    }
+  });
+
+  it("says to add a table first when there are none", async () => {
+    expect(await screen(PrintSheet)).toContain("Add a table first");
+  });
+
+  it("refuses staff with forbidden(), before any code renders", async () => {
+    await newTable("1");
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => PrintSheet())).toBe(403);
   });
 });
 

@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { categories, menuItems, restaurants, staff } from "../../src/db/schema";
+import { categories, diningTables, menuItems, restaurants, staff } from "../../src/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -22,9 +22,21 @@ import {
  * however many times this has run against the same build. Those restaurants
  * stay behind, because the last-owner trigger won't let their owners go.
  */
-/** Chain 3's `/t/{qr_token}` goes here, and in `publicPagePrefixes` in src/proxy.ts. */
+/** A new public page goes here, and in `publicPagePrefixes` in src/proxy.ts. */
+type Restaurant = { menuToken: string; qrToken: string };
 const publicPages = [
-  { route: "/m/[menuToken]", url: (menuToken: string) => `/m/${menuToken}` },
+  {
+    route: "/m/[menuToken]",
+    tokenOf: (restaurant: Restaurant) => restaurant.menuToken,
+    url: (token: string) => `/m/${token}`,
+    unknown: "Menu not found",
+  },
+  {
+    route: "/t/[qrToken]",
+    tokenOf: (restaurant: Restaurant) => restaurant.qrToken,
+    url: (token: string) => `/t/${token}`,
+    unknown: "This code is out of date",
+  },
 ];
 
 const refusedMethods = ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "PROPFIND"];
@@ -100,7 +112,12 @@ async function newRestaurant(dish: string) {
   await owner.db
     .insert(menuItems)
     .values({ restaurantId: id, categoryId, name: dish, priceUsd: "8" });
-  return { id, menuToken, categoryId };
+  // 22 base62 characters, and unique to this restaurant.
+  const qrToken = id.replaceAll("-", "").slice(0, 22).padEnd(22, "0");
+  await owner.db
+    .insert(diningTables)
+    .values({ restaurantId: id, label: "7", capacity: 4, qrToken });
+  return { id, menuToken, qrToken, categoryId };
 }
 
 const visit = (path: string, init?: RequestInit) =>
@@ -141,12 +158,12 @@ describe("the build", () => {
   });
 });
 
-describe.each(publicPages)("$route", ({ url }) => {
+describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
   it("is rendered once, then served from the cache", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const first = await visit(url(menuToken));
-    const second = await visit(url(menuToken));
+    const first = await visit(url(tokenOf(restaurant)));
+    const second = await visit(url(tokenOf(restaurant)));
 
     expect([first.status, cacheStatus(first)]).toEqual([200, "MISS"]);
     expect([second.status, cacheStatus(second)]).toEqual([200, "HIT"]);
@@ -154,18 +171,18 @@ describe.each(publicPages)("$route", ({ url }) => {
   });
 
   it("can be cached for five minutes at most, so a special's window is never far out", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const response = await visit(url(menuToken));
+    const response = await visit(url(tokenOf(restaurant)));
 
     expect(response.headers.get("cache-control")).toBe("s-maxage=300");
   });
 
   it.each(refusedMethods)("refuses %s, which can't take the page down", async (method) => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const attack = await visit(url(menuToken), { method });
-    const customer = await visit(url(menuToken));
+    const attack = await visit(url(tokenOf(restaurant)), { method });
+    const customer = await visit(url(tokenOf(restaurant)));
 
     expect(attack.status).toBe(405);
     expect(attack.headers.get("allow")).toBe("GET, HEAD");
@@ -174,10 +191,10 @@ describe.each(publicPages)("$route", ({ url }) => {
   });
 
   it("answers HEAD without emptying the page for the next visit", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const head = await visit(url(menuToken), { method: "HEAD" });
-    const customer = await visit(url(menuToken));
+    const head = await visit(url(tokenOf(restaurant)), { method: "HEAD" });
+    const customer = await visit(url(tokenOf(restaurant)));
 
     expect(head.status).toBe(200);
     expect(customer.status).toBe(200);
@@ -192,14 +209,14 @@ describe.each(publicPages)("$route", ({ url }) => {
 
     expect(first.status).toBe(404);
     expect(second.status).toBe(404);
-    expect(await second.text()).toContain("Menu not found");
+    expect(await second.text()).toContain(unknown);
   });
 
   it("a save refreshes that restaurant's page and leaves another's in the cache", async () => {
     const mine = await newRestaurant("Stew");
     const theirs = await newRestaurant("Curry");
-    await visit(url(mine.menuToken));
-    await visit(url(theirs.menuToken));
+    await visit(url(tokenOf(mine)));
+    await visit(url(tokenOf(theirs)));
     const cookie = await signInAsOwnerOf(mine.id);
 
     const saved = await visit("/api/menu/items", {
@@ -214,9 +231,9 @@ describe.each(publicPages)("$route", ({ url }) => {
     });
 
     expect(saved.status).toBe(303);
-    const refreshed = await visit(url(mine.menuToken));
+    const refreshed = await visit(url(tokenOf(mine)));
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
-    expect(cacheStatus(await visit(url(theirs.menuToken)))).toBe("HIT");
+    expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
   });
 });
