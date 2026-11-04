@@ -51,8 +51,6 @@ export function moveBookingResponse(outcome: MoveOutcome, request: Request) {
       return refuse("The booking is already at that table.", 409);
     case "table_archived":
       return refuse("That table is no longer in use. Choose another.", 409);
-    case "too_small":
-      return refuse(`That table seats ${outcome.capacity}, fewer than the party of ${outcome.party}.`, 409);
     case "walk_in_only":
       return refuse("That table is for walk-ins only, and an online booking can't be moved to it.", 409);
     case "taken":

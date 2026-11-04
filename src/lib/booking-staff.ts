@@ -266,7 +266,6 @@ export type MoveOutcome =
   | { outcome: "wrong_status"; status: (typeof bookings.$inferSelect)["status"] }
   | { outcome: "same_table" }
   | { outcome: "table_archived" }
-  | { outcome: "too_small"; capacity: number; party: number }
   /** An online booking can't hold a walk-ins-only table (bookings_table_bookable, #40). */
   | { outcome: "walk_in_only" }
   | { outcome: "taken" };
@@ -284,9 +283,9 @@ export type MoveOutcome =
  *  - Only `confirmed` bookings move. A seated party is at a table already, and a
  *    stale tap must not move the record away from where they sit; completed,
  *    cancelled and no-show are over.
- *  - The table must seat the party. D-02 has no combined tables, and the
- *    overrides spec 04 gives staff don't include seating a party at a table too
- *    small for it.
+ *  - Any live table free for the hold will do, however many it seats: spec 04
+ *    says "any table that's free for the hold window", and staff can see the
+ *    room. (Add booking keeps its capacity rule.)
  *  - Staff may move a booking to a walk-ins-only table, bar an online booking
  *    (the database says no, and the list leaves those out).
  *  - The guest isn't messaged, and the move is audited (spec 01) for everyone.
@@ -319,9 +318,6 @@ export async function moveBooking(actor: Actor, bookingId: string, tableId: stri
       if (booking.status !== "confirmed") return { outcome: "wrong_status", status: booking.status };
       if (booking.tableId === tableId) return { outcome: "same_table" };
       if (target.archivedAt !== null) return { outcome: "table_archived" };
-      if (target.capacity < booking.partySize) {
-        return { outcome: "too_small", capacity: target.capacity, party: booking.partySize };
-      }
       if (booking.source === "online" && !target.bookable) return { outcome: "walk_in_only" };
 
       const moved = await tx
@@ -350,13 +346,15 @@ export async function moveBooking(actor: Actor, bookingId: string, tableId: stri
     if (cause?.code === "23P01" && cause.constraint === "bookings_no_overlap") return { outcome: "taken" };
     if (cause?.code === "23514" && cause.constraint === "bookings_table_live") return { outcome: "table_archived" };
     if (cause?.code === "23514" && cause.constraint === "bookings_table_bookable") return { outcome: "walk_in_only" };
+    // Two writers waiting on each other's rows: Postgres failed this one, so it lost the table.
+    if (cause?.code === "40P01") return { outcome: "taken" };
     throw new Error(`moving a booking failed: ${cause?.code ?? "unknown"}`);
   }
 }
 
 /**
  * For each confirmed booking on a day, the tables it could move to now: free for
- * its hold, big enough, live, and bookable if the booking is online. Three reads
+ * its hold, live (any size), and bookable if the booking is online. Three reads
  * however many bookings: advice for the screen, the constraint is what decides.
  */
 export function getMoveTargets(
@@ -410,7 +408,6 @@ export function getMoveTargets(
         freeTables(tables, rows, {
           startsAt: row.startsAt,
           holdEndsAt: row.holdEndsAt,
-          party: row.party,
           ignore: row.id,
         })
           .filter((table) => table.id !== row.tableId && (table.bookable || row.source === "staff"))

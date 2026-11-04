@@ -116,7 +116,11 @@ export async function seatWalkIn(
           select ctx.*,
             (select max(b.hold_ends_at) from bookings b
               where b.restaurant_id = ${actor.restaurantId} and b.table_id = ctx.table_id
-                and b.status in (${blocking}) and b.starts_at <= ctx.n and b.hold_ends_at > ctx.n) as busy,
+                and b.status in (${blocking}) and b.starts_at <= ctx.n and b.hold_ends_at > ctx.n
+                -- bookings_hold_capped keeps a hold within 960 minutes of its start, so
+                -- nothing that started earlier can still hold the table. Raising that
+                -- cap means raising this bound too.
+                and b.starts_at > ctx.n - 960 * ${minute}) as busy,
             (select min(b.starts_at) from bookings b
               where b.restaurant_id = ${actor.restaurantId} and b.table_id = ctx.table_id
                 and b.status in (${blocking}) and b.starts_at > ctx.n) as next

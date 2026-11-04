@@ -468,4 +468,9 @@ describe("freeTables", () => {
     ];
     expect(ids([], tables)).toEqual(["walk", "big"]);
   });
+
+  it("takes any size when no party is given: a move is to any free table", () => {
+    const tables = [table("big", 6, { sortOrder: 2 }), table("small", 1, { sortOrder: 1 })];
+    expect(freeTables(tables, [], { startsAt: start, holdEndsAt: end }).map(({ id }) => id)).toEqual(["small", "big"]);
+  });
 });

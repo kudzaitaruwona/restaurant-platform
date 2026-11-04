@@ -308,21 +308,21 @@ export const staffRules = (rules: Rules): Rules => ({
 
 /**
  * Tables that could take a hold of `window` from another booking, in the order a
- * list reads: live, big enough, and no confirmed, seated or completed hold
+ * list reads: live, big enough when a party is given, and no confirmed, seated or completed hold
  * overlapping the window, bar the booking being moved. Whether a table is
  * walk-ins only is the caller's to say: staff may use one.
  */
 export function freeTables(
   tables: readonly EngineTable[],
   holds: readonly Hold[],
-  window: { startsAt: Date; holdEndsAt: Date; party: number; ignore?: string },
+  window: { startsAt: Date; holdEndsAt: Date; party?: number; ignore?: string },
 ) {
   const live = holds.filter((hold) => blocks(hold) && (window.ignore === undefined || hold.id !== window.ignore));
   return tables
     .filter(
       (table) =>
         table.archivedAt === null &&
-        table.capacity >= window.party &&
+        (window.party === undefined || table.capacity >= window.party) &&
         !live.some(
           (hold) => hold.tableId === table.id && overlaps(hold, window.startsAt, window.holdEndsAt),
         ),

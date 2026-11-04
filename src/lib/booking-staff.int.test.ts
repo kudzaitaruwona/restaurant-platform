@@ -612,11 +612,38 @@ describe("move table", () => {
     },
   );
 
-  it("a table that seats fewer than the party is refused with both numbers", async () => {
+  it("a free table that seats fewer than the party is still a move: spec 04 says any table free for the hold", async () => {
     const { restaurantId, tableIds, booking } = await twoTables("confirmed", { partySize: 4 }, [{ capacity: 4 }, { capacity: 2 }]);
 
-    expect(await moveBooking(actor(restaurantId), booking.id, tableIds[1])).toEqual({ outcome: "too_small", capacity: 2, party: 4 });
-    expect((await rowOf(booking.id)).tableId).toBe(tableIds[0]);
+    expect(await moveBooking(actor(restaurantId), booking.id, tableIds[1])).toEqual({
+      outcome: "moved",
+      from: tableIds[0],
+      to: tableIds[1],
+    });
+    expect((await rowOf(booking.id)).tableId).toBe(tableIds[1]);
+  });
+
+  it("a deadlock Postgres breaks against this move is the table taken, not a 500", async () => {
+    const { restaurantId, tableIds, booking } = await twoTables();
+    const name = `force_deadlock_${booking.id.replaceAll("-", "")}`;
+    // Scoped to this booking's id, so tests running beside this one never see it.
+    await owner.db.execute(sql.raw(`
+      create function ${name}() returns trigger language plpgsql as $f$
+      begin
+        if new.id = '${booking.id}' then
+          raise exception 'deadlock detected' using errcode = '40P01';
+        end if;
+        return new;
+      end $f$`));
+    await owner.db.execute(sql.raw(`create trigger ${name} before update on bookings for each row execute function ${name}()`));
+    try {
+      expect(await moveBooking(actor(restaurantId), booking.id, tableIds[1])).toEqual({ outcome: "taken" });
+      expect((await rowOf(booking.id)).tableId).toBe(tableIds[0]);
+      expect(await auditOf(restaurantId)).toEqual([]);
+    } finally {
+      await owner.db.execute(sql.raw(`drop trigger ${name} on bookings`));
+      await owner.db.execute(sql.raw(`drop function ${name}()`));
+    }
   });
 
   it("a table that seats the party exactly is fine", async () => {
@@ -700,6 +727,16 @@ describe("move targets for the day view", () => {
 
     expect(onlineTargets.map((table) => table.label)).toEqual(["Free"]);
     expect(staffTargets.map((table) => `${table.label}${table.walkInOnly ? "*" : ""}`).sort()).toEqual(["Free", "Walk*"]);
+  });
+
+  it("offers a free table too small for the party, with its seats for the label", async () => {
+    const { restaurantId, booking } = await twoTables("confirmed", { partySize: 4 }, [
+      { capacity: 4 }, { capacity: 2, label: "Small" },
+    ]);
+
+    const targets = (await getMoveTargets({ restaurantId }, date))[booking.id];
+
+    expect(targets).toEqual([expect.objectContaining({ label: "Small", capacity: 2 })]);
   });
 
   it("reads a constant number of queries however many bookings", async () => {

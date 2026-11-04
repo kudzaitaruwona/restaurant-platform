@@ -250,6 +250,27 @@ describe("a table that is occupied now", () => {
     expect(await seatWalkIn(who, tableId, 2, NOW)).toMatchObject({ outcome: "seated" });
   });
 
+  // Behaviour can't prove the starts_at lower bound in walk-in.ts exists (the unbounded
+  // query gives the same answers, only slower; an EXPLAIN is the evidence, recorded in
+  // the cycle report: with 30,000 earlier completed bookings on one table, the unbounded
+  // busy query was a bitmap scan of 3041 buffers (14 ms); bounded, an index range scan on
+  // (restaurant_id, starts_at) of 5 buffers (0.04 ms)). These pin the answers the bound must keep giving at the cap.
+  it("a booking at the 960-minute cap that still holds the table counts as busy", async () => {
+    const { restaurantId, tableId, actor: who } = await restaurant();
+    await bookOn(restaurantId, tableId, -959, 960, { status: "seated" });
+
+    expect(await seatWalkIn(who, tableId, 2, NOW)).toMatchObject({ outcome: "table_occupied" });
+    expect(await walkInsOf(restaurantId)).toEqual([]);
+  });
+
+  it("a booking that finished long ago doesn't count, and one starting exactly 960 minutes back that has ended doesn't either", async () => {
+    const { restaurantId, tableId, actor: who } = await restaurant();
+    await bookOn(restaurantId, tableId, -5000, 120, { status: "completed" });
+    await bookOn(restaurantId, tableId, -960, 960, { status: "seated" });
+
+    expect(await seatWalkIn(who, tableId, 2, NOW)).toMatchObject({ outcome: "seated" });
+  });
+
   it("a second walk-in on the same table is refused", async () => {
     const { tableId, actor: who } = await restaurant();
     await seatWalkIn(who, tableId, 2, NOW);
