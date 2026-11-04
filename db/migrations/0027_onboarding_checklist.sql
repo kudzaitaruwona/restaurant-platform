@@ -7,6 +7,5 @@ CREATE TABLE "onboarding_checklist" (
 );
 --> statement-breakpoint
 ALTER TABLE "onboarding_checklist" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "onboarding_checklist" ADD CONSTRAINT "onboarding_checklist_qr_codes_printed_by_platform_admins_id_fk" FOREIGN KEY ("qr_codes_printed_by") REFERENCES "public"."platform_admins"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "onboarding_checklist" ADD CONSTRAINT "onboarding_checklist_restaurant_id_restaurants_id_fk" FOREIGN KEY ("restaurant_id") REFERENCES "public"."restaurants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE POLICY "tenant_isolation" ON "onboarding_checklist" AS PERMISSIVE FOR ALL TO public USING ("restaurant_id" = nullif(current_setting('app.restaurant_id', true), '')::uuid) WITH CHECK ("restaurant_id" = nullif(current_setting('app.restaurant_id', true), '')::uuid);

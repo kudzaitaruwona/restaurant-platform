@@ -13,8 +13,10 @@ import {
   diningTables,
   exchangeRates,
   menuItems,
+  onboardingChecklist,
   restaurants,
   servicePeriods,
+  platformAdmins,
   staff,
 } from "./schema";
 
@@ -185,6 +187,13 @@ describe("platform_onboarding_checklist", () => {
     });
   });
 
+  it("never counts a usd_only restaurant's exchange rate as set, since none is needed (proposed, see spec 01)", async () => {
+    const { rows } = await admin.db.execute<{ id: string }>(
+      sql`select platform_create_restaurant(${adminId}, 'UsdOnly', ${`usd-${crypto.randomUUID()}`}, 'Africa/Harare', 'usd_only') as id`,
+    );
+    expect((await checklistOf(rows[0].id))?.exchange_rate_set).toBe(false);
+  });
+
   it("refuses an id that isn't a platform admin's", async () => {
     await failsWith(admin.db.execute(checklistSql(crypto.randomUUID())), INSUFFICIENT_PRIVILEGE);
   });
@@ -250,6 +259,56 @@ describe("platform_set_qr_codes_printed", () => {
       entityType: "restaurant",
       entityId: id,
     });
+  });
+
+  it("ticking again keeps the first tick's time and admin, and writes no second audit row", async () => {
+    const id = await newRestaurant();
+    const [second] = await owner.db
+      .insert(platformAdmins)
+      .values({ email: `second-${crypto.randomUUID()}@example.com` })
+      .returning();
+    const rowOf = async () =>
+      (await owner.db.select().from(onboardingChecklist).where(eq(onboardingChecklist.restaurantId, id)))[0];
+    try {
+      await admin.db.execute(tickSql(id, true));
+      const first = await rowOf();
+
+      await admin.db.execute(tickSql(id, true, second.id));
+
+      expect(await rowOf()).toEqual(first);
+      expect(first.qrCodesPrintedBy).toBe(adminId);
+      const printed = (await auditOf(id)).filter(
+        ({ action }) => action === "onboarding.qr_codes_printed",
+      );
+      expect(printed).toHaveLength(1);
+    } finally {
+      await owner.db.delete(platformAdmins).where(eq(platformAdmins.id, second.id));
+    }
+  });
+
+  it("unticking a restaurant that was never ticked writes no audit row", async () => {
+    const id = await newRestaurant();
+
+    await admin.db.execute(tickSql(id, false));
+
+    expect(await checklistOf(id)).toMatchObject({ qr_codes_printed: false });
+    expect(
+      (await auditOf(id)).filter(({ action }) => action.startsWith("onboarding.")),
+    ).toEqual([]);
+  });
+
+  it("revoking an admin who has ticked something still works", async () => {
+    const id = await newRestaurant();
+    const [leaving] = await owner.db
+      .insert(platformAdmins)
+      .values({ email: `leaving-${crypto.randomUUID()}@example.com` })
+      .returning();
+    await admin.db.execute(tickSql(id, true, leaving.id));
+
+    await owner.db.delete(platformAdmins).where(eq(platformAdmins.id, leaving.id));
+
+    expect(await owner.db.select().from(platformAdmins).where(eq(platformAdmins.id, leaving.id))).toEqual([]);
+    expect(await checklistOf(id)).toMatchObject({ qr_codes_printed: true });
   });
 
   it("refuses a restaurant that doesn't exist", async () => {

@@ -197,10 +197,13 @@ export const platformAdmins = pgTable(
  * The one onboarding item that can't be derived from the restaurant's data
  * (spec 01): that its QR codes have been printed, ticked by the platform admin.
  * A row means ticked and unticking deletes it. Admin only: app_tenant is
- * granted nothing on it (see 0027), so the checklist never reaches an owner,
+ * granted nothing on it (see 0028), so the checklist never reaches an owner,
  * and app_admin touches it through platform_set_qr_codes_printed alone.
  * `qr_codes_printed_by` is a platform admin, who belongs to no restaurant, so it
- * is not a composite key into staff.
+ * is not a composite key into staff. It has no foreign key to platform_admins,
+ * as `audit_log.actor_id` has none: revoking an admin is deleting their row, and
+ * a key would refuse that for any admin who has ticked something. The audit row
+ * already records who ticked.
  */
 export const onboardingChecklist = pgTable(
   "onboarding_checklist",
@@ -210,9 +213,7 @@ export const onboardingChecklist = pgTable(
     qrCodesPrintedAt: timestamp("qr_codes_printed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-    qrCodesPrintedBy: uuid("qr_codes_printed_by")
-      .notNull()
-      .references(() => platformAdmins.id),
+    qrCodesPrintedBy: uuid("qr_codes_printed_by").notNull(),
   },
   (table) => [
     foreignKey({

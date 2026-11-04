@@ -52,7 +52,7 @@ platform_admins                               -- Kudzai, for hand-onboarding
 
 onboarding_checklist                          -- S-33: admin only (app_tenant has no privilege); a row means "QR codes printed" is ticked
   restaurant_id         pk → restaurants    -- cascade; the other checklist items are derived, not stored
-  qr_codes_printed_at, qr_codes_printed_by → platform_admins
+  qr_codes_printed_at, qr_codes_printed_by    -- an admin's id, no foreign key (revoking an admin deletes their row)
 
 audit_log
   id, restaurant_id

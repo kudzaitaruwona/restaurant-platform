@@ -1,6 +1,6 @@
 {
-  "id": "52fd1709-3b21-46d7-8757-7e5ff36697d3",
-  "prevId": "1f58cdb6-7121-4eb1-a0dc-050e0be54e96",
+  "id": "08b2a60c-88d5-4df6-8a8e-c845f1ceff1b",
+  "prevId": "46cb792a-31c4-4636-9e57-0649eb4ca1dd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1766,19 +1766,6 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "onboarding_checklist_qr_codes_printed_by_platform_admins_id_fk": {
-          "name": "onboarding_checklist_qr_codes_printed_by_platform_admins_id_fk",
-          "tableFrom": "onboarding_checklist",
-          "columnsFrom": [
-            "qr_codes_printed_by"
-          ],
-          "tableTo": "platform_admins",
-          "columnsTo": [
-            "id"
-          ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
-        },
         "onboarding_checklist_restaurant_id_restaurants_id_fk": {
           "name": "onboarding_checklist_restaurant_id_restaurants_id_fk",
           "tableFrom": "onboarding_checklist",
