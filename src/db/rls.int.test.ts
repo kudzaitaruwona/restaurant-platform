@@ -112,6 +112,61 @@ describe("row-level security coverage", () => {
   });
 });
 
+describe("composite key coverage", () => {
+  // Every foreign key from one tenant table to another, read from the catalog,
+  // so a new one can't skip this. `restaurants` is the tenant root: a plain
+  // restaurant_id -> restaurants(id) key is the point of it, so it isn't counted.
+  const tenantForeignKeys = async () => {
+    const { rows } = await owner.db.execute(sql`
+      select con.conname as name,
+             exists (
+               select from unnest(con.conkey, con.confkey) as pair(local, parent)
+               join pg_attribute l on l.attrelid = con.conrelid and l.attnum = pair.local
+               join pg_attribute p on p.attrelid = con.confrelid and p.attnum = pair.parent
+               where l.attname = 'restaurant_id' and p.attname = 'restaurant_id'
+             ) as composite
+      from pg_constraint con
+      join pg_namespace n on n.oid = con.connamespace
+      where con.contype = 'f' and n.nspname = 'public'
+        and exists (select from pg_attribute a where a.attrelid = con.conrelid
+                    and a.attname = 'restaurant_id' and not a.attisdropped)
+        and exists (select from pg_attribute a where a.attrelid = con.confrelid
+                    and a.attname = 'restaurant_id' and not a.attisdropped)
+      order by con.conname
+    `);
+    return rows;
+  };
+
+  it("finds the tenant foreign keys", async () => {
+    const names = (await tenantForeignKeys()).map((row) => row.name);
+    expect(names).toContain("menu_items_category_fk");
+  });
+
+  it("every foreign key between tenant tables pairs restaurant_id with restaurant_id", async () => {
+    const single = (await tenantForeignKeys()).filter((row) => !row.composite);
+    expect(single).toEqual([]);
+  });
+
+  it("every tenant table has the UNIQUE (restaurant_id, id) a composite key points at", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select c.relname as table from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind in ('r', 'p')
+        and exists (select from pg_attribute a where a.attrelid = c.oid
+                    and a.attname = 'restaurant_id' and not a.attisdropped)
+        and not exists (
+          select from pg_constraint u
+          where u.conrelid = c.oid and u.contype in ('u', 'p')
+            and (select array_agg(a.attname::text order by a.attname)
+                 from pg_attribute a
+                 where a.attrelid = c.oid and a.attnum = any (u.conkey))
+                = array['id', 'restaurant_id']
+        )
+    `);
+    expect(rows).toEqual([]);
+  });
+});
+
 describe("a query outside any tenant", () => {
   it.each(["restaurants", "staff"])(
     "sees no rows in %s, though the table has rows",

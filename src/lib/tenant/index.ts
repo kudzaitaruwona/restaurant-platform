@@ -1,10 +1,8 @@
 import "server-only";
 import { cache } from "react";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
-import { getDb } from "@/db";
-import type { Database } from "@/db/client";
 import { staff } from "@/db/schema";
 import { sessionEmail } from "@/lib/auth";
 import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
@@ -15,38 +13,16 @@ import {
   devPlatformAdmin,
   findDevIdentity,
 } from "./dev-identities";
+import { type TenantContext, withTenant } from "./scope";
 
 /**
- * The tenant seam (S-25). Everything that touches tenant data goes through
- * here: ESLint keeps getDb out of the rest of the app.
+ * The tenant seam (S-25): who is asking. Everything that touches tenant data
+ * goes through it or through ./scope, which holds withTenant: ESLint keeps getDb
+ * out of the rest of the app. This file loads sign-in, so code on a public route
+ * imports ./scope and ./public instead (S-32).
  */
 
-export type TenantContext = {
-  restaurantId: string;
-  staffId: string;
-  role: "owner" | "staff";
-};
-
-export type TenantTransaction = Parameters<
-  Parameters<Database["transaction"]>[0]
->[0];
-
-/**
- * Runs `fn` in a transaction scoped to one restaurant: RLS shows it that
- * tenant's rows and no others. The setting is transaction-local, so it can't
- * leak to the next user of a pooled connection.
- */
-export function withTenant<T>(
-  ctx: Pick<TenantContext, "restaurantId">,
-  fn: (tx: TenantTransaction) => Promise<T>,
-): Promise<T> {
-  return getDb().transaction(async (tx) => {
-    await tx.execute(
-      sql`select set_config('app.restaurant_id', ${ctx.restaurantId}, true)`,
-    );
-    return fn(tx);
-  });
-}
+export { type TenantContext, type TenantTransaction, withTenant } from "./scope";
 
 /** The platform admin a real admin session belongs to, if any. */
 export async function sessionPlatformAdminId(requestHeaders: Headers) {

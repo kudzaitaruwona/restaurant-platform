@@ -57,6 +57,20 @@
       "when": 1793763062390,
       "tag": "0007_auth_code_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793775127930,
+      "tag": "0008_menu_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793775172091,
+      "tag": "0009_public_token_lookup",
+      "breakpoints": true
     }
   ]
 }
