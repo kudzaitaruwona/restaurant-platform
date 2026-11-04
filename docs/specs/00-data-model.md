@@ -26,7 +26,7 @@ restaurants
   currency_mode         enum(usd_only, zig_only, usd_primary, zig_primary, both)
   zig_rounding_step     numeric default 10   -- computed ZiG prices round UP to this
   usd_rounding_step     numeric default 0.01
-  CHECK (zig_rounding_step > 0 AND zig_rounding_step < 'Infinity' AND usd_rounding_step > 0 AND usd_rounding_step < 'Infinity')  -- restaurants_rounding_steps_positive_finite (proposed): > 0 because a step of 0 divides by zero in the effective-price formula, and negative or -Infinity is not a step. Added by issue 20, which computes with both steps, in migration 0012 (the table existed without either check)
+  CHECK (zig_rounding_step > 0 AND zig_rounding_step < 'Infinity' AND usd_rounding_step > 0 AND usd_rounding_step < 'Infinity')  -- restaurants_rounding_steps_positive_finite (proposed): > 0 because a step of 0 divides by zero in the effective-price formula, and negative or -Infinity is not a step. Added by issue 20, which computes with both steps, in migration 0014 (the table existed without either check)
   wifi_name, wifi_password  text null        -- printed on the table QR sheet
   created_at
 
@@ -93,7 +93,7 @@ specials
   daily_start, daily_end time null         -- D-04
   active                bool default true
   FOREIGN KEY (restaurant_id, menu_item_id) → menu_items  -- specials_menu_item_fk, composite like every tenant FK
-  -- D-05 (proposed): specials_no_overlap, written in migration 0017_specials because Drizzle can't model it:
+  -- D-05 (proposed): specials_no_overlap, written in migration 0019_specials because Drizzle can't model it:
   --   EXCLUDE USING gist (restaurant_id WITH =, menu_item_id WITH =, tstzrange(starts_at, ends_at) WITH &&) WHERE (active)
   -- needs btree_gist (migration 0000; Neon supports it). A null bound is unbounded in tstzrange, which is what
   -- "no end date" means, and "no start date" on a row not written through the form; a special that is off holds no time; one that ends where the next
