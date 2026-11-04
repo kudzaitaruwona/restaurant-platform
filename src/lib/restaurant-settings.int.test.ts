@@ -10,6 +10,10 @@ import {
   isTimeZone,
   updateRestaurantSettings,
 } from "./restaurant-settings";
+import { menuTag } from "./menu-cache";
+
+const revalidateTag = vi.hoisted(() => vi.fn());
+vi.mock("next/cache", () => ({ revalidateTag }));
 
 const owner = openOwnerDatabase();
 
@@ -44,6 +48,29 @@ afterAll(async () => {
 });
 
 describe("restaurant settings", () => {
+  it("refreshes the restaurant's public menu page, which shows its name", async () => {
+    const restaurantId = await newRestaurant();
+    revalidateTag.mockClear();
+
+    await updateRestaurantSettings({ restaurantId }, changes);
+
+    expect(revalidateTag.mock.calls).toEqual([
+      [menuTag(restaurantId), { expire: 0 }],
+    ]);
+  });
+
+  it("leaves the page alone when the settings are refused", async () => {
+    const restaurantId = await newRestaurant();
+    revalidateTag.mockClear();
+
+    await updateRestaurantSettings(
+      { restaurantId },
+      { ...changes, timezone: "Mars/Olympus" },
+    );
+
+    expect(revalidateTag).not.toHaveBeenCalled();
+  });
+
   it("saves every setting for the restaurant in the context and no other", async () => {
     const [mine, theirs] = [await newRestaurant(), await newRestaurant()];
 

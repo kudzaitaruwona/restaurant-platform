@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
@@ -11,7 +11,14 @@ import {
   it,
   vi,
 } from "vitest";
-import { adminAuthUser, restaurants, staff, staffAuthUser } from "@/db/schema";
+import {
+  adminAuthUser,
+  categories,
+  menuItems,
+  restaurants,
+  staff,
+  staffAuthUser,
+} from "@/db/schema";
 import { signIn } from "../../../test/integration/auth";
 import {
   openOwnerDatabase,
@@ -53,14 +60,24 @@ vi.mock("next/server", async (importOriginal) => ({
   after: (task: Promise<unknown>) => task,
 }));
 
+// Only a real request has a cache to revalidate.
+vi.mock("next/cache", () => ({
+  cacheLife: () => {},
+  cacheTag: () => {},
+  revalidateTag: () => {},
+}));
+
 /** What a route acts on: an existing resource in some restaurant. */
-type Target = { staffId: string };
+type Target = { staffId: string; categoryId: string };
 
 type TenantRoute = {
   name: string;
   ownerOnly: boolean;
   call: (target: Target) => Promise<Response>;
 };
+
+const harnessItem = "Harness item";
+const harnessCategory = "Harness category";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -117,6 +134,23 @@ const routes: TenantRoute[] = [
         staffParams(target),
       ),
   },
+  {
+    // The id is in the form rather than the URL, because the form chooses it.
+    name: "POST /api/menu/items",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/route")).POST(
+        request("/api/menu/items", {
+          method: "POST",
+          body: form({
+            name: harnessItem,
+            description: "",
+            priceUsd: "8.50",
+            categoryId: target.categoryId,
+          }),
+        }),
+      ),
+  },
 ];
 
 /**
@@ -166,6 +200,41 @@ const sessionRoutes: SessionRoute[] = [
             ...fields,
           }),
         }),
+      ),
+  },
+  {
+    name: "POST /api/menu/categories",
+    call: async (fields, init) =>
+      (await import("@/app/api/menu/categories/route")).POST(
+        request(init?.path ?? "/api/menu/categories", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({ name: harnessCategory, ...fields }),
+        }),
+      ),
+  },
+];
+
+/**
+ * Routes with no session at all, where the token is the only tenant input (spec
+ * 01). There's no identity to refuse: what's left to prove is that nothing else
+ * in the request can choose a tenant, in "public routes" below.
+ */
+type PublicRoute = {
+  name: string;
+  call: (
+    token: string,
+    init?: { query?: string; headers?: Record<string, string> },
+  ) => Promise<Response>;
+};
+
+const publicRoutes: PublicRoute[] = [
+  {
+    name: "GET /m/[menuToken]",
+    call: async (menuToken, init) =>
+      (await import("@/app/m/[menuToken]/route")).GET(
+        request(`/m/${menuToken}${init?.query ?? ""}`, { headers: init?.headers }),
+        { params: Promise.resolve({ menuToken }) },
       ),
   },
 ];
@@ -223,8 +292,16 @@ const owner = openOwnerDatabase();
 
 // The harness writes, so it writes to rows of its own and leaves the seed alone.
 const fixtures = {
-  a: { staffId: crypto.randomUUID(), restaurantId: aOwner.restaurantId },
-  b: { staffId: crypto.randomUUID(), restaurantId: bOwner.restaurantId },
+  a: {
+    staffId: crypto.randomUUID(),
+    categoryId: crypto.randomUUID(),
+    restaurantId: aOwner.restaurantId,
+  },
+  b: {
+    staffId: crypto.randomUUID(),
+    categoryId: crypto.randomUUID(),
+    restaurantId: bOwner.restaurantId,
+  },
 };
 const fixtureName = "Harness fixture";
 const emailOf = (key: string) => `${key}@dev.example.test`;
@@ -248,6 +325,13 @@ beforeAll(async () => {
       displayName: fixtureName,
     })),
   );
+  await owner.db.insert(categories).values(
+    Object.values(fixtures).map(({ categoryId, restaurantId }) => ({
+      id: categoryId,
+      restaurantId,
+      name: fixtureName,
+    })),
+  );
 });
 
 afterEach(async () => {
@@ -261,6 +345,10 @@ afterAll(async () => {
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
+  await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
+  await owner.db
+    .delete(categories)
+    .where(inArray(categories.name, [fixtureName, harnessCategory]));
   // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await owner.db.delete(staff).where(like(staff.email, `${addedEmailPrefix}%`));
   await owner.db.delete(staffAuthUser).where(
@@ -330,6 +418,26 @@ const restaurantRow = async (restaurantId: string) => {
   return row;
 };
 
+/** What the menu routes would change, in any restaurant. */
+const harnessItems = (restaurantId: string) =>
+  owner.db
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(
+      and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.name, harnessItem)),
+    );
+
+const harnessCategories = (restaurantId: string) =>
+  owner.db
+    .select({ id: categories.id })
+    .from(categories)
+    .where(
+      and(
+        eq(categories.restaurantId, restaurantId),
+        eq(categories.name, harnessCategory),
+      ),
+    );
+
 const addedStaff = () =>
   owner.db
     .select({ restaurantId: staff.restaurantId, displayName: staff.displayName })
@@ -346,12 +454,15 @@ describe("cross-tenant access", () => {
     "%s: %s gets a 404 or 403 on restaurant B's resource and changes nothing",
     async (_name, key, route) => {
       session.identity = key;
+      const itemsInA = (await harnessItems(fixtures.a.restaurantId)).length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
       expect([403, 404]).toContain(status);
       expect(await displayName(fixtures.b.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.b.staffId)).toEqual(untouched);
+      expect(await harnessItems(fixtures.b.restaurantId)).toEqual([]);
+      expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(itemsInA);
     },
   );
 
@@ -428,10 +539,12 @@ describe("owner-only routes", () => {
     "%s: a staff context gets a 403 in its own restaurant and changes nothing",
     async (_name, route) => {
       session.identity = aStaff.key;
+      const items = (await harnessItems(fixtures.a.restaurantId)).length;
 
       expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
       expect(await displayName(fixtures.a.staffId)).toBe(fixtureName);
       expect(await standing(fixtures.a.staffId)).toEqual(untouched);
+      expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(items);
     },
   );
 
@@ -451,6 +564,7 @@ describe("routes that take no id", () => {
       session.identity = aStaff.key;
       const before = await restaurantRow(aStaff.restaurantId);
       const added = (await addedStaff()).length;
+      const newCategories = (await harnessCategories(aStaff.restaurantId)).length;
 
       expect(
         await statusOf(() => route.call({ contactPhone: "+263771234567" })),
@@ -458,6 +572,7 @@ describe("routes that take no id", () => {
 
       expect(await restaurantRow(aStaff.restaurantId)).toEqual(before);
       expect(await addedStaff()).toHaveLength(added);
+      expect(await harnessCategories(aStaff.restaurantId)).toHaveLength(newCategories);
     },
   );
 
@@ -520,6 +635,116 @@ describe("routes that take no id", () => {
   });
 });
 
+describe("the menu routes", () => {
+  it("a new category joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const before = (await harnessCategories(fixtures.a.restaurantId)).length;
+    const id = fixtures.b.restaurantId;
+
+    const response = await sessionRoutes[2].call(
+      { restaurantId: id, restaurant_id: id },
+      {
+        headers: { "x-restaurant-id": id },
+        path: `/api/menu/categories?restaurantId=${id}&restaurant_id=${id}`,
+      },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await harnessCategories(fixtures.b.restaurantId)).toEqual([]);
+    expect(await harnessCategories(fixtures.a.restaurantId)).toHaveLength(before + 1);
+  });
+
+  it("an item with no category chosen is a 400 the form can show", async () => {
+    session.identity = aOwner.key;
+    const { POST } = await import("@/app/api/menu/items/route");
+
+    const response = await POST(
+      request("/api/menu/items", {
+        method: "POST",
+        body: form({ name: harnessItem, description: "", priceUsd: "8.50", categoryId: "" }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Choose a category." });
+  });
+
+  it("a new item joins the session's restaurant, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const before = (await harnessItems(fixtures.a.restaurantId)).length;
+    const id = fixtures.b.restaurantId;
+    const { POST } = await import("@/app/api/menu/items/route");
+
+    const response = await POST(
+      request(`/api/menu/items?restaurantId=${id}`, {
+        method: "POST",
+        headers: { "x-restaurant-id": id },
+        body: form({
+          name: harnessItem,
+          description: "",
+          priceUsd: "8.50",
+          categoryId: fixtures.a.categoryId,
+          restaurantId: id,
+          restaurant_id: id,
+        }),
+      }),
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await harnessItems(fixtures.b.restaurantId)).toEqual([]);
+    expect(await harnessItems(fixtures.a.restaurantId)).toHaveLength(before + 1);
+  });
+});
+
+describe("public routes", () => {
+  const tokenOf = (restaurant: "a" | "b") => `dev-menu-restaurant-${restaurant}`;
+  const eachPublic = publicRoutes.map((route) => [route.name, route] as const);
+
+  it.each(eachPublic)("%s: needs no session", async (_name, route) => {
+    session.identity = "";
+    expect(await statusOf(() => route.call(tokenOf("a")))).toBe(200);
+  });
+
+  it.each(eachPublic)("%s: an unknown token is a 404", async (_name, route) => {
+    session.identity = "";
+    expect(await statusOf(() => route.call("no-such-token"))).toBe(404);
+  });
+
+  it.each(eachPublic)(
+    "%s: a restaurant id in the query or headers can't stand in for the token",
+    async (_name, route) => {
+      session.identity = "";
+      const id = fixtures.a.restaurantId;
+
+      expect(
+        await statusOf(() =>
+          route.call("no-such-token", {
+            query: `?restaurantId=${id}&restaurant_id=${id}`,
+            headers: { "x-restaurant-id": id },
+          }),
+        ),
+      ).toBe(404);
+    },
+  );
+
+  it.each(eachPublic)(
+    "%s: the token decides the tenant, not the query, the headers or a session",
+    async (_name, route) => {
+      session.identity = aOwner.key;
+      const id = fixtures.a.restaurantId;
+
+      const response = await route.call(tokenOf("b"), {
+        query: `?restaurantId=${id}`,
+        headers: { "x-restaurant-id": id },
+      });
+
+      const page = await response.text();
+      expect(page).toContain("Restaurant B");
+      expect(page).not.toContain("Restaurant A");
+    },
+  );
+});
+
 describe("the example routes", () => {
   it("an owner can rename a colleague", async () => {
     session.identity = aOwner.key;
@@ -542,7 +767,9 @@ describe("the example routes", () => {
     async (staffId) => {
       session.identity = aOwner.key;
       for (const route of routes) {
-        expect(await statusOf(() => route.call({ staffId }))).toBe(404);
+        // A blank category isn't a bad id, it's no choice: see the menu routes.
+        const categoryId = staffId || "not-a-uuid";
+        expect(await statusOf(() => route.call({ staffId, categoryId }))).toBe(404);
       }
     },
   );
@@ -638,11 +865,13 @@ describe("the platform admin on tenant routes", () => {
       session.identity = devPlatformAdmin.key;
       const restaurantBefore = await restaurantRow(fixtures.a.restaurantId);
       const addedBefore = (await addedStaff()).length;
+      const categoriesBefore = (await harnessCategories(fixtures.a.restaurantId)).length;
 
       expect(await statusOf(() => route.call())).toBe(403);
 
       expect(await restaurantRow(fixtures.a.restaurantId)).toEqual(restaurantBefore);
       expect(await addedStaff()).toHaveLength(addedBefore);
+      expect(await harnessCategories(fixtures.a.restaurantId)).toHaveLength(categoriesBefore);
     },
   );
 });
@@ -674,6 +903,7 @@ describe("harness coverage", () => {
       ...routes.map((route) => route.name),
       ...adminRoutes.map((route) => route.name),
       ...sessionRoutes.map((route) => route.name),
+      ...publicRoutes.map((route) => route.name),
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
@@ -706,6 +936,20 @@ describe("harness coverage", () => {
         ),
     );
     expect(callers).toEqual([join("lib", "tenant", "platform-admin.ts")]);
+  });
+
+  it("only the public seam calls the token lookups", () => {
+    const sourceDirectory = join(process.cwd(), "src");
+    const callers = readdirSync(sourceDirectory, {
+      recursive: true,
+      encoding: "utf8",
+    }).filter(
+      (file) =>
+        /\.tsx?$/.test(file) &&
+        !/\.test\.tsx?$/.test(file) &&
+        /restaurant_id_by_/.test(readFileSync(join(sourceDirectory, file), "utf8")),
+    );
+    expect(callers).toEqual([join("lib", "tenant", "public.ts")]);
   });
 
   it("identities really are in the restaurants the tests assume", () => {

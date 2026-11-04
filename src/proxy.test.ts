@@ -25,7 +25,7 @@ describe("the matcher", () => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
   });
 
-  it.each(["/", "/login", "/login/admin", "/r/restaurant-a"])("leaves %s alone", (url) => {
+  it.each(["/", "/login", "/login/admin", "/r/restaurant-a", "/m/a-menu-token"])("leaves %s alone", (url) => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false);
   });
 });

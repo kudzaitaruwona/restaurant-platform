@@ -2,11 +2,13 @@ import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { POST as addCategory } from "@/app/api/menu/categories/route";
+import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
 import { POST as addStaff } from "@/app/api/staff/route";
-import { restaurants, staff } from "@/db/schema";
+import { categories, restaurants, staff } from "@/db/schema";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import {
@@ -14,6 +16,7 @@ import {
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
+import { MenuScreen } from "./menu/menu-screen";
 import { SettingsScreen } from "./settings/settings-screen";
 import { StaffScreen } from "./staff/staff-screen";
 
@@ -34,6 +37,9 @@ vi.mock("next/navigation", async (original) => ({
   ...(await original<typeof import("next/navigation")>()),
   useRouter: () => ({ refresh() {} }),
 }));
+
+// Only a real request has a cache to revalidate.
+vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
 
 const owner = openOwnerDatabase();
 beforeAll(() => {
@@ -94,6 +100,21 @@ const newPerson = (role: string) => ({
   role,
 });
 
+const newCategory = async (name = "Mains") => {
+  const [{ id }] = await owner.db
+    .insert(categories)
+    .values({ restaurantId: tenant.restaurantId, name })
+    .returning({ id: categories.id });
+  return id;
+};
+
+const item = (categoryId: string) => ({
+  name: "Beef stew",
+  description: "With sadza",
+  priceUsd: "8.50",
+  categoryId,
+});
+
 const settings = {
   name: "Mama's Kitchen",
   contactPhone: "",
@@ -150,6 +171,20 @@ describe("how a saved form is answered", () => {
         return deactivate(post(`/api/staff/${id}/deactivate`, {}, headers), params(id));
       },
     ],
+    [
+      "POST /api/menu/categories",
+      "/dashboard/menu",
+      (headers) =>
+        addCategory(post("/api/menu/categories", { name: "Mains" }, headers)),
+    ],
+    [
+      "POST /api/menu/items",
+      "/dashboard/menu",
+      async (headers) => {
+        const categoryId = await newCategory();
+        return addItem(post("/api/menu/items", item(categoryId), headers));
+      },
+    ],
   ];
 
   it.each(routes)("%s redirects a plain post", async (_route, page, send) => {
@@ -170,6 +205,64 @@ describe("how a saved form is answered", () => {
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: expect.any(String) });
+  });
+});
+
+describe("/dashboard/menu", () => {
+  it("shows the menu an owner has built, and where customers see it", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain("Mains");
+    expect(html).toContain("Beef stew");
+    expect(html).toContain("With sadza");
+    expect(html).toContain("$8.50");
+    expect(html).toContain(`href="/m/${tenant.restaurantId}"`);
+  });
+
+  it("posts to the routes behind it", async () => {
+    await newCategory();
+    const html = await screen(MenuScreen);
+    expect(html).toContain('action="/api/menu/categories"');
+    expect(html).toContain('action="/api/menu/items"');
+  });
+
+  it("offers this restaurant's categories in the item form", async () => {
+    const categoryId = await newCategory("Mains");
+    const html = await screen(MenuScreen);
+    expect(html).toContain(`<option value="${categoryId}">Mains</option>`);
+  });
+
+  it("asks for a category first, since an item needs one", async () => {
+    const html = await screen(MenuScreen);
+    expect(html).toContain("Add a category first");
+    expect(html).not.toContain('action="/api/menu/items"');
+  });
+
+  it("refuses staff with forbidden(), before any data renders", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => MenuScreen())).toBe(403);
+  });
+});
+
+describe("the menu routes", () => {
+  it("refuse an unusable price with a reason, and save nothing", async () => {
+    const categoryId = await newCategory();
+
+    const response = await addItem(
+      post("/api/menu/items", { ...item(categoryId), priceUsd: "free" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(await screen(MenuScreen)).not.toContain("Beef stew");
+  });
+
+  it("refuse a blank category name with a reason", async () => {
+    const response = await addCategory(post("/api/menu/categories", { name: " " }));
+    expect(response.status).toBe(400);
   });
 });
 
