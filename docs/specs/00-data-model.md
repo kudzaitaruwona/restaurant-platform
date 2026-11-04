@@ -69,6 +69,7 @@ menu_items
   price_usd             numeric null
   price_zig             numeric null                -- set = fixed ZiG price
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)
+  CHECK (price_usd >= 0 AND price_zig >= 0)
   visibility            enum(regular, special_only) default 'regular'
   is_available          bool default true           -- "kitchen ran out"
   sort_order

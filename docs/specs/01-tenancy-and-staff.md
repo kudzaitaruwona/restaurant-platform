@@ -34,7 +34,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Tenant isolation
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
-- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept.
+- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept. The lookup is a `SECURITY DEFINER` function per token type that returns only the restaurant's id (S-31).
 - **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
 - **Admin routes:** a platform admin works across tenants, so `POST /api/admin/restaurants/[restaurantId]/owner` takes the restaurant ID from the URL, the one exception to taking it from the session. It passes only to `platform_create_first_owner`, behind `getPlatformAdminContext()`, and that refuses a restaurant that already has staff (S-28).
 - **System routes** (the scheduled job and the Meta webhook, spec 05) work across all tenants. They use a separate database role with `BYPASSRLS`, whose credentials only those two route handlers load. They must still filter by `restaurant_id` explicitly whenever they act on one booking.

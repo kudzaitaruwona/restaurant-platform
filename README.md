@@ -55,11 +55,17 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 
 All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` says who is asking, `requireOwner(ctx)` guards owner-only actions, and `withTenant(ctx, fn)` runs `fn` in a transaction scoped to that restaurant. ESLint keeps `getDb` out of everything else.
 
+A public route has no session, so `resolvePublicToken()` (`src/lib/tenant/public.ts`) turns its token into a tenant for `withTenant()` (S-31). Code on a public route imports `@/lib/tenant/scope`, not `@/lib/tenant`, which loads sign-in; a test fails if it reaches Better Auth (S-32).
+
 There are two database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
-Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, or to `sessionRoutes` if it takes no id. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, or a route isn't listed. Nothing checks the `UNIQUE` or the composite foreign keys yet, so those are on you and your reviewer.
+Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, to `sessionRoutes` if it takes no id, or to `publicRoutes` if it has no session. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, no `UNIQUE (restaurant_id, id)`, or a foreign key to another tenant table that isn't composite, or if a route isn't listed.
+
+### Public menu page
+
+`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because a page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32). `src/lib/public-menu.ts` has the whole page. It's cached until a save replaces it, so anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing. Every function in `src/lib/menu.ts` that writes already does.
 
 ### Platform admin
 
@@ -73,4 +79,4 @@ Staff and the platform admin sign in with a magic link, an emailed code or Googl
 
 ### Environment
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine.
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine. A build that needs the local database goes through the wsproxy, which production refuses, so start it with `NODE_ENV=test npx next start` and the variables in the shell: the bundle is still the production build, and `.env.local` isn't read.
