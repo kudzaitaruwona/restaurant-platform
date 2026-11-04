@@ -59,7 +59,7 @@ There are two database roles. The app connects as `app_tenant` (`DATABASE_URL`),
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
-Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, or to `sessionRoutes` if it takes no id. A test fails if a table has no RLS or tenant policy, or a route isn't listed. Nothing checks the `UNIQUE` or the composite foreign keys yet, so those are on you and your reviewer.
+Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, or to `sessionRoutes` if it takes no id. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, or a route isn't listed. Nothing checks the `UNIQUE` or the composite foreign keys yet, so those are on you and your reviewer.
 
 ### Platform admin
 

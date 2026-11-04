@@ -68,5 +68,7 @@ export async function POST(
   );
   if (updated.length === 0) notFound();
 
+  // Not formSaved(): this is a plain form on /dashboard, not an ActionForm, so
+  // it always wants the redirect.
   return new Response(null, { status: 303, headers: { Location: "/dashboard" } });
 }

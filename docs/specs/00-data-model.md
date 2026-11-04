@@ -11,6 +11,8 @@ This is a reference schema written as Postgres-style pseudocode. It is not a mig
 - **All timestamps are `timestamptz`.** Each restaurant has a `timezone`, which defaults to `Africa/Harare` (CAT, UTC+2, no daylight saving). Opening hours are local `time` values and are interpreted in that zone.
 - **Rules that protect money or seats live in the database**, as constraints and triggers, not only in app code.
 
+**Tables that don't carry `restaurant_id`.** The rules above govern tenant tables. Better Auth's sign-in tables (`staff_auth_*` and `admin_auth_*`, including `staff_auth_code_limit` and `admin_auth_code_limit`) belong to no restaurant: they exist before anyone has a tenant, and a credential must be unreachable from inside one. They have RLS, with the reverse of the tenant policy, so rows are visible only when no tenant is set. They are not listed in this spec's schema. S-30 in `docs/decisions.md` records them, their policy and how retention works.
+
 ## 1. Tenant, staff, platform
 
 ```sql
