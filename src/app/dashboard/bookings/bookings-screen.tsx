@@ -3,7 +3,9 @@ import { Button } from "@/components/ui/button";
 import { getDayView } from "@/lib/booking-day";
 import { contactLinks, type DayRow } from "@/lib/booking-day-view";
 import { getTenantContext } from "@/lib/tenant";
+import { walkInTables } from "@/lib/walk-in";
 import { ActionForm } from "../action-form";
+import { WalkInForm } from "./walk-in-form";
 
 const statusLabels = {
   confirmed: "Confirmed",
@@ -28,6 +30,8 @@ export async function BookingsScreen({
   const tenant = await getTenantContext();
   const query = (await searchParams) ?? {};
   const day = await getDayView(tenant, query.date);
+  // A walk-in sits down now, so the form is for today only.
+  const tables = day.isToday ? await walkInTables(tenant) : [];
 
   return (
     <>
@@ -72,6 +76,8 @@ export async function BookingsScreen({
           </form>
         </nav>
       </div>
+
+      <WalkInForm tables={tables} />
 
       {day.groups.length === 0 && <p>No bookings on this day.</p>}
       {day.groups.map((group) => (

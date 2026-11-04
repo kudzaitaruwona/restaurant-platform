@@ -388,6 +388,24 @@ const routes: TenantRoute[] = [
   bookingAction("finish", "seated"),
   bookingAction("no-show", "confirmed"),
   bookingAction("cancel", "confirmed"),
+  {
+    // The table is in the form, because the form chooses it. Each call seats at a
+    // table planted for it: a walk-in holds its table, so the fixture's can't be
+    // used twice. Any other id, like the made-up ones tried below, is aimed at as it is.
+    name: "POST /api/bookings/walk-in",
+    ownerOnly: false,
+    call: async (target) => {
+      const tableId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantTable(target.restaurantId)
+        : target.tableId;
+      return (await import("@/app/api/bookings/walk-in/route")).POST(
+        request("/api/bookings/walk-in", {
+          method: "POST",
+          body: form({ tableId, party: "2" }),
+        }),
+      );
+    },
+  },
 ];
 
 /**
@@ -813,6 +831,10 @@ afterAll(async () => {
   }
   await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
   await owner.db.delete(bookings).where(like(bookings.guestName, `${plantedBookingPrefix}%`));
+  // Walk-ins and bookings made on the tables the harness planted, before those go.
+  if (planted.length > 0) {
+    await owner.db.delete(bookings).where(inArray(bookings.tableId, planted.map(({ id }) => id)));
+  }
   await owner.db
     .delete(diningTables)
     .where(
@@ -1960,6 +1982,94 @@ describe("the guest's confirm", () => {
     expect(await bookingsOf(owner.db, id)).toEqual([]);
     const [booked] = await bookingsOf(owner.db, named.restaurantId);
     expect(booked.tableId).toBe(named.tableIds[0]);
+  });
+});
+
+describe("seat walk-in", () => {
+  const walkInPost = async (fields: Record<string, string>, path = "/api/bookings/walk-in") =>
+    (await import("@/app/api/bookings/walk-in/route")).POST(
+      request(path, { method: "POST", body: form(fields) }),
+    );
+  const walkInsAt = (tableId: string) =>
+    owner.db.select().from(bookings).where(eq(bookings.tableId, tableId));
+
+  it.each([aOwner, aStaff].map((who) => [who.key, who] as const))("%s: an owner or staff seats one in their restaurant (S-26)", async (_key, who) => {
+    session.identity = who.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    const response = await walkInPost({ tableId, party: "3" });
+
+    expect(response.status).toBeLessThan(400);
+    expect(await walkInsAt(tableId)).toEqual([
+      expect.objectContaining({ guestName: "Walk-in", status: "seated", source: "staff", partySize: 3 }),
+    ]);
+  });
+
+  it("another restaurant's table is a 404 and nothing is seated; a malformed or unknown one too", async () => {
+    session.identity = aOwner.key;
+    const theirs = await plantTable(fixtures.b.restaurantId);
+    for (const tableId of [theirs, "not-a-uuid", "", "'; drop table tables; --", "a\0b", crypto.randomUUID()]) {
+      expect(await statusOf(() => walkInPost({ tableId, party: "2" }))).toBe(404);
+    }
+    expect(await walkInsAt(theirs)).toEqual([]);
+  });
+
+  it("a restaurant id in the query, headers or body can't move it to B's table", async () => {
+    session.identity = aOwner.key;
+    const b = fixtures.b.restaurantId;
+    const theirs = await plantTable(b);
+
+    const status = await statusOf(async () =>
+      (await import("@/app/api/bookings/walk-in/route")).POST(
+        request(`/api/bookings/walk-in?restaurantId=${b}&restaurant_id=${b}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": b },
+          body: form({ tableId: theirs, party: "2", restaurantId: b, restaurant_id: b }),
+        }),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect(await walkInsAt(theirs)).toEqual([]);
+  });
+
+  it.each(["", "0", "101", "-1", "2.5", "abc", "1e2"])("a party size of %j is a 400 and nothing is seated", async (party) => {
+    session.identity = aOwner.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => walkInPost({ tableId, party }))).toBe(400);
+    expect(await walkInsAt(tableId)).toEqual([]);
+  });
+
+  it("a second walk-in on the table is a 409 that says it is in use, and a booking soon gets the prompt", async () => {
+    session.identity = aStaff.key;
+    const tableId = await plantTable(fixtures.a.restaurantId);
+    await walkInPost({ tableId, party: "2" });
+
+    const again = await walkInPost({ tableId, party: "2" });
+
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/^Table .+ is in use until \d\d:\d\d\./);
+
+    const soon = await plantTable(fixtures.a.restaurantId);
+    const start = new Date(Date.now() + 20 * 60_000);
+    await owner.db.insert(bookings).values(
+      aBooking(fixtures.a.restaurantId, soon, start.toISOString(), new Date(start.getTime() + 3_600_000).toISOString()),
+    );
+    const prompt = await walkInPost({ tableId: soon, party: "2" });
+    expect(prompt.status).toBe(409);
+    expect((await prompt.json()).error).toMatch(
+      /^Table .+ has a booking at \d\d:\d\d — move that booking, or seat the walk-in elsewhere$/,
+    );
+    expect(await walkInsAt(soon)).toHaveLength(1);
+  });
+
+  it("is a 401 with no session, and seats nothing", async () => {
+    session.identity = "";
+    const tableId = await plantTable(fixtures.a.restaurantId);
+
+    expect(await statusOf(() => walkInPost({ tableId, party: "2" }))).toBe(401);
+    expect(await walkInsAt(tableId)).toEqual([]);
   });
 });
 
