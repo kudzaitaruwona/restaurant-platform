@@ -7,11 +7,13 @@ ALTER TABLE "restaurants" ADD CONSTRAINT "restaurants_contact_phone_e164" CHECK 
 -- no owner yet is left alone: #14's first owner is a plain INSERT.
 --
 -- SECURITY DEFINER so the count sees the whole restaurant whatever the caller's
--- RLS context. Only the trigger can call it.
+-- RLS context. Only the trigger can call it. search_path is pinned with pg_temp
+-- last and every table schema-qualified, so a caller's temp table can't stand in
+-- for staff and hide who the owners are.
 CREATE FUNCTION staff_keep_last_owner() RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
   IF NOT (OLD.kind = 'staff' AND OLD.role = 'owner' AND OLD.active) THEN
@@ -30,10 +32,10 @@ BEGIN
   -- snapshot: it has to fail here with a serialization error, and a plain row
   -- lock wouldn't make it. Touches no key column, so inserts into staff, whose
   -- foreign key only needs FOR KEY SHARE, don't wait on it.
-  UPDATE restaurants SET name = name WHERE id = OLD.restaurant_id;
+  UPDATE public.restaurants SET name = name WHERE id = OLD.restaurant_id;
 
   IF NOT EXISTS (
-    SELECT FROM staff
+    SELECT FROM public.staff
     WHERE restaurant_id = OLD.restaurant_id
       AND kind = 'staff' AND role = 'owner' AND active
   ) THEN

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { eq, inArray, like } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
@@ -11,7 +11,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { auditLog, restaurants, staff } from "@/db/schema";
+import { restaurants, staff } from "@/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -236,13 +236,7 @@ afterAll(async () => {
   for (const { staffId } of Object.values(fixtures)) {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
-  const created = await harnessRestaurants();
-  if (created.length > 0) {
-    const ids = created.map(({ id }) => id);
-    await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, ids));
-    await owner.db.delete(staff).where(inArray(staff.restaurantId, ids));
-    await owner.db.delete(restaurants).where(inArray(restaurants.id, ids));
-  }
+  // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await owner.db.delete(staff).where(like(staff.email, `${addedEmailPrefix}%`));
   await owner.pool.end();
   vi.unstubAllEnvs();
@@ -589,6 +583,20 @@ describe("the platform admin on tenant routes", () => {
         expect(await statusOf(() => route.call(fixture))).toBe(403);
         expect(await displayName(fixture.staffId)).toBe(fixtureName);
       }
+    },
+  );
+
+  it.each(sessionRoutes.map((route) => [route.name, route] as const))(
+    "%s: a 403 too, with no restaurant in the URL to refuse",
+    async (_name, route) => {
+      session.identity = devPlatformAdmin.key;
+      const restaurantBefore = await restaurantRow(fixtures.a.restaurantId);
+      const addedBefore = (await addedStaff()).length;
+
+      expect(await statusOf(() => route.call())).toBe(403);
+
+      expect(await restaurantRow(fixtures.a.restaurantId)).toEqual(restaurantBefore);
+      expect(await addedStaff()).toHaveLength(addedBefore);
     },
   );
 });

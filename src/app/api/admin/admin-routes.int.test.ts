@@ -1,4 +1,4 @@
-import { eq, inArray, like } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { auditLog, restaurants, staff } from "@/db/schema";
@@ -28,16 +28,7 @@ beforeEach(() => {
   session.identity = devPlatformAdmin.key;
 });
 afterAll(async () => {
-  const created = await owner.db
-    .select({ id: restaurants.id })
-    .from(restaurants)
-    .where(like(restaurants.slug, `${SLUG_PREFIX}%`));
-  const ids = created.map(({ id }) => id);
-  if (ids.length > 0) {
-    await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, ids));
-    await owner.db.delete(staff).where(inArray(staff.restaurantId, ids));
-    await owner.db.delete(restaurants).where(inArray(restaurants.id, ids));
-  }
+  // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await owner.pool.end();
   vi.unstubAllEnvs();
 });

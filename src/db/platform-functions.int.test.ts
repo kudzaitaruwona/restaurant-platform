@@ -1,4 +1,4 @@
-import { eq, inArray, like, sql, type SQL } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   openOwnerDatabase,
@@ -26,16 +26,7 @@ const NO_DATA_FOUND = "P0002";
 const ALREADY_HAS_STAFF = "PA001";
 
 afterAll(async () => {
-  const created = await owner.db
-    .select({ id: restaurants.id })
-    .from(restaurants)
-    .where(like(restaurants.slug, `${SLUG_PREFIX}%`));
-  const ids = created.map(({ id }) => id);
-  if (ids.length > 0) {
-    await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, ids));
-    await owner.db.delete(staff).where(inArray(staff.restaurantId, ids));
-    await owner.db.delete(restaurants).where(inArray(restaurants.id, ids));
-  }
+  // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await Promise.all([app.pool.end(), owner.pool.end()]);
 });
 
@@ -315,10 +306,12 @@ describe("every SECURITY DEFINER function", () => {
     const { rows } = await owner.db.execute<{
       name: string;
       config: string[] | null;
+      isTrigger: boolean;
       executors: string[];
     }>(sql`
       select p.proname as name,
              p.proconfig as config,
+             p.prorettype = 'trigger'::regtype as "isTrigger",
              array(
                select case when a.grantee = 0 then 'PUBLIC' else a.grantee::regrole::text end
                from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
@@ -342,9 +335,10 @@ describe("every SECURITY DEFINER function", () => {
   });
 
   it("pins search_path and can be run by app_tenant and nobody else", async () => {
-    for (const { name, config, executors } of await definers()) {
+    for (const { name, config, isTrigger, executors } of await definers()) {
       expect(config, name).toContain("search_path=pg_catalog, pg_temp");
-      expect(executors, name).toEqual(["app_tenant"]);
+      // A trigger needs no EXECUTE grant, so nobody at all should hold one.
+      expect(executors, name).toEqual(isTrigger ? [] : ["app_tenant"]);
     }
   });
 });
