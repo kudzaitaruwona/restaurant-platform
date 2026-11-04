@@ -274,7 +274,14 @@ describe("the booking page", () => {
     })) {
       body.set(key, value);
     }
-    return fetch(`${origin}/api/r/${slug}/book`, { method: "POST", body });
+    // An address of its own: the rate limit's count outlives this run, in the
+    // database, so a second run inside ten minutes would otherwise spend the first's.
+    const address = crypto.getRandomValues(new Uint8Array(3)).join(".");
+    return fetch(`${origin}/api/r/${slug}/book`, {
+      method: "POST",
+      headers: { "x-forwarded-for": `10.${address}` },
+      body,
+    });
   };
 
   // An App Router page sends its prerendered shell, and so its 200, before the
