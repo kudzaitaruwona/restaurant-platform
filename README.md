@@ -23,6 +23,8 @@ The shared schema is in [docs/specs/00-data-model.md](docs/specs/00-data-model.m
 
 Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, proposed) · Vercel
 
+The public menu page is the one proposed exception: a Route Handler with no React, Tailwind or shadcn/ui (S-32, not yet confirmed).
+
 ## Development
 
 ```bash
@@ -47,6 +49,7 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run test:unit` | Unit tests (no database) |
 | `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant` |
 | `npm test` | Both test projects |
+| `npm run test:production` | The public pages' cache, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
 | `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` and fails if RLS wouldn't apply to that role |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
@@ -65,7 +68,9 @@ Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, co
 
 ### Public menu page
 
-`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because a page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32). `src/lib/public-menu.ts` has the whole page. It's cached until a save replaces it, so anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing. Every function in `src/lib/menu.ts` that writes already does.
+`/m/{menu_token}` is a Route Handler that writes its own HTML, not a Next.js page, because an App Router page can't leave out the framework's scripts and spec 02's budget can't carry them (S-32, proposed). `src/lib/public-menu.ts` has the whole page. It's cached for 5 minutes at most, and anything that changes what it shows calls `revalidateMenu()` (`src/lib/menu-cache.ts`) after committing, so a customer sees a save straight away. Every function in `src/lib/menu.ts` that writes already does. `src/proxy.ts` refuses everything but GET and HEAD here, because Next.js would store the answer as the page.
+
+`npm run test:production` checks all of this against the real cache. It needs `npm run build` first, because the ordinary tests can't run `use cache` or the proxy.
 
 ### Platform admin
 
@@ -75,7 +80,7 @@ The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/l
 
 Staff and the platform admin sign in with a magic link, an emailed code or Google (S-27, S-30). `src/lib/auth` holds Better Auth, with one instance per session type: `/api/auth/staff/*` and `/api/auth/admin/*`. `getTenantContext()` and `getPlatformAdminContext()` read those sessions and check the staff or admin row on every request. Only an existing active staff record or platform admin can get a session, and the lookups go through `SECURITY DEFINER` functions, because RLS hides `staff` before a tenant is known.
 
-`src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher.
+`src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher. It also runs on public pages, but only to refuse methods the cache can't take (S-32).
 
 ### Environment
 
