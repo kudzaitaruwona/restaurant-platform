@@ -1,4 +1,4 @@
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   afterAll,
   beforeAll,
@@ -8,7 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { categories, menuItems, restaurants } from "@/db/schema";
+import { categories, exchangeRates, menuItems, restaurants, staff } from "@/db/schema";
 import { BUILD_SAMPLE_TOKEN } from "@/lib/public-menu";
 import { menuTag } from "@/lib/menu-cache";
 import {
@@ -36,14 +36,17 @@ vi.mock("next/cache", () => cache);
 const owner = openOwnerDatabase();
 const created: string[] = [];
 
-async function newRestaurant(name: string) {
+async function newRestaurant(
+  name: string,
+  currencyMode: "usd_only" | "zig_only" | "usd_primary" | "zig_primary" | "both" = "usd_only",
+) {
   const id = crypto.randomUUID();
   await owner.db.insert(restaurants).values({
     id,
     name,
     slug: `public-menu-${id}`,
     menuToken: `token-${id}`,
-    currencyMode: "usd_only",
+    currencyMode,
     wifiPassword: "kept-off-the-page",
   });
   created.push(id);
@@ -56,6 +59,19 @@ async function addCategory(restaurantId: string, name: string, sortOrder = 0) {
     .insert(categories)
     .values({ id, restaurantId, name, sortOrder });
   return id;
+}
+
+/** Sets the rate the way the editor would: a new row, read as the latest. */
+async function setRate(restaurantId: string, usdToZig: string) {
+  const [{ id: setBy }] = await owner.db
+    .insert(staff)
+    .values({
+      restaurantId,
+      email: `${crypto.randomUUID()}@example.test`,
+      displayName: "Rate setter",
+    })
+    .returning({ id: staff.id });
+  await owner.db.insert(exchangeRates).values({ restaurantId, setBy, usdToZig });
 }
 
 const addItem = (
@@ -81,6 +97,8 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  await owner.db.delete(exchangeRates).where(inArray(exchangeRates.restaurantId, created));
+  await owner.db.delete(staff).where(inArray(staff.restaurantId, created));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, created));
   await owner.db.delete(categories).where(inArray(categories.restaurantId, created));
   await owner.db.delete(restaurants).where(inArray(restaurants.id, created));
@@ -195,6 +213,106 @@ describe("/m/{menu_token}", () => {
     expect(body).not.toContain("kept-off-the-page");
     expect(body).not.toContain(id);
     expect(body).not.toContain(categoryId);
+  });
+});
+
+describe("prices by currency_mode", () => {
+  /** A $8 item on a menu at 26.2 ZiG to the dollar, in the given mode. */
+  async function menuIn(
+    mode: "usd_only" | "zig_only" | "usd_primary" | "zig_primary" | "both",
+    item: { priceUsd?: string; priceZig?: string } = { priceUsd: "8" },
+  ) {
+    const { id, menuToken } = await newRestaurant(`Mode ${mode}`, mode);
+    await setRate(id, "26.2");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", ...item });
+    return { id, menuToken };
+  }
+
+  const priceOf = (body: string) =>
+    /<li>\n<div class="item"><span>Stew<\/span>(.*?)<\/div>/.exec(body)![1];
+
+  it("usd_only shows dollars alone", async () => {
+    const { menuToken } = await menuIn("usd_only");
+    expect(priceOf(await page(menuToken))).toBe('<span class="price">$8.00</span>');
+  });
+
+  it("zig_only shows ZiG alone, calculated and rounded up", async () => {
+    const { menuToken } = await menuIn("zig_only");
+    expect(priceOf(await page(menuToken))).toBe('<span class="price">ZiG 210</span>');
+  });
+
+  it("both shows $8.00 · ZiG 210", async () => {
+    const { menuToken } = await menuIn("both");
+    expect(priceOf(await page(menuToken))).toBe(
+      '<span class="price">$8.00 · ZiG 210</span>',
+    );
+  });
+
+  it("usd_primary shows $8.00 with ZiG 210 smaller underneath", async () => {
+    const { menuToken } = await menuIn("usd_primary");
+    expect(priceOf(await page(menuToken))).toBe(
+      '<span class="price">$8.00<span class="sub">ZiG 210</span></span>',
+    );
+  });
+
+  it("zig_primary shows ZiG 210 with $8.00 underneath", async () => {
+    const { menuToken } = await menuIn("zig_primary");
+    expect(priceOf(await page(menuToken))).toBe(
+      '<span class="price">ZiG 210<span class="sub">$8.00</span></span>',
+    );
+  });
+
+  it("shows a fixed ZiG price as set, whatever the rate", async () => {
+    const { menuToken } = await menuIn("both", { priceUsd: "8", priceZig: "200" });
+    expect(priceOf(await page(menuToken))).toContain("$8.00 · ZiG 200");
+  });
+
+  it("calculates the dollar price of a ZiG-only item, rounded up to the cent", async () => {
+    const { menuToken } = await menuIn("both", { priceZig: "210" });
+    expect(priceOf(await page(menuToken))).toContain("$8.02 · ZiG 210");
+  });
+
+  it("never shows a calculated ZiG price unrounded", async () => {
+    const { id, menuToken } = await newRestaurant("Unrounded", "zig_only");
+    await setRate(id, "26.2");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", priceUsd: "7.77" });
+
+    // 7.77 * 26.2 = 203.574
+    const body = await page(menuToken);
+    expect(body).toContain("ZiG 210");
+    expect(body).not.toContain("203");
+  });
+
+  it("uses the restaurant's own rounding steps", async () => {
+    const { id, menuToken } = await newRestaurant("Steps", "zig_only");
+    await owner.db
+      .update(restaurants)
+      .set({ zigRoundingStep: "50" })
+      .where(eq(restaurants.id, id));
+    await setRate(id, "26.2");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", priceUsd: "8" });
+
+    expect(priceOf(await page(menuToken))).toContain("ZiG 250");
+  });
+
+  it("reprices every calculated ZiG item at the next render after the rate changes", async () => {
+    const { id, menuToken } = await menuIn("zig_only");
+    await addItem(id, await addCategory(id, "Drinks"), { name: "Fixed", priceUsd: "2", priceZig: "55" });
+    expect(await page(menuToken)).toContain("ZiG 210");
+
+    await setRate(id, "30");
+
+    const body = await page(menuToken);
+    expect(body).toContain("ZiG 240");
+    expect(body).not.toContain("ZiG 210");
+    expect(body).toContain("ZiG 55");
+  });
+
+  it("shows what it can until the first rate is set", async () => {
+    const { id, menuToken } = await newRestaurant("No rate yet", "both");
+    await addItem(id, await addCategory(id, "Mains"), { name: "Stew", priceUsd: "8" });
+
+    expect(priceOf(await page(menuToken))).toBe('<span class="price">$8.00</span>');
   });
 });
 

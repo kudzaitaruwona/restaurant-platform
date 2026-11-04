@@ -16,6 +16,7 @@ import {
   adminAuthUser,
   auditLog,
   categories,
+  exchangeRates,
   menuItems,
   restaurants,
   staff,
@@ -82,6 +83,7 @@ type TenantRoute = {
 
 const harnessItem = "Harness item";
 const harnessCategory = "Harness category";
+const harnessRate = "31.5";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -214,6 +216,18 @@ const sessionRoutes: SessionRoute[] = [
           method: "POST",
           headers: init?.headers,
           body: form({ name: harnessCategory, ...fields }),
+        }),
+      ),
+  },
+  {
+    // The restaurant is the session's: nothing in this request names one.
+    name: "POST /api/menu/exchange-rate",
+    call: async (fields, init) =>
+      (await import("@/app/api/menu/exchange-rate/route")).POST(
+        request(init?.path ?? "/api/menu/exchange-rate", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({ usdToZig: harnessRate, ...fields }),
         }),
       ),
   },
@@ -365,6 +379,7 @@ afterAll(async () => {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
   await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
+  await owner.db.delete(exchangeRates).where(eq(exchangeRates.usdToZig, harnessRate));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -454,6 +469,18 @@ const harnessCategories = (restaurantId: string) =>
       and(
         eq(categories.restaurantId, restaurantId),
         eq(categories.name, harnessCategory),
+      ),
+    );
+
+/** The rates the exchange rate route would add, in any restaurant. */
+const harnessRates = (restaurantId: string) =>
+  owner.db
+    .select({ id: exchangeRates.id })
+    .from(exchangeRates)
+    .where(
+      and(
+        eq(exchangeRates.restaurantId, restaurantId),
+        eq(exchangeRates.usdToZig, harnessRate),
       ),
     );
 
@@ -584,6 +611,7 @@ describe("routes that take no id", () => {
       const before = await restaurantRow(aStaff.restaurantId);
       const added = (await addedStaff()).length;
       const newCategories = (await harnessCategories(aStaff.restaurantId)).length;
+      const rates = (await harnessRates(aStaff.restaurantId)).length;
 
       expect(
         await statusOf(() => route.call({ contactPhone: "+263771234567" })),
@@ -592,6 +620,7 @@ describe("routes that take no id", () => {
       expect(await restaurantRow(aStaff.restaurantId)).toEqual(before);
       expect(await addedStaff()).toHaveLength(added);
       expect(await harnessCategories(aStaff.restaurantId)).toHaveLength(newCategories);
+      expect(await harnessRates(aStaff.restaurantId)).toHaveLength(rates);
     },
   );
 
@@ -671,6 +700,37 @@ describe("the menu routes", () => {
     expect(response.status).toBeLessThan(400);
     expect(await harnessCategories(fixtures.b.restaurantId)).toEqual([]);
     expect(await harnessCategories(fixtures.a.restaurantId)).toHaveLength(before + 1);
+  });
+
+  it("a new exchange rate is restaurant A's, whatever id the request names", async () => {
+    session.identity = aOwner.key;
+    const before = (await harnessRates(fixtures.a.restaurantId)).length;
+    const id = fixtures.b.restaurantId;
+
+    const response = await sessionRoutes[3].call(
+      { restaurantId: id, restaurant_id: id },
+      {
+        headers: { "x-restaurant-id": id },
+        path: `/api/menu/exchange-rate?restaurantId=${id}&restaurant_id=${id}`,
+      },
+    );
+
+    expect(response.status).toBeLessThan(400);
+    expect(await harnessRates(fixtures.b.restaurantId)).toEqual([]);
+    expect(await harnessRates(fixtures.a.restaurantId)).toHaveLength(before + 1);
+  });
+
+  it.each(["0", "-1", "abc", ""])("a rate of %j is a 400 the form can show", async (usdToZig) => {
+    session.identity = aOwner.key;
+    const before = (await harnessRates(fixtures.a.restaurantId)).length;
+
+    const response = await sessionRoutes[3].call({ usdToZig });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Enter the rate as a number above 0, like 26.2.",
+    });
+    expect(await harnessRates(fixtures.a.restaurantId)).toHaveLength(before);
   });
 
   it("an item with no category chosen is a 400 the form can show", async () => {
@@ -892,12 +952,14 @@ describe("the platform admin on tenant routes", () => {
       const restaurantBefore = await restaurantRow(fixtures.a.restaurantId);
       const addedBefore = (await addedStaff()).length;
       const categoriesBefore = (await harnessCategories(fixtures.a.restaurantId)).length;
+      const ratesBefore = (await harnessRates(fixtures.a.restaurantId)).length;
 
       expect(await statusOf(() => route.call())).toBe(403);
 
       expect(await restaurantRow(fixtures.a.restaurantId)).toEqual(restaurantBefore);
       expect(await addedStaff()).toHaveLength(addedBefore);
       expect(await harnessCategories(fixtures.a.restaurantId)).toHaveLength(categoriesBefore);
+      expect(await harnessRates(fixtures.a.restaurantId)).toHaveLength(ratesBefore);
     },
   );
 });
