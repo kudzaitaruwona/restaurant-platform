@@ -213,6 +213,8 @@ export const categories = pgTable(
     restaurantId: uuid("restaurant_id").notNull(),
     name: text().notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
+    // Nothing customer-facing is hard-deleted (spec 00).
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -238,6 +240,7 @@ export const menuItems = pgTable(
     // Set means a fixed ZiG price (S-10).
     priceZig: numeric("price_zig"),
     sortOrder: integer("sort_order").notNull().default(0),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
