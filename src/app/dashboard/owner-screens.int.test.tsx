@@ -15,6 +15,7 @@ import { POST as removePhoto } from "@/app/api/menu/items/[itemId]/photo/remove/
 import { POST as setPhoto } from "@/app/api/menu/items/[itemId]/photo/route";
 import { POST as switchSpecial } from "@/app/api/menu/specials/[specialId]/active/route";
 import { POST as addSpecial } from "@/app/api/menu/specials/route";
+import { POST as addBundle } from "@/app/api/menu/bundles/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
@@ -430,6 +431,51 @@ describe("/dashboard/menu", () => {
       expect(html).not.toContain(control);
     }
     expect(html).not.toMatch(/action="\/api\/menu\/categories\//);
+  });
+});
+
+describe("/dashboard/menu bundles", () => {
+  it("lists a bundle out of its window for the owner, who adds one here; staff get its sold-out toggle alone", async () => {
+    const categoryId = await newCategory("Combos");
+    const added = await addBundle(
+      post("/api/menu/bundles", {
+        name: "Burger combo",
+        description: "Burger, chips and a drink",
+        priceUsd: "9.50",
+        categoryId,
+        startDate: "2031-03-01",
+      }),
+    );
+    expect(added.status).toBeLessThan(400);
+    const asOwner = await screen(MenuScreen);
+    session.tenant = { ...tenant, role: "staff" };
+
+    const asStaff = await screen(MenuScreen);
+
+    // Out of its window, and still here for both: it can be managed and sold out.
+    for (const html of [asOwner, asStaff]) {
+      expect(html).toContain("Burger combo");
+      expect(html).toContain("Burger, chips and a drink");
+      expect(html).toContain("Bundle");
+      expect(html).toContain("Not on the menu now");
+      expect(html).toContain("Mark sold out");
+      expect(html).toMatch(/action="\/api\/menu\/items\/[0-9a-f-]+\/availability"/);
+    }
+    // The control that adds one, and the bundle's own listing in Specials (S-26).
+    for (const control of ['action="/api/menu/bundles"', "Add a bundle", "(bundle)", "Starts later"]) {
+      expect(asOwner).toContain(control);
+      expect(asStaff).not.toContain(control);
+    }
+  });
+
+  it("answers a bad bundle form with its reason, and adds nothing", async () => {
+    const categoryId = await newCategory("Combos");
+    const response = await addBundle(
+      post("/api/menu/bundles", { name: "Combo", description: "", priceUsd: "9", categoryId }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "List what's included, in up to 1000 characters." });
+    expect(await owner.db.select().from(menuItems).where(eq(menuItems.restaurantId, tenant.restaurantId))).toEqual([]);
   });
 });
 

@@ -30,7 +30,7 @@ export async function MenuScreen() {
   const tenant = await getTenantContext();
   const isOwner = tenant.role === "owner";
   const [menu, specials] = await Promise.all([
-    getMenu(tenant),
+    getMenu(tenant, new Date(), { forEditor: true }),
     isOwner ? listSpecials(tenant) : [],
   ]);
   const sections = menu.categories.map((category) => ({
@@ -144,6 +144,8 @@ export async function MenuScreen() {
         </section>
       )}
 
+      {isOwner && <BundleForm categories={menu.categories} pricing={menu.pricing} timezone={menu.timezone} />}
+
       {isOwner && (
         <section className="flex flex-col gap-3">
           <h2 className="font-heading text-xl font-semibold">Add a category</h2>
@@ -163,6 +165,71 @@ export async function MenuScreen() {
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * A bundle and its special in one form (spec 02 › Specials). Owners only (S-26):
+ * the caller renders it for no one else, and the route refuses staff.
+ */
+function BundleForm({
+  categories,
+  pricing,
+  timezone,
+}: {
+  categories: Category[];
+  pricing: Pricing;
+  timezone: string;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="font-heading text-xl font-semibold">Add a bundle</h2>
+      {categories.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Add a category first.</p>
+      ) : (
+        <ActionForm
+          action="/api/menu/bundles"
+          savedMessage="Bundle added."
+          resetOnSuccess
+          className="flex flex-col gap-4"
+        >
+          <p className="text-sm text-muted-foreground">
+            Customers see a bundle only while its special is on, in the Specials section.
+          </p>
+          <Field label="Name">
+            <input name="name" required maxLength={200} className={inputClassName} />
+          </Field>
+          <Field label="What's included">
+            <textarea name="description" rows={2} required maxLength={1000} className={inputClassName} />
+          </Field>
+          <ItemPriceFields pricing={pricing} />
+          <Field label="Category" hint="Where it sits in this editor. Customers don't see it there.">
+            <select name="categoryId" className={inputClassName}>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Badge" hint={`Optional. Shows as "Bundle" if blank.`}>
+            <input name="title" maxLength={80} className={inputClassName} />
+          </Field>
+          <Field label="First day" hint={`Optional. Dates are in ${timezone} time.`}>
+            <input name="startDate" type="date" className={inputClassName} />
+          </Field>
+          <Field
+            label="Last day"
+            hint="Optional, and included. Leave blank to keep it on until you turn its special off."
+          >
+            <input name="endDate" type="date" className={inputClassName} />
+          </Field>
+          <Button type="submit" className="self-start">
+            Add bundle
+          </Button>
+        </ActionForm>
+      )}
+    </section>
   );
 }
 
@@ -239,12 +306,24 @@ function CategorySection({
               <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                 <div className="flex flex-col">
                   <span className="flex justify-between gap-4 font-medium">
-                    {item.name}
+                    <span>
+                      {item.name}
+                      {item.visibility === "special_only" && (
+                        <span className="ml-2 rounded border px-1 text-xs font-semibold uppercase">
+                          Bundle
+                        </span>
+                      )}
+                    </span>
                     <ItemPrices item={item} pricing={pricing} />
                   </span>
                   {item.description && (
                     <span className="text-sm text-muted-foreground">
                       {item.description}
+                    </span>
+                  )}
+                  {item.visibility === "special_only" && !item.special && (
+                    <span className="text-sm text-muted-foreground">
+                      Not on the menu now: customers see a bundle only while its special is on.
                     </span>
                   )}
                   {!item.available && (

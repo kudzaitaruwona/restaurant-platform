@@ -112,6 +112,7 @@ const harnessCategory = "Harness category";
 const harnessRate = "31.5";
 const renamedByHarness = "Renamed by the harness";
 const harnessSpecial = "Harness special";
+const harnessBundle = "Harness bundle";
 
 const staffRoute = () => import("@/app/api/staff/[staffId]/route");
 const staffParams = ({ staffId }: Target) => ({
@@ -289,6 +290,27 @@ const routes: TenantRoute[] = [
             priceUsd: "6",
             startDate: "2031-01-01",
             endDate: "2031-01-02",
+          }),
+        }),
+      ),
+  },
+  {
+    // The category is in the form, like an item's. The window is long past, so
+    // the special never overlaps anything.
+    name: "POST /api/menu/bundles",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/bundles/route")).POST(
+        request("/api/menu/bundles", {
+          method: "POST",
+          body: form({
+            name: harnessBundle,
+            description: "What's included",
+            priceUsd: "9",
+            categoryId: target.categoryId,
+            title: harnessSpecial,
+            startDate: "2031-03-01",
+            endDate: "2031-03-02",
           }),
         }),
       ),
@@ -587,7 +609,7 @@ afterAll(async () => {
     .where(inArray(specials.title, [harnessSpecial, fixtureName]));
   await owner.db
     .delete(menuItems)
-    .where(inArray(menuItems.name, [harnessItem, fixtureName]));
+    .where(inArray(menuItems.name, [harnessItem, harnessBundle, fixtureName]));
   await owner.db
     .delete(categories)
     .where(inArray(categories.name, [fixtureName, harnessCategory]));
@@ -609,11 +631,12 @@ afterAll(async () => {
 
 /**
  * Puts the menu fixtures back as they were: the routes rename, archive, reprice
- * and mark them sold out, change their photo, and add and switch promotions.
+ * and mark them sold out, change their photo, and add and switch promotions and bundles.
  */
 async function resetMenuFixtures() {
   const all = Object.values(fixtures);
   await owner.db.delete(specials).where(eq(specials.title, harnessSpecial));
+  await owner.db.delete(menuItems).where(eq(menuItems.name, harnessBundle));
   await owner.db
     .update(specials)
     .set({ active: true })
@@ -660,7 +683,18 @@ const menuFixtureState = async ({ categoryId, spareCategoryId, itemId }: Target)
     })
     .from(menuItems)
     .where(eq(menuItems.id, itemId));
+  // Bundles the bundle route would add to the fixture's categories.
+  const bundles = await owner.db
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(
+      and(
+        inArray(menuItems.categoryId, [categoryId, spareCategoryId]),
+        eq(menuItems.visibility, "special_only"),
+      ),
+    );
   return {
+    bundles,
     categories: rows.sort((x, y) => x.id.localeCompare(y.id)),
     item,
     specials: promotions.sort((x, y) => x.id.localeCompare(y.id)),

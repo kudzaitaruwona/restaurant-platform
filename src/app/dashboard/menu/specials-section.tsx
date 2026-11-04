@@ -58,6 +58,7 @@ export function SpecialsSection({
               <div className="flex flex-col text-sm">
                 <span className="font-medium">
                   {special.itemName}
+                  {special.itemVisibility === "special_only" && " (bundle)"}
                   {special.title && ` · ${special.title}`}
                 </span>
                 <span>{price(special)}</span>

@@ -757,3 +757,176 @@ describe("specials", () => {
     expect(body).not.toMatch(/<script|\son\w+=|javascript:/i);
   });
 });
+
+describe("bundles", () => {
+  const HOUR = 60 * 60 * 1000;
+  const ago = (hours: number) => new Date(Date.now() - hours * HOUR);
+  const ahead = (hours: number) => new Date(Date.now() + hours * HOUR);
+
+  /** A restaurant with a regular stew and a bundle, whose special has `fields` (none: no special). */
+  async function withBundle(
+    fields: Partial<typeof specials.$inferInsert> | null,
+    bundle: { available?: boolean; archivedAt?: Date } = {},
+  ) {
+    const { id, menuToken } = await newRestaurant("Bundles", "usd_only");
+    const mains = await addCategory(id, "Mains");
+    await addItem(id, mains, { name: "Stew", priceUsd: "8" });
+    const [{ id: bundleId }] = await owner.db
+      .insert(menuItems)
+      .values({
+        restaurantId: id,
+        categoryId: mains,
+        name: "Burger combo",
+        description: "Burger, chips and a drink",
+        priceUsd: "9.5",
+        visibility: "special_only",
+        ...bundle,
+      })
+      .returning({ id: menuItems.id });
+    if (fields !== null) {
+      await owner.db
+        .insert(specials)
+        .values({ restaurantId: id, menuItemId: bundleId, title: "Lunch combo", ...fields });
+    }
+    return { id, menuToken, mains, bundleId };
+  }
+
+  const specialsSection = (body: string) =>
+    /<section id="specials">[\s\S]*?<\/section>/.exec(body)?.[0] ?? "";
+
+  it("shows a live bundle in the Specials section with what's included, and in no category", async () => {
+    const { menuToken } = await withBundle({ startsAt: ago(1) });
+
+    const body = await page(menuToken);
+
+    const section = specialsSection(body);
+    expect(section).toContain("Burger combo");
+    expect(section).toContain("Burger, chips and a drink");
+    expect(section).toContain("Lunch combo");
+    expect(section).toContain("$9.50");
+    // Once: the Mains category holds the stew and not the bundle.
+    expect(body.match(/Burger combo/g)).toHaveLength(1);
+    expect(body).toContain("Stew");
+  });
+
+  it("shows nothing of it before its window, after it, or with its special off or missing", async () => {
+    const cases = [
+      { startsAt: ahead(1) },
+      { startsAt: ago(3), endsAt: ago(1) },
+      { startsAt: ago(1), active: false },
+      null,
+    ];
+    for (const fields of cases) {
+      const { menuToken } = await withBundle(fields);
+      const body = await page(menuToken);
+      expect(body).not.toContain("Burger combo");
+      expect(body).not.toContain("Burger, chips and a drink");
+      expect(body).not.toContain("Specials");
+      expect(body).toContain("Stew");
+    }
+  });
+
+  it("shows nothing of an archived bundle, even with its special live", async () => {
+    const { menuToken } = await withBundle({ startsAt: ago(1) }, { archivedAt: new Date() });
+    const body = await page(menuToken);
+    expect(body).not.toContain("Burger combo");
+    expect(body).not.toContain("Specials");
+  });
+
+  it("a category holding only a bundle still shows no empty section", async () => {
+    const { id, menuToken } = await newRestaurant("Only combos", "usd_only");
+    const combos = await addCategory(id, "Combos");
+    const [{ id: bundleId }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId: combos, name: "Combo", priceUsd: "9", visibility: "special_only" })
+      .returning({ id: menuItems.id });
+    await owner.db
+      .insert(specials)
+      .values({ restaurantId: id, menuItemId: bundleId, title: "Deal", startsAt: ago(1) });
+
+    const body = await page(menuToken);
+
+    expect(body).not.toContain("<h2>Combos</h2>");
+    // The Specials section is the menu, so it isn't "not up yet".
+    expect(body).not.toMatch(/isn(&#39;|')t up yet/);
+    expect(specialsSection(body)).toContain("Combo");
+  });
+
+  it("shows a sold-out bundle greyed and labelled, after the others in Specials", async () => {
+    const { id, menuToken, mains } = await withBundle({ startsAt: ago(1) }, { available: false });
+    const [{ id: pieId }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId: mains, name: "Pie", priceUsd: "5" })
+      .returning({ id: menuItems.id });
+    await owner.db
+      .insert(specials)
+      .values({ restaurantId: id, menuItemId: pieId, title: "Pie deal", specialPriceUsd: "4" });
+
+    const section = specialsSection(await page(menuToken));
+
+    expect(section.indexOf("Pie")).toBeLessThan(section.indexOf("Burger combo"));
+    expect(section).toMatch(/class="sold-out"[\s\S]*Burger combo[\s\S]*Sold out/);
+  });
+
+  it("a bundle's special price strikes the bundle's price, as for any item", async () => {
+    const { menuToken } = await withBundle({ startsAt: ago(1), specialPriceUsd: "8" });
+    expect(specialsSection(await page(menuToken))).toContain("<s>$9.50</s> $8.00");
+  });
+
+  it("keeps its own restaurant's bundles: another's never show", async () => {
+    const { menuToken } = await withBundle({ startsAt: ago(1) });
+    const other = await newRestaurant("Elsewhere");
+    expect(await page(other.menuToken)).not.toContain("Burger combo");
+    expect(await page(menuToken)).toContain("Burger combo");
+  });
+
+  it("escapes what an owner typed into the name and description", async () => {
+    const { id, menuToken, mains } = await withBundle(null);
+    const [{ id: evilId }] = await owner.db
+      .insert(menuItems)
+      .values({
+        restaurantId: id,
+        categoryId: mains,
+        name: "<script>alert(1)</script>",
+        description: "<img src=x onerror=alert(1)>",
+        priceUsd: "1",
+        visibility: "special_only",
+      })
+      .returning({ id: menuItems.id });
+    await owner.db.insert(specials).values({ restaurantId: id, menuItemId: evilId, title: "x" });
+
+    const body = await page(menuToken);
+
+    expect(body).not.toMatch(/<script|<img src=x/i);
+    expect(body).toContain("&lt;script&gt;");
+  });
+
+  it("stays inside the budget with 30 bundles live, each shown once, with photos", async () => {
+    const { id, menuToken } = await newRestaurant("Thirty bundles", "both");
+    await setRate(id, "26.2");
+    const categoryId = await addCategory(id, "Mains");
+    for (let n = 0; n < 30; n += 1) {
+      const [{ id: itemId }] = await owner.db
+        .insert(menuItems)
+        .values({
+          restaurantId: id,
+          categoryId,
+          name: `Bundle ${n}`,
+          description: "A burger, a portion of chips and a cold drink, with sauce on the side.",
+          priceUsd: "12.50",
+          photoKey: `menu/${crypto.randomUUID()}`,
+          visibility: "special_only",
+        })
+        .returning({ id: menuItems.id });
+      await owner.db
+        .insert(specials)
+        .values({ restaurantId: id, menuItemId: itemId, title: "Lunch combo" });
+    }
+
+    const body = await page(menuToken);
+
+    expect(body.match(/Bundle \d+/g)).toHaveLength(30);
+    expect(new TextEncoder().encode(body).length).toBeLessThan(100_000);
+    expect(body).not.toMatch(/<script|\son\w+=|javascript:/i);
+  });
+});

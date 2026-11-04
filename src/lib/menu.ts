@@ -24,7 +24,7 @@ import {
 type Tenant = Pick<TenantContext, "restaurantId">;
 type Writer = Tenant & Pick<TenantContext, "platformAdminId">;
 
-const FOREIGN_KEY_VIOLATION = "23503";
+export const FOREIGN_KEY_VIOLATION = "23503";
 const CHECK_VIOLATION = "23514";
 
 const errorCode = (error: unknown) =>
@@ -67,7 +67,7 @@ export const optionalPrice = (pattern: RegExp, message: string) =>
       .transform((value) => value || null),
   );
 
-const itemFields = z.object({
+export const itemFields = z.object({
   name: z
     .string(messages.itemName)
     .trim()
@@ -86,9 +86,9 @@ const itemFields = z.object({
 });
 
 // The database refuses an item with neither, too: this gives the reason.
-const hasAPrice = (item: { priceUsd: string | null; priceZig: string | null }) =>
+export const hasAPrice = (item: { priceUsd: string | null; priceZig: string | null }) =>
   item.priceUsd !== null || item.priceZig !== null;
-const noPrice = { message: messages.price, path: ["priceUsd"] };
+export const noPrice = { message: messages.price, path: ["priceUsd"] };
 
 const newMenuItem = itemFields.refine(hasAPrice, noPrice);
 
@@ -143,12 +143,25 @@ export type Menu = Awaited<ReturnType<typeof getMenu>>;
 
 /**
  * A restaurant's whole menu, with empty categories, for the editor and the page.
- * Archived categories and items are in neither (spec 02). An item's `special` is
+ * Archived categories and items are in neither (spec 02).
+ *
+ * Bundles (`visibility = special_only`) are what `forEditor` is about. The
+ * default is the customer's view and is safe to cache: a bundle is in no
+ * category, and is in `bundles` only while one of its specials is live. The
+ * editor passes `forEditor` and gets every bundle in its category, live or not,
+ * so the owner can still see and manage one out of its window; `bundles` is then
+ * empty. Callers that don't say get the customer's view.
+ *
+ * An item's `special` is
  * the one live at `now`, if any: the window is [starts_at, ends_at), a null start
  * has no lower end and a null end has no upper one. The page is cached, so `now`
  * is when it was rendered (see FRESH_FOR_SECONDS in public-menu.ts).
  */
-export function getMenu(ctx: Tenant, now = new Date()) {
+export function getMenu(
+  ctx: Tenant,
+  now = new Date(),
+  { forEditor = false }: { forEditor?: boolean } = {},
+) {
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
     const [restaurant] = await tx
@@ -178,6 +191,7 @@ export function getMenu(ctx: Tenant, now = new Date()) {
         priceUsd: menuItems.priceUsd,
         priceZig: menuItems.priceZig,
         available: menuItems.available,
+        visibility: menuItems.visibility,
         sortOrder: menuItems.sortOrder,
         photoKey: menuItems.photoKey,
       })
@@ -209,8 +223,18 @@ export function getMenu(ctx: Tenant, now = new Date()) {
       );
     const specialOf = new Map(live.map(({ menuItemId, ...rest }) => [menuItemId, rest]));
 
-    const itemsByCategory = Map.groupBy(
-      items.map((item) => ({ ...item, special: specialOf.get(item.id) ?? null })),
+    const withSpecial = items.map((item) => ({
+      ...item,
+      special: specialOf.get(item.id) ?? null,
+    }));
+    const inCategory = (item: (typeof withSpecial)[number]) =>
+      forEditor || item.visibility === "regular";
+    const itemsByCategory = Map.groupBy(withSpecial.filter(inCategory), (item) => item.categoryId);
+    // A bundle with no live special is nowhere: not a category, not here.
+    const liveBundles = Map.groupBy(
+      forEditor
+        ? []
+        : withSpecial.filter((item) => item.visibility === "special_only" && item.special),
       (item) => item.categoryId,
     );
     return {
@@ -229,6 +253,8 @@ export function getMenu(ctx: Tenant, now = new Date()) {
         ...group,
         items: itemsByCategory.get(group.id) ?? [],
       })),
+      // In the categories' order, as promotions are.
+      bundles: groups.flatMap((group) => liveBundles.get(group.id) ?? []),
     };
   });
 }
@@ -261,7 +287,7 @@ export async function addCategory(ctx: Writer, category: NewCategory) {
  * lock, so archiving it (which takes the row for update) waits for an item being
  * put in it, and the other way round: no live item ends up in an archived one.
  */
-async function hasLiveCategory(
+export async function hasLiveCategory(
   tx: TenantTransaction,
   restaurantId: string,
   categoryId: string,
@@ -295,27 +321,7 @@ export async function addMenuItem(
   try {
     const added = await withTenant(ctx, async (tx) => {
       if (!(await hasLiveCategory(tx, restaurantId, categoryId))) return null;
-      const [added] = await tx
-        .insert(menuItems)
-        .values({
-          ...item,
-          restaurantId,
-          categoryId,
-          sortOrder: sql`(
-            select coalesce(max(${menuItems.sortOrder}), -1) + 1 from ${menuItems}
-            where ${and(
-              eq(menuItems.restaurantId, restaurantId),
-              eq(menuItems.categoryId, categoryId),
-            )}
-          )`,
-        })
-        .returning({ id: menuItems.id });
-      await recordAdminAction(tx, ctx, {
-        action: "menu_item.create",
-        entityType: "menu_item",
-        entityId: added.id,
-      });
-      return added;
+      return insertMenuItem(tx, ctx, { ...item, categoryId });
     });
     if (!added) return "no_such_category";
   } catch (error) {
@@ -324,6 +330,41 @@ export async function addMenuItem(
   }
   revalidateMenu(ctx);
   return "saved";
+}
+
+/**
+ * Inserts an item at the end of its category and audits it. The caller has
+ * checked the category is live, and revalidates after commit.
+ */
+export async function insertMenuItem(
+  tx: TenantTransaction,
+  ctx: Writer,
+  { categoryId, ...fields }: Omit<typeof menuItems.$inferInsert, "restaurantId" | "sortOrder"> & {
+    categoryId: string;
+  },
+) {
+  const { restaurantId } = ctx;
+  const [added] = await tx
+    .insert(menuItems)
+    .values({
+      ...fields,
+      restaurantId,
+      categoryId,
+      sortOrder: sql`(
+        select coalesce(max(${menuItems.sortOrder}), -1) + 1 from ${menuItems}
+        where ${and(
+          eq(menuItems.restaurantId, restaurantId),
+          eq(menuItems.categoryId, categoryId),
+        )}
+      )`,
+    })
+    .returning({ id: menuItems.id });
+  await recordAdminAction(tx, ctx, {
+    action: "menu_item.create",
+    entityType: "menu_item",
+    entityId: added.id,
+  });
+  return added;
 }
 
 /**

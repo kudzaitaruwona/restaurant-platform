@@ -85,6 +85,7 @@ describe("a menu", () => {
       pricing: { rate: null, zigStep: "10", usdStep: "0.01" },
       rateSetAt: null,
       categories: [],
+      bundles: [],
     });
   });
 
