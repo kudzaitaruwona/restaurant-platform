@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only supersede stale PR runs; every push to a branch must finish CI.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:unit
+      # Build runs without runtime secrets: env validation happens at server
+      # start (src/instrumentation.ts), not during `next build`.
+      - run: npm run build
+
+  integration:
+    name: Integration tests (Postgres 17 via Neon wsproxy)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: restaurant_test
+        ports:
+          - 5499:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d restaurant_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      # The app only speaks to Postgres through Neon's WebSocket Pool driver,
+      # so the tests reach it the same way, through Neon's wsproxy.
+      wsproxy:
+        image: ghcr.io/neondatabase/wsproxy@sha256:7f2e2149aa6a57ba382a140102fba44f5053f3e44389ccc18adcecf896054efb
+        env:
+          APPEND_PORT: postgres:5432
+          ALLOW_ADDR_REGEX: ".*"
+        ports:
+          - 5498:80
+    env:
+      TEST_DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      NEON_WS_PROXY: localhost:5498/v1
+      # Stand-ins so code paths that read the validated env can load. No real
+      # credentials exist in CI; nothing here reaches R2.
+      DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      R2_ACCOUNT_ID: ci
+      R2_ACCESS_KEY_ID: ci
+      R2_SECRET_ACCESS_KEY: ci
+      R2_BUCKET: ci
+      R2_PUBLIC_BASE_URL: https://images.example.test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
