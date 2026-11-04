@@ -28,9 +28,11 @@ import { PhotoForm } from "./photo-form";
  */
 export async function MenuScreen() {
   const tenant = await getTenantContext();
-  const menu = await getMenu(tenant);
   const isOwner = tenant.role === "owner";
-  const specials = isOwner ? await listSpecials(tenant) : [];
+  const [menu, specials] = await Promise.all([
+    getMenu(tenant),
+    isOwner ? listSpecials(tenant) : [],
+  ]);
   const sections = menu.categories.map((category) => ({
     id: category.id,
     name: category.name,

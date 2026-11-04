@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { menuItems, restaurants, specials } from "@/db/schema";
 import { optionalPrice } from "@/lib/menu";
@@ -24,6 +24,8 @@ const EXCLUSION_VIOLATION = "23P01";
 
 const errorCode = (error: unknown) =>
   (error as { cause?: { code?: string } }).cause?.code;
+const errorConstraint = (error: unknown) =>
+  (error as { cause?: { constraint?: string } }).cause?.constraint;
 
 const messages = {
   item: "Choose an item.",
@@ -38,6 +40,8 @@ const messages = {
 
 export const overlapMessage =
   "That item already has an active special in some of those dates. Turn the other off, or change the dates.";
+
+export const alreadyOverMessage = "That end date has passed. Choose today or later.";
 
 const optionalText = (message: string, max: number) =>
   z.preprocess(
@@ -131,14 +135,17 @@ const startOfNextDay = (date: string, restaurantId: string) =>
   sql`((${date}::date + 1)::timestamp at time zone ${zone(restaurantId)})`;
 
 /**
- * Adds a promotion for a live item. "overlap" is D-05: the item already has an
- * active special in some of those dates. An archived item or another
+ * Adds a promotion for a live item. A blank start is the moment of saving, as
+ * spec 02 says, not an open lower end: an open one would overlap every special
+ * that is over, since those stay active. "overlap" is D-05: the item already has
+ * an active special in some of those dates. "already_over" is a blank start with
+ * an end date in the past, which leaves no window. An archived item or another
  * restaurant's is "no_such_item".
  */
 export async function createSpecial(
   ctx: Writer,
   { menuItemId, title, priceUsd, priceZig, startDate, endDate }: NewSpecial,
-): Promise<"saved" | "no_such_item" | "overlap"> {
+): Promise<"saved" | "no_such_item" | "overlap" | "already_over"> {
   if (!isId(menuItemId)) return "no_such_item";
 
   const { restaurantId } = ctx;
@@ -164,7 +171,7 @@ export async function createSpecial(
           title,
           specialPriceUsd: priceUsd,
           specialPriceZig: priceZig,
-          startsAt: startDate === null ? null : startOfDay(startDate, restaurantId),
+          startsAt: startDate === null ? sql`now()` : startOfDay(startDate, restaurantId),
           endsAt: endDate === null ? null : startOfNextDay(endDate, restaurantId),
         })
         .returning({ id: specials.id });
@@ -178,6 +185,8 @@ export async function createSpecial(
     if (!added) return "no_such_item";
   } catch (error) {
     if (errorCode(error) === EXCLUSION_VIOLATION) return "overlap";
+    // The form has already put typed dates in order, so only a blank start gets here.
+    if (errorConstraint(error) === "specials_window_ordered") return "already_over";
     // The form checks these first; this is the backstop.
     if (errorCode(error) === CHECK_VIOLATION) return "no_such_item";
     throw error;
@@ -280,18 +289,35 @@ export function specialStatus(
 
 const statusOrder: SpecialStatus[] = ["live", "scheduled", "off", "ended"];
 
+/** How many specials that are over or turned off the owner's list keeps. */
+export const FINISHED_SPECIALS_LISTED = 20;
+
 /**
- * Every special of a live item, for the owner's list: live ones first, then
- * those still to start, those turned off, and those over. A special of an
- * archived item is left out, as its item is.
+ * The specials of live items, for the owner's list: live ones first, then those
+ * still to start, those turned off, and those over. Nothing deletes a special, so
+ * the last two only grow, and only the latest of them are read: by when they
+ * end, or start if they have no end. A special of an archived item is left out,
+ * as its item is.
  */
 export function listSpecials(ctx: Pick<TenantContext, "restaurantId">, now = new Date()) {
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
-    const [restaurant] = await tx
-      .select({ timezone: restaurants.timezone })
-      .from(restaurants)
-      .where(eq(restaurants.id, restaurantId));
+    const sameItem = and(
+      eq(menuItems.restaurantId, specials.restaurantId),
+      eq(menuItems.id, specials.menuItemId),
+    );
+    const listable = and(eq(specials.restaurantId, restaurantId), isNull(menuItems.archivedAt));
+    const latestFinished = tx
+      .select({ id: specials.id })
+      .from(specials)
+      .innerJoin(menuItems, sameItem)
+      .where(and(listable, or(eq(specials.active, false), lte(specials.endsAt, now))))
+      .orderBy(
+        sql`coalesce(${specials.endsAt}, ${specials.startsAt}) desc nulls last`,
+        desc(specials.id),
+      )
+      .limit(FINISHED_SPECIALS_LISTED);
+
     const rows = await tx
       .select({
         id: specials.id,
@@ -302,22 +328,29 @@ export function listSpecials(ctx: Pick<TenantContext, "restaurantId">, now = new
         startsAt: specials.startsAt,
         endsAt: specials.endsAt,
         active: specials.active,
+        timezone: restaurants.timezone,
       })
       .from(specials)
-      .innerJoin(
-        menuItems,
+      .innerJoin(menuItems, sameItem)
+      .innerJoin(restaurants, eq(restaurants.id, specials.restaurantId))
+      .where(
         and(
-          eq(menuItems.restaurantId, specials.restaurantId),
-          eq(menuItems.id, specials.menuItemId),
+          listable,
+          or(
+            and(
+              eq(specials.active, true),
+              or(isNull(specials.endsAt), gt(specials.endsAt, now)),
+            ),
+            inArray(specials.id, latestFinished),
+          ),
         ),
       )
-      .where(and(eq(specials.restaurantId, restaurantId), isNull(menuItems.archivedAt)))
       .orderBy(asc(menuItems.name), asc(specials.startsAt));
 
     return rows
-      .map(({ startsAt, endsAt, ...row }) => ({
+      .map(({ startsAt, endsAt, timezone, ...row }) => ({
         ...row,
-        ...windowDates({ startsAt, endsAt }, restaurant.timezone),
+        ...windowDates({ startsAt, endsAt }, timezone),
         status: specialStatus({ active: row.active, startsAt, endsAt }, now),
       }))
       .sort((a, b) => statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status));

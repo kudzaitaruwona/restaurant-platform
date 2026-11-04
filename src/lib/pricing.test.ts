@@ -317,4 +317,61 @@ describe("promotionDisplay", () => {
       promotionDisplay(stew, { priceUsd: null, priceZig: "150" }, "usd_primary", noRate),
     ).toEqual({ main: { now: "$8.00" }, sub: { now: "ZiG 150" } });
   });
+
+  describe("with no rate, a line is struck only against its own currency", () => {
+    const zigOnly = { priceUsd: null, priceZig: "250" };
+    const usdSpecial = { priceUsd: "6", priceZig: null };
+    const zigSpecial = { priceUsd: null, priceZig: "150" };
+
+    it("a USD special on a ZiG-only item strikes nothing under usd_primary", () => {
+      // There is no normal USD price to strike, and the ZiG price didn't change.
+      expect(promotionDisplay(zigOnly, usdSpecial, "usd_primary", noRate)).toEqual({
+        main: { now: "$6.00" },
+        sub: { now: "ZiG 250" },
+      });
+    });
+
+    it("a ZiG special on a USD-only item strikes nothing under zig_primary", () => {
+      expect(promotionDisplay(stew, zigSpecial, "zig_primary", noRate)).toEqual({
+        main: { now: "ZiG 150" },
+        sub: { now: "$8.00" },
+      });
+    });
+
+    it("strikes nothing in a single-currency mode showing a price with no normal one", () => {
+      expect(promotionDisplay(zigOnly, usdSpecial, "usd_only", noRate)).toEqual({
+        main: { now: "$6.00" },
+      });
+      expect(promotionDisplay(stew, zigSpecial, "zig_only", noRate)).toEqual({
+        main: { now: "ZiG 150" },
+      });
+    });
+
+    it("under both, the line isn't struck when neither currency changed", () => {
+      expect(promotionDisplay(zigOnly, usdSpecial, "both", noRate)).toEqual({
+        main: { now: "$6.00 · ZiG 250" },
+      });
+    });
+
+    it("under both, one changed currency still strikes the line whole", () => {
+      const fixed = { priceUsd: "8", priceZig: "250" };
+      expect(promotionDisplay(fixed, usdSpecial, "both", noRate)).toEqual({
+        main: { was: "$8.00 · ZiG 250", now: "$6.00 · ZiG 250" },
+      });
+    });
+
+    it("strikes the fallback line when the special changes that currency", () => {
+      expect(promotionDisplay(zigOnly, zigSpecial, "usd_only", noRate)).toEqual({
+        main: { was: "ZiG 250", now: "ZiG 150" },
+      });
+    });
+
+    it("strikes only the changed line when both currencies are known", () => {
+      const fixed = { priceUsd: "8", priceZig: "250" };
+      expect(promotionDisplay(fixed, usdSpecial, "usd_primary", noRate)).toEqual({
+        main: { was: "$8.00", now: "$6.00" },
+        sub: { now: "ZiG 250" },
+      });
+    });
+  });
 });

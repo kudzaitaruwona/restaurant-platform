@@ -111,7 +111,7 @@ Built in ticket #24 (2.6): `days_of_week`, `daily_start` and `daily_end` exist o
 ### D-05: Overlapping specials on one item
 Proposed: the database rejects a second active special that overlaps on the same item.
 
-Built in ticket #24 (2.6) as the exclusion constraint `specials_no_overlap`, still proposed until Kudzai confirms it. Details in spec 00 (specials): it is per restaurant and item, ignores specials that are off, treats a missing start or end as unbounded, and lets specials that meet at midnight sit side by side. If this is rejected, drop the constraint in a migration and the app's 409 answer goes with it.
+Built in ticket #24 (2.6) as the exclusion constraint `specials_no_overlap`, still proposed until Kudzai confirms it. Details in spec 00 (specials): it is per restaurant and item, ignores specials that are off, treats a missing start or end as unbounded (the form stores a blank start as the moment of saving, so a special that is over never blocks one with a blank start), and lets specials that meet at midnight sit side by side. If this is rejected, drop the constraint in a migration and the app's 409 answer goes with it.
 
 ### D-06: Guest phone number retention
 A booking needs a WhatsApp number. Proposed: null the number 30 days after the booking date, keeping only the name and the booking outcome for no-show stats.

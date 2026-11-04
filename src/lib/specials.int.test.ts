@@ -9,6 +9,7 @@ import { archiveMenuItem, getMenu } from "./menu";
 import { menuTag } from "./menu-cache";
 import {
   createSpecial,
+  FINISHED_SPECIALS_LISTED,
   listSpecials,
   type NewSpecial,
   setSpecialActive,
@@ -168,15 +169,38 @@ describe("a date-only window becomes instants in the restaurant's timezone", () 
     ]);
   });
 
-  it("with no dates, is live now and stays live until turned off", async () => {
+  it("with no dates, is on from the moment it is saved and stays on until turned off", async () => {
     const tenant = await newRestaurant();
     const itemId = await newItem(tenant);
+    const before = Date.now();
     await createSpecial(tenant, promotion(itemId));
 
     const [row] = await rowsOf(tenant.restaurantId);
-    expect([row.startsAt, row.endsAt]).toEqual([null, null]);
-    expect(await liveAt(tenant, at("2001-01-01T00:00:00Z"))).toEqual([["Beef stew", "6"]]);
+    // Postgres's clock, so a minute either side of this one.
+    expect(Math.abs(row.startsAt!.getTime() - before)).toBeLessThan(60_000);
+    expect(row.endsAt).toBeNull();
+    expect(await liveAt(tenant, new Date(row.startsAt!.getTime() - 1))).toEqual([["Beef stew", null]]);
+    // A millisecond on: Postgres keeps microseconds, and a Date drops them.
+    expect(await liveAt(tenant, new Date(row.startsAt!.getTime() + 1))).toEqual([["Beef stew", "6"]]);
     expect(await liveAt(tenant, at("2090-01-01T00:00:00Z"))).toEqual([["Beef stew", "6"]]);
+  });
+
+  it("with a blank start and an end date already gone, is refused: there is no window", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+
+    expect(await createSpecial(tenant, promotion(itemId, { endDate: "2020-01-07" }))).toBe("already_over");
+
+    expect(await rowsOf(tenant.restaurantId)).toEqual([]);
+    expect(revalidateTag).not.toHaveBeenCalled();
+  });
+
+  it("with a blank start, can end today: the window runs to tonight's midnight", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Harare" }).format(new Date());
+
+    expect(await createSpecial(tenant, promotion(itemId, { endDate: today }))).toBe("saved");
   });
 
   it("with only an end date, runs until the end of that day", async () => {
@@ -224,6 +248,25 @@ describe("a date-only window becomes instants in the restaurant's timezone", () 
 });
 
 describe("D-05, as the app answers it", () => {
+  it("a special that is over doesn't block a new one with a blank start", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+    await createSpecial(tenant, promotion(itemId, { startDate: "2020-01-01", endDate: "2020-01-07" }));
+
+    expect(await createSpecial(tenant, promotion(itemId))).toBe("saved");
+
+    // The old one stays active: nobody has to turn off a special that is over.
+    expect((await rowsOf(tenant.restaurantId)).map(({ active }) => active)).toEqual([true, true]);
+  });
+
+  it("a blank start still overlaps a special that is on now", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+    await createSpecial(tenant, promotion(itemId, { startDate: "2020-01-01", endDate: "2099-12-31" }));
+
+    expect(await createSpecial(tenant, promotion(itemId))).toBe("overlap");
+  });
+
   it("answers 'overlap' for a second active special in the same dates, and adds nothing", async () => {
     const tenant = await newRestaurant();
     const itemId = await newItem(tenant);
@@ -280,6 +323,115 @@ describe("D-05, as the app answers it", () => {
 
     expect(await createSpecial(tenant, promotion(stew))).toBe("saved");
     expect(await createSpecial(tenant, promotion(pie))).toBe("saved");
+  });
+});
+
+describe("saving a special refreshes the public page", () => {
+  it("revalidates this restaurant's menu after a create", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await newItem(tenant);
+
+    expect(await createSpecial(tenant, promotion(itemId))).toBe("saved");
+
+    expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(menuTag(tenant.restaurantId), { expire: 0 });
+  });
+});
+
+describe("the owner's list stays a bounded read", () => {
+  const listedNow = at("2030-06-01T00:00:00Z");
+  const day = (n: number) => new Date(Date.UTC(2020, 0, n));
+
+  /** Rows no form could leave this many of in a test's time. */
+  const finished = (
+    { restaurantId }: { restaurantId: string },
+    menuItemId: string,
+    count: number,
+    fields: (n: number) => Partial<typeof specials.$inferInsert>,
+  ) =>
+    owner.db.insert(specials).values(
+      Array.from({ length: count }, (_, index) => ({
+        restaurantId,
+        menuItemId,
+        specialPriceUsd: "6",
+        ...fields(index + 1),
+      })),
+    );
+
+  it("keeps only the most recent that are over, and every one still to come", async () => {
+    const tenant = await newRestaurant();
+    const pie = await newItem(tenant, "Apple pie");
+    const stew = await newItem(tenant, "Beef stew");
+    const tea = await newItem(tenant, "Tea");
+    await finished(tenant, pie, FINISHED_SPECIALS_LISTED + 5, (n) => ({
+      title: `Week ${n}`,
+      startsAt: day(n),
+      endsAt: day(n + 1),
+    }));
+    await createSpecial(tenant, promotion(stew, { startDate: "2030-05-01" }));
+    await createSpecial(tenant, promotion(tea, { startDate: "2030-07-01" }));
+
+    const listed = await listSpecials(tenant, listedNow);
+
+    expect(listed.filter(({ status }) => status === "live")).toHaveLength(1);
+    expect(listed.filter(({ status }) => status === "scheduled")).toHaveLength(1);
+    const over = listed.filter(({ status }) => status === "ended").map(({ title }) => title);
+    expect(over).toHaveLength(FINISHED_SPECIALS_LISTED);
+    expect(over).toContain(`Week ${FINISHED_SPECIALS_LISTED + 5}`);
+    expect(over).not.toContain("Week 5");
+  });
+
+  it("counts turned-off specials in the same limit as those that are over", async () => {
+    const tenant = await newRestaurant();
+    const pie = await newItem(tenant, "Apple pie");
+    await finished(tenant, pie, FINISHED_SPECIALS_LISTED, (n) => ({
+      title: `Off ${n}`,
+      active: false,
+      startsAt: day(n),
+      endsAt: null,
+    }));
+    await finished(tenant, pie, 5, (n) => ({
+      title: `Over ${n}`,
+      startsAt: new Date(Date.UTC(2021, 0, n)),
+      endsAt: new Date(Date.UTC(2021, 0, n + 1)),
+    }));
+
+    const listed = await listSpecials(tenant, listedNow);
+
+    expect(listed).toHaveLength(FINISHED_SPECIALS_LISTED);
+    // Later than any of the turned-off ones, so all five stay in.
+    expect(listed.filter(({ status }) => status === "ended")).toHaveLength(5);
+    expect(listed.map(({ title }) => title)).not.toContain("Off 1");
+  });
+
+  it("keeps a turned-off special whose dates are still to come ahead of old ones", async () => {
+    const tenant = await newRestaurant();
+    const pie = await newItem(tenant, "Apple pie");
+    await finished(tenant, pie, FINISHED_SPECIALS_LISTED, (n) => ({
+      startsAt: day(n),
+      endsAt: day(n + 1),
+    }));
+    await finished(tenant, pie, 1, () => ({
+      title: "Saved for later",
+      active: false,
+      startsAt: at("2031-01-01T00:00:00Z"),
+      endsAt: at("2031-02-01T00:00:00Z"),
+    }));
+
+    expect((await listSpecials(tenant, listedNow)).map(({ title }) => title)).toContain("Saved for later");
+  });
+
+  it("doesn't spend the limit on specials of archived items", async () => {
+    const tenant = await newRestaurant();
+    const pie = await newItem(tenant, "Apple pie");
+    const stew = await newItem(tenant, "Beef stew");
+    await finished(tenant, pie, 1, () => ({ title: "Old", startsAt: day(1), endsAt: day(2) }));
+    await finished(tenant, stew, FINISHED_SPECIALS_LISTED, (n) => ({
+      startsAt: new Date(Date.UTC(2021, 0, n)),
+      endsAt: new Date(Date.UTC(2021, 0, n + 1)),
+    }));
+    await archiveMenuItem(tenant, stew);
+
+    expect((await listSpecials(tenant, listedNow)).map(({ title }) => title)).toEqual(["Old"]);
   });
 });
 

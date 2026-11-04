@@ -1107,7 +1107,8 @@ describe("/dashboard/menu specials", () => {
     const html = await screen(MenuScreen);
 
     expect(html).toContain("Normal price");
-    expect(html).toContain("Until turned off");
+    // A blank start is the day it was saved, shown back in the restaurant's zone.
+    expect(html).toMatch(/From \d{4}-\d{2}-\d{2}, until turned off/);
   });
 
   it("refuses a second special in the same dates with a 409 that says why, and adds nothing", async () => {
@@ -1124,6 +1125,20 @@ describe("/dashboard/menu specials", () => {
         "That item already has an active special in some of those dates. Turn the other off, or change the dates.",
     });
     expect(await owner.db.select().from(specials).where(eq(specials.menuItemId, itemId))).toHaveLength(1);
+  });
+
+  it("refuses a blank start with an end date already gone, with a reason, and adds nothing", async () => {
+    const itemId = await newItem();
+
+    const response = await addSpecial(
+      post("/api/menu/specials", { menuItemId: itemId, priceUsd: "6", endDate: "2020-01-07" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "That end date has passed. Choose today or later.",
+    });
+    expect(await owner.db.select().from(specials).where(eq(specials.menuItemId, itemId))).toEqual([]);
   });
 
   it("answers turning an overlapping special back on with the same 409", async () => {

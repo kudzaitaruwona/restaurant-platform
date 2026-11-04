@@ -109,11 +109,11 @@ export function formatZig(amount: string) {
 
 export type PriceDisplay = { main: string; sub?: string };
 
-/** Lays out the formatted prices a mode shows. Null is a currency that can't be worked out. */
-function arranged(
-  shown: { usd: string | null; zig: string | null },
+/** The lines a mode shows, in order. Null is a currency that can't be worked out. */
+function shownLines<Line>(
+  shown: { usd: Line | null; zig: Line | null },
   mode: CurrencyMode,
-): PriceDisplay {
+): Line[] {
   const wanted =
     mode === "usd_only"
       ? [shown.usd]
@@ -122,9 +122,16 @@ function arranged(
         : mode.startsWith("zig")
           ? [shown.zig, shown.usd]
           : [shown.usd, shown.zig];
-  let parts = wanted.filter((part) => part !== null);
-  if (parts.length === 0) parts = [shown.usd ?? shown.zig].filter((p) => p !== null);
+  const lines = wanted.filter((line) => line !== null);
+  return lines.length > 0 ? lines : [shown.usd ?? shown.zig].filter((line) => line !== null);
+}
 
+/** Lays out the formatted prices a mode shows. */
+function arranged(
+  shown: { usd: string | null; zig: string | null },
+  mode: CurrencyMode,
+): PriceDisplay {
+  const parts = shownLines(shown, mode);
   if (mode === "both") return { main: parts.join(" · ") };
   return parts.length > 1 ? { main: parts[0], sub: parts[1] } : { main: parts[0] };
 }
@@ -192,7 +199,9 @@ export type PromotionDisplay = { main: PromotionSlot; sub?: PromotionSlot };
 /**
  * What a menu shows for an item during a promotion (spec 02, pricing display
  * rules): the same layout as `priceDisplay`, with the normal price to strike
- * through beside each line the special changes.
+ * through beside each line the special changes. Strikes are decided per currency
+ * before the layout, because with no rate the normal and special layouts can
+ * differ: a price is only ever struck against its own currency's normal price.
  */
 export function promotionDisplay(
   item: ItemPrices,
@@ -200,20 +209,26 @@ export function promotionDisplay(
   mode: CurrencyMode,
   pricing: Pricing,
 ): PromotionDisplay {
-  const normal = priceDisplay(item, mode, pricing);
-  const now = arranged(
-    formatted(
-      specialUsd(item, special, pricing),
-      specialZig(item, special, pricing)?.amount ?? null,
-    ),
+  const normal = formatted(effectiveUsd(item, pricing), effectiveZig(item, pricing)?.amount ?? null);
+  const now = formatted(
+    specialUsd(item, special, pricing),
+    specialZig(item, special, pricing)?.amount ?? null,
+  );
+  const slot = (was: string | null, current: string | null): PromotionSlot | null => {
+    if (current === null) return null;
+    return was !== null && was !== current ? { was, now: current } : { now: current };
+  };
+  const [main, sub] = shownLines(
+    { usd: slot(normal.usd, now.usd), zig: slot(normal.zig, now.zig) },
     mode,
   );
-  const slot = (was: string | undefined, current: string): PromotionSlot =>
-    was !== undefined && was !== current ? { was, now: current } : { now: current };
-  return {
-    main: slot(normal.main, now.main),
-    ...(now.sub !== undefined && { sub: slot(normal.sub, now.sub) }),
-  };
+
+  if (mode === "both") {
+    const struck = [main, sub].some((line) => line?.was !== undefined);
+    const line = arranged(now, mode).main;
+    return { main: struck ? { was: arranged(normal, mode).main, now: line } : { now: line } };
+  }
+  return sub === undefined ? { main } : { main, sub };
 }
 
 const PRICE_TEXT = /^[0-9]{1,6}(\.[0-9]{1,2})?$/;

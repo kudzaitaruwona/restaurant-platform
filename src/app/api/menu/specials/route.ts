@@ -1,7 +1,12 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { formSaved } from "@/lib/form-response";
-import { createSpecial, overlapMessage, parseNewSpecial } from "@/lib/specials";
+import {
+  alreadyOverMessage,
+  createSpecial,
+  overlapMessage,
+  parseNewSpecial,
+} from "@/lib/specials";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /**
@@ -24,6 +29,9 @@ export async function POST(request: NextRequest) {
   if (result === "no_such_item") notFound();
   if (result === "overlap") {
     return Response.json({ error: overlapMessage }, { status: 409 });
+  }
+  if (result === "already_over") {
+    return Response.json({ error: alreadyOverMessage }, { status: 400 });
   }
   return formSaved(request, "/dashboard/menu");
 }
