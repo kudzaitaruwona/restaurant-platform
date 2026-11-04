@@ -89,50 +89,64 @@
     {
       "idx": 12,
       "version": "7",
-      "when": 1793796208564,
-      "tag": "0012_exchange_rates",
+      "when": 1793796178799,
+      "tag": "0012_tables",
       "breakpoints": true
     },
     {
       "idx": 13,
       "version": "7",
-      "when": 1793796751309,
-      "tag": "0013_item_availability",
+      "when": 1793796186446,
+      "tag": "0013_table_token_lookup",
       "breakpoints": true
     },
     {
       "idx": 14,
       "version": "7",
-      "when": 1793796829241,
-      "tag": "0014_archive_menu",
+      "when": 1793796208564,
+      "tag": "0014_exchange_rates",
       "breakpoints": true
     },
     {
       "idx": 15,
       "version": "7",
-      "when": 1793796889776,
-      "tag": "0015_item_photo_key",
+      "when": 1793796751309,
+      "tag": "0015_item_availability",
       "breakpoints": true
     },
     {
       "idx": 16,
       "version": "7",
-      "when": 1793798013665,
-      "tag": "0016_exchange_rates_append_only",
+      "when": 1793796829241,
+      "tag": "0016_archive_menu",
       "breakpoints": true
     },
     {
       "idx": 17,
       "version": "7",
-      "when": 1793798987538,
-      "tag": "0017_specials",
+      "when": 1793796889776,
+      "tag": "0017_item_photo_key",
       "breakpoints": true
     },
     {
       "idx": 18,
       "version": "7",
+      "when": 1793798013665,
+      "tag": "0018_exchange_rates_append_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793798987538,
+      "tag": "0019_specials",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
       "when": 1793802138349,
-      "tag": "0018_menu_item_visibility",
+      "tag": "0020_menu_item_visibility",
       "breakpoints": true
     }
   ]

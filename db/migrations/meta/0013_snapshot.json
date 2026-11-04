@@ -1,6 +1,6 @@
 {
-  "id": "2f18e2ca-a1ca-47c0-89cc-8acce3d98b6d",
-  "prevId": "e9834939-69ff-45ed-aa2d-bbf2765cd105",
+  "id": "95177bc7-c953-495f-a220-9b9ac409bc04",
+  "prevId": "b5f10dfb-8e22-4618-abf8-c8a63914992b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -65,35 +65,35 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "admin_auth_account_user_id_admin_auth_user_id_fk": {
           "name": "admin_auth_account_user_id_admin_auth_user_id_fk",
           "tableFrom": "admin_auth_account",
-          "tableTo": "admin_auth_user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "admin_auth_user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "admin_auth_account_provider_id_account_id_unique": {
           "name": "admin_auth_account_provider_id_account_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "provider_id",
             "account_id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -188,30 +188,30 @@
         "admin_auth_entry_session_id_admin_auth_session_id_fk": {
           "name": "admin_auth_entry_session_id_admin_auth_session_id_fk",
           "tableFrom": "admin_auth_entry",
-          "tableTo": "admin_auth_session",
           "columnsFrom": [
             "session_id"
           ],
+          "tableTo": "admin_auth_session",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         },
         "admin_auth_entry_entered_restaurant_id_shadow_staff_id_staff_restaurant_id_id_fk": {
           "name": "admin_auth_entry_entered_restaurant_id_shadow_staff_id_staff_restaurant_id_id_fk",
           "tableFrom": "admin_auth_entry",
-          "tableTo": "staff",
           "columnsFrom": [
             "entered_restaurant_id",
             "shadow_staff_id"
           ],
+          "tableTo": "staff",
           "columnsTo": [
             "restaurant_id",
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
@@ -266,10 +266,10 @@
       "uniqueConstraints": {
         "admin_auth_rate_limit_key_unique": {
           "name": "admin_auth_rate_limit_key_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "key"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -354,34 +354,34 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "admin_auth_session_user_id_admin_auth_user_id_fk": {
           "name": "admin_auth_session_user_id_admin_auth_user_id_fk",
           "tableFrom": "admin_auth_session",
-          "tableTo": "admin_auth_user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "admin_auth_user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "admin_auth_session_token_unique": {
           "name": "admin_auth_session_token_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "token"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -455,10 +455,10 @@
       "uniqueConstraints": {
         "admin_auth_user_email_unique": {
           "name": "admin_auth_user_email_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -531,9 +531,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -622,26 +622,26 @@
         "audit_log_restaurant_id_restaurants_id_fk": {
           "name": "audit_log_restaurant_id_restaurants_id_fk",
           "tableFrom": "audit_log",
-          "tableTo": "restaurants",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "audit_log_restaurant_id_id_unique": {
           "name": "audit_log_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -695,26 +695,26 @@
         "categories_restaurant_id_restaurants_id_fk": {
           "name": "categories_restaurant_id_restaurants_id_fk",
           "tableFrom": "categories",
-          "tableTo": "restaurants",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "categories_restaurant_id_id_unique": {
           "name": "categories_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -732,8 +732,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.exchange_rates": {
-      "name": "exchange_rates",
+    "public.tables": {
+      "name": "tables",
       "schema": "",
       "columns": {
         "id": {
@@ -749,29 +749,54 @@
           "primaryKey": false,
           "notNull": true
         },
-        "usd_to_zig": {
-          "name": "usd_to_zig",
-          "type": "numeric",
+        "label": {
+          "name": "label",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "set_by": {
-          "name": "set_by",
-          "type": "uuid",
+        "capacity": {
+          "name": "capacity",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
+        "bookable": {
+          "name": "bookable",
+          "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": "now()"
+          "default": true
+        },
+        "sort_order": {
+          "name": "sort_order",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "qr_token": {
+          "name": "qr_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_rotated_at": {
+          "name": "token_rotated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "archived_at": {
+          "name": "archived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
-        "exchange_rates_restaurant_id_created_at_index": {
-          "name": "exchange_rates_restaurant_id_created_at_index",
+        "tables_restaurant_id_label_unique": {
+          "name": "tables_restaurant_id_label_unique",
           "columns": [
             {
               "expression": "restaurant_id",
@@ -780,57 +805,50 @@
               "nulls": "last"
             },
             {
-              "expression": "created_at",
+              "expression": "label",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             }
           ],
-          "isUnique": false,
-          "concurrently": false,
+          "isUnique": true,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"tables\".\"archived_at\" is null",
+          "concurrently": false
         }
       },
       "foreignKeys": {
-        "exchange_rates_restaurant_id_restaurants_id_fk": {
-          "name": "exchange_rates_restaurant_id_restaurants_id_fk",
-          "tableFrom": "exchange_rates",
-          "tableTo": "restaurants",
+        "tables_restaurant_id_restaurants_id_fk": {
+          "name": "tables_restaurant_id_restaurants_id_fk",
+          "tableFrom": "tables",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "exchange_rates_set_by_fk": {
-          "name": "exchange_rates_set_by_fk",
-          "tableFrom": "exchange_rates",
-          "tableTo": "staff",
-          "columnsFrom": [
-            "restaurant_id",
-            "set_by"
-          ],
-          "columnsTo": [
-            "restaurant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "exchange_rates_restaurant_id_id_unique": {
-          "name": "exchange_rates_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
+        "tables_qr_token_unique": {
+          "name": "tables_qr_token_unique",
+          "columns": [
+            "qr_token"
+          ],
+          "nullsNotDistinct": false
+        },
+        "tables_restaurant_id_id_unique": {
+          "name": "tables_restaurant_id_id_unique",
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -846,9 +864,13 @@
         }
       },
       "checkConstraints": {
-        "exchange_rates_usd_to_zig_finite": {
-          "name": "exchange_rates_usd_to_zig_finite",
-          "value": "\"exchange_rates\".\"usd_to_zig\" > 0 and \"exchange_rates\".\"usd_to_zig\" < 'Infinity'"
+        "tables_capacity_positive": {
+          "name": "tables_capacity_positive",
+          "value": "\"tables\".\"capacity\" > 0"
+        },
+        "tables_qr_token_shape": {
+          "name": "tables_qr_token_shape",
+          "value": "\"tables\".\"qr_token\" ~ '^[0-9A-Za-z]{22,}$'"
         }
       },
       "isRLSEnabled": false
@@ -901,13 +923,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "available": {
-          "name": "available",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "sort_order": {
           "name": "sort_order",
           "type": "integer",
@@ -934,50 +949,50 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "menu_items_restaurant_id_restaurants_id_fk": {
           "name": "menu_items_restaurant_id_restaurants_id_fk",
           "tableFrom": "menu_items",
-          "tableTo": "restaurants",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         },
         "menu_items_category_fk": {
           "name": "menu_items_category_fk",
           "tableFrom": "menu_items",
-          "tableTo": "categories",
           "columnsFrom": [
             "restaurant_id",
             "category_id"
           ],
+          "tableTo": "categories",
           "columnsTo": [
             "restaurant_id",
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "menu_items_restaurant_id_id_unique": {
           "name": "menu_items_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1039,15 +1054,15 @@
           "columns": [
             {
               "expression": "lower(\"email\")",
-              "asc": true,
               "isExpression": true,
+              "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -1055,10 +1070,10 @@
       "uniqueConstraints": {
         "platform_admins_email_unique": {
           "name": "platform_admins_email_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {},
@@ -1154,17 +1169,17 @@
       "uniqueConstraints": {
         "restaurants_slug_unique": {
           "name": "restaurants_slug_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "slug"
-          ]
+          ],
+          "nullsNotDistinct": false
         },
         "restaurants_menu_token_unique": {
           "name": "restaurants_menu_token_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "menu_token"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1183,10 +1198,6 @@
         "restaurants_contact_phone_e164": {
           "name": "restaurants_contact_phone_e164",
           "value": "\"restaurants\".\"contact_phone\" ~ '^[+][1-9][0-9]{1,14}$'"
-        },
-        "restaurants_rounding_steps_positive_finite": {
-          "name": "restaurants_rounding_steps_positive_finite",
-          "value": "\"restaurants\".\"zig_rounding_step\" > 0 and \"restaurants\".\"zig_rounding_step\" < 'Infinity' and \"restaurants\".\"usd_rounding_step\" > 0 and \"restaurants\".\"usd_rounding_step\" < 'Infinity'"
         }
       },
       "isRLSEnabled": false
@@ -1257,15 +1268,15 @@
           "columns": [
             {
               "expression": "lower(\"email\")",
-              "asc": true,
               "isExpression": true,
+              "asc": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         },
         "staff_one_shadow_per_restaurant": {
           "name": "staff_one_shadow_per_restaurant",
@@ -1278,43 +1289,43 @@
             }
           ],
           "isUnique": true,
-          "where": "\"staff\".\"kind\" = 'platform_admin'",
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "where": "\"staff\".\"kind\" = 'platform_admin'",
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "staff_restaurant_id_restaurants_id_fk": {
           "name": "staff_restaurant_id_restaurants_id_fk",
           "tableFrom": "staff",
-          "tableTo": "restaurants",
           "columnsFrom": [
             "restaurant_id"
           ],
+          "tableTo": "restaurants",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "staff_email_unique": {
           "name": "staff_email_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
+          ],
+          "nullsNotDistinct": false
         },
         "staff_restaurant_id_id_unique": {
           "name": "staff_restaurant_id_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "restaurant_id",
             "id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1402,35 +1413,35 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "staff_auth_account_user_id_staff_auth_user_id_fk": {
           "name": "staff_auth_account_user_id_staff_auth_user_id_fk",
           "tableFrom": "staff_auth_account",
-          "tableTo": "staff_auth_user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "staff_auth_user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "staff_auth_account_provider_id_account_id_unique": {
           "name": "staff_auth_account_provider_id_account_id_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "provider_id",
             "account_id"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1525,10 +1536,10 @@
       "uniqueConstraints": {
         "staff_auth_rate_limit_key_unique": {
           "name": "staff_auth_rate_limit_key_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "key"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1613,34 +1624,34 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {
         "staff_auth_session_user_id_staff_auth_user_id_fk": {
           "name": "staff_auth_session_user_id_staff_auth_user_id_fk",
           "tableFrom": "staff_auth_session",
-          "tableTo": "staff_auth_user",
           "columnsFrom": [
             "user_id"
           ],
+          "tableTo": "staff_auth_user",
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
+          "onUpdate": "no action",
+          "onDelete": "cascade"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "staff_auth_session_token_unique": {
           "name": "staff_auth_session_token_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "token"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1714,10 +1725,10 @@
       "uniqueConstraints": {
         "staff_auth_user_email_unique": {
           "name": "staff_auth_user_email_unique",
-          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
+          ],
+          "nullsNotDistinct": false
         }
       },
       "policies": {
@@ -1790,9 +1801,9 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
+          "with": {},
           "method": "btree",
-          "with": {}
+          "concurrently": false
         }
       },
       "foreignKeys": {},
@@ -1853,10 +1864,10 @@
     }
   },
   "schemas": {},
+  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
-  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

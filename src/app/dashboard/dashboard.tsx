@@ -52,6 +52,7 @@ export async function Dashboard() {
           <Link href="/dashboard/menu">Menu</Link>
           {tenant.role === "owner" && (
             <>
+              <Link href="/dashboard/tables">Tables</Link>
               <Link href="/dashboard/settings">Restaurant settings</Link>
               <Link href="/dashboard/staff">Staff</Link>
             </>

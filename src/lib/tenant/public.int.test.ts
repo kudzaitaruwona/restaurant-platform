@@ -1,6 +1,6 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { categories } from "@/db/schema";
+import { categories, diningTables } from "@/db/schema";
 import {
   openOwnerDatabase,
   openTestDatabase,
@@ -69,6 +69,72 @@ describe("resolvePublicToken", () => {
     await resolvePublicToken("menu", menuTokenOf(restaurantA));
     const { rows } = await db.execute(sql`select id from restaurants`);
     expect(rows).toEqual([]);
+  });
+});
+
+describe("resolvePublicToken for a table's token", () => {
+  const qrToken = "PublicLookupTable0000a";
+  const archivedToken = "PublicLookupArchived0b";
+
+  beforeAll(async () => {
+    await owner.db.insert(diningTables).values([
+      { restaurantId: restaurantA.id, label: "Public lookup", capacity: 2, qrToken },
+      {
+        restaurantId: restaurantA.id,
+        label: "Public lookup archived",
+        capacity: 2,
+        qrToken: archivedToken,
+        archivedAt: new Date(),
+      },
+    ]);
+  });
+  afterAll(async () => {
+    await owner.db
+      .delete(diningTables)
+      .where(inArray(diningTables.qrToken, [qrToken, archivedToken]));
+  });
+
+  it("finds the restaurant the table belongs to", async () => {
+    expect(await resolvePublicToken("table", qrToken)).toEqual({
+      restaurantId: restaurantA.id,
+    });
+  });
+
+  it("finds nothing for an archived table, a menu token or a pattern", async () => {
+    for (const token of [archivedToken, menuTokenOf(restaurantA), "%", ""]) {
+      expect(await resolvePublicToken("table", token)).toBeUndefined();
+    }
+  });
+
+  it("doesn't take a table's token for a menu token", async () => {
+    expect(await resolvePublicToken("menu", qrToken)).toBeUndefined();
+  });
+});
+
+describe("how the table lookup is locked down", () => {
+  const name = "restaurant_id_by_table_token";
+
+  it("is SECURITY DEFINER with a fixed search_path", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select prosecdef, proconfig from pg_proc
+      where proname = ${name} and pronamespace = 'public'::regnamespace
+    `);
+    expect(rows).toEqual([
+      { prosecdef: true, proconfig: ["search_path=pg_catalog, pg_temp"] },
+    ]);
+  });
+
+  it("can be executed by app_tenant and not by PUBLIC", async () => {
+    const { rows } = await owner.db.execute(sql`
+      select coalesce(grantee.rolname, 'PUBLIC') as grantee
+      from pg_proc p
+      cross join lateral aclexplode(p.proacl) acl
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where p.proname = ${name} and p.pronamespace = 'public'::regnamespace
+        and acl.privilege_type = 'EXECUTE'
+        and acl.grantee <> p.proowner
+    `);
+    expect(rows).toEqual([{ grantee: "app_tenant" }]);
   });
 });
 

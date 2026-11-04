@@ -301,7 +301,7 @@ export const menuItems = pgTable(
  * timezone: a start date opens at that day's midnight, and an end date is
  * inclusive, so it closes at midnight after it.
  *
- * D-05: the exclusion constraint `specials_no_overlap` (see 0017_specials) stops
+ * D-05: the exclusion constraint `specials_no_overlap` (see 0019_specials) stops
  * two active specials on one item from overlapping. Drizzle can't model it, so
  * it lives in the migration only.
  */
@@ -392,6 +392,42 @@ export const exchangeRates = pgTable(
       "exchange_rates_usd_to_zig_finite",
       sql`${table.usdToZig} > 0 and ${table.usdToZig} < 'Infinity'`,
     ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * Tables (spec 00, 3). `qr_token` is unique across the platform, so a token on
+ * its own names the table and the restaurant (spec 03). Archiving frees the
+ * label but the table keeps its token, which stops working (see the lookup;
+ * spec 03 › Token rules records that as proposed).
+ */
+export const diningTables = pgTable(
+  "tables",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    label: text().notNull(),
+    capacity: integer().notNull(),
+    // false = walk-ins only
+    bookable: boolean().notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    qrToken: text("qr_token").notNull().unique(),
+    tokenRotatedAt: timestamp("token_rotated_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    uniqueIndex("tables_restaurant_id_label_unique")
+      .on(table.restaurantId, table.label)
+      .where(sql`${table.archivedAt} is null`),
+    check("tables_capacity_positive", sql`${table.capacity} > 0`),
+    // 22 base62 characters is 131 bits; the minting code can't make a shorter one.
+    check("tables_qr_token_shape", sql`${table.qrToken} ~ '^[0-9A-Za-z]{22,}$'`),
     tenantPolicy("restaurant_id"),
   ],
 );

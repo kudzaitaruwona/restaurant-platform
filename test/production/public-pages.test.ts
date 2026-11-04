@@ -1,8 +1,16 @@
+import { eq } from "drizzle-orm";
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { categories, menuItems, restaurants, staff } from "../../src/db/schema";
+import {
+  categories,
+  diningTables,
+  menuItems,
+  restaurants,
+  staff,
+  staffAuthRateLimit,
+} from "../../src/db/schema";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -22,9 +30,21 @@ import {
  * however many times this has run against the same build. Those restaurants
  * stay behind, because the last-owner trigger won't let their owners go.
  */
-/** Chain 3's `/t/{qr_token}` goes here, and in `publicPagePrefixes` in src/proxy.ts. */
+/** A new public page goes here, and in `publicPagePrefixes` in src/proxy.ts. */
+type Restaurant = { menuToken: string; qrToken: string };
 const publicPages = [
-  { route: "/m/[menuToken]", url: (menuToken: string) => `/m/${menuToken}` },
+  {
+    route: "/m/[menuToken]",
+    tokenOf: (restaurant: Restaurant) => restaurant.menuToken,
+    url: (token: string) => `/m/${token}`,
+    unknown: "Menu not found",
+  },
+  {
+    route: "/t/[qrToken]",
+    tokenOf: (restaurant: Restaurant) => restaurant.qrToken,
+    url: (token: string) => `/t/${token}`,
+    unknown: "This code is out of date",
+  },
 ];
 
 const refusedMethods = ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "PROPFIND"];
@@ -100,7 +120,13 @@ async function newRestaurant(dish: string, currencyMode: "usd_only" | "zig_only"
   await owner.db
     .insert(menuItems)
     .values({ restaurantId: id, categoryId, name: dish, priceUsd: "8" });
-  return { id, menuToken, categoryId };
+  // 22 base62 characters, and unique to this restaurant.
+  const qrToken = id.replaceAll("-", "").slice(0, 22).padEnd(22, "0");
+  const tableId = crypto.randomUUID();
+  await owner.db
+    .insert(diningTables)
+    .values({ id: tableId, restaurantId: id, label: "7", capacity: 4, qrToken });
+  return { id, menuToken, qrToken, categoryId, tableId };
 }
 
 const visit = (path: string, init?: RequestInit) =>
@@ -117,6 +143,9 @@ async function signInAsOwnerOf(restaurantId: string) {
     displayName: "Owner",
     role: "owner",
   });
+  // Rate limited per address, and kept in the database: back to back runs and
+  // sign-ins in this file would otherwise trip it.
+  await owner.db.delete(staffAuthRateLimit);
   await fetch(`${origin}/api/auth/staff/sign-in/magic-link`, {
     method: "POST",
     headers: { origin, "content-type": "application/json" },
@@ -141,12 +170,12 @@ describe("the build", () => {
   });
 });
 
-describe.each(publicPages)("$route", ({ url }) => {
+describe.each(publicPages)("$route", ({ tokenOf, url, unknown }) => {
   it("is rendered once, then served from the cache", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const first = await visit(url(menuToken));
-    const second = await visit(url(menuToken));
+    const first = await visit(url(tokenOf(restaurant)));
+    const second = await visit(url(tokenOf(restaurant)));
 
     expect([first.status, cacheStatus(first)]).toEqual([200, "MISS"]);
     expect([second.status, cacheStatus(second)]).toEqual([200, "HIT"]);
@@ -154,18 +183,18 @@ describe.each(publicPages)("$route", ({ url }) => {
   });
 
   it("can be cached for five minutes at most, so a special's window is never far out", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const response = await visit(url(menuToken));
+    const response = await visit(url(tokenOf(restaurant)));
 
     expect(response.headers.get("cache-control")).toBe("s-maxage=300");
   });
 
   it.each(refusedMethods)("refuses %s, which can't take the page down", async (method) => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const attack = await visit(url(menuToken), { method });
-    const customer = await visit(url(menuToken));
+    const attack = await visit(url(tokenOf(restaurant)), { method });
+    const customer = await visit(url(tokenOf(restaurant)));
 
     expect(attack.status).toBe(405);
     expect(attack.headers.get("allow")).toBe("GET, HEAD");
@@ -174,10 +203,10 @@ describe.each(publicPages)("$route", ({ url }) => {
   });
 
   it("answers HEAD without emptying the page for the next visit", async () => {
-    const { menuToken } = await newRestaurant("Stew");
+    const restaurant = await newRestaurant("Stew");
 
-    const head = await visit(url(menuToken), { method: "HEAD" });
-    const customer = await visit(url(menuToken));
+    const head = await visit(url(tokenOf(restaurant)), { method: "HEAD" });
+    const customer = await visit(url(tokenOf(restaurant)));
 
     expect(head.status).toBe(200);
     expect(customer.status).toBe(200);
@@ -192,14 +221,14 @@ describe.each(publicPages)("$route", ({ url }) => {
 
     expect(first.status).toBe(404);
     expect(second.status).toBe(404);
-    expect(await second.text()).toContain("Menu not found");
+    expect(await second.text()).toContain(unknown);
   });
 
   it("a save refreshes that restaurant's page and leaves another's in the cache", async () => {
     const mine = await newRestaurant("Stew");
     const theirs = await newRestaurant("Curry");
-    await visit(url(mine.menuToken));
-    await visit(url(theirs.menuToken));
+    await visit(url(tokenOf(mine)));
+    await visit(url(tokenOf(theirs)));
     const cookie = await signInAsOwnerOf(mine.id);
 
     const saved = await visit("/api/menu/items", {
@@ -214,10 +243,97 @@ describe.each(publicPages)("$route", ({ url }) => {
     });
 
     expect(saved.status).toBe(303);
-    const refreshed = await visit(url(mine.menuToken));
+    const refreshed = await visit(url(tokenOf(mine)));
     expect(cacheStatus(refreshed)).toBe("MISS");
     expect(await refreshed.text()).toContain("Sadza");
-    expect(cacheStatus(await visit(url(theirs.menuToken)))).toBe("HIT");
+    expect(cacheStatus(await visit(url(tokenOf(theirs))))).toBe("HIT");
+  });
+});
+
+describe("archiving a table", () => {
+  it("stops its printed code working at once, not when the cached page expires", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const cookie = await signInAsOwnerOf(restaurant.id);
+    const [{ id: tableId }] = await owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, restaurant.id));
+    const scan = () => visit(`/t/${restaurant.qrToken}`);
+    await scan();
+    expect([(await scan()).status, cacheStatus(await scan())]).toEqual([200, "HIT"]);
+
+    const archived = await visit(`/api/tables/${tableId}/archive`, {
+      method: "POST",
+      headers: { origin, cookie },
+    });
+
+    expect(archived.status).toBe(303);
+    const after = await scan();
+    expect(after.status).toBe(404);
+    expect(await after.text()).toContain("This code is out of date");
+  });
+
+  it("leaves another restaurant's cached page where it was", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+    const [{ id: tableId }] = await owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(eq(diningTables.restaurantId, mine.id));
+
+    await visit(`/api/tables/${tableId}/archive`, { method: "POST", headers: { origin, cookie } });
+
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
+  });
+});
+
+describe("regenerating a table's token", () => {
+  const regenerate = (restaurant: { tableId: string }, cookie: string) =>
+    visit(`/api/tables/${restaurant.tableId}/regenerate`, {
+      method: "POST",
+      headers: { origin, cookie },
+    });
+
+  const tokenNow = async (tableId: string) =>
+    (await owner.db.select().from(diningTables).where(eq(diningTables.id, tableId)))[0].qrToken;
+
+  it("stops the old code at once, though its page was cached, and the new one works", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    const oldToken = mine.qrToken;
+    // Cached, so only the tag can take it down: five minutes is the ceiling.
+    expect(cacheStatus(await visit(`/t/${oldToken}`))).toBe("MISS");
+    expect(cacheStatus(await visit(`/t/${oldToken}`))).toBe("HIT");
+    await visit(`/t/${theirs.qrToken}`);
+    const cookie = await signInAsOwnerOf(mine.id);
+
+    const response = await regenerate(mine, cookie);
+
+    expect(response.status).toBe(303);
+    const old = await visit(`/t/${oldToken}`);
+    expect(old.status).toBe(404);
+    expect(await old.text()).toContain("This code is out of date");
+    const fresh = await visit(`/t/${await tokenNow(mine.tableId)}`);
+    expect(fresh.status).toBe(200);
+    expect(await fresh.text()).toContain("Stew");
+    expect(cacheStatus(await visit(`/t/${theirs.qrToken}`))).toBe("HIT");
+  });
+
+  it("refuses another restaurant's table, and its code keeps working", async () => {
+    const mine = await newRestaurant("Stew");
+    const theirs = await newRestaurant("Curry");
+    const cookie = await signInAsOwnerOf(mine.id);
+
+    const response = await regenerate(theirs, cookie);
+
+    expect(response.status).toBe(404);
+    expect((await visit(`/t/${theirs.qrToken}`)).status).toBe(200);
+  });
+
+  it("holds neither token in the server's output", () => {
+    expect(serverOutput).not.toMatch(/\/t\/[0-9A-Za-z]{22}\b/);
   });
 
   it("changing the exchange rate reprices the calculated ZiG prices on the next visit", async () => {
