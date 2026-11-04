@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 import {
+  bestFit,
   MAX_UPLOAD_BYTES,
   PhotoRefused,
   resizePhoto,
@@ -30,6 +31,18 @@ describe("resizePhoto", () => {
 
     expect(large.byteLength).toBeLessThan(60 * 1024);
     expect(thumb.byteLength).toBeLessThan(60 * 1024);
+  });
+
+  it("ships a photo that compresses at the top quality, not a lower one", async () => {
+    const flat = await sharp({
+      create: { width: 900, height: 900, channels: 3, background: "#c0803a" },
+    })
+      .png()
+      .toBuffer();
+    const { large } = await resizePhoto(flat);
+    // 800px is what the pipeline makes of 900px; encode that directly at the top rung.
+    const direct = await sharp(flat).resize({ width: 800, height: 800 }).webp({ quality: 82 }).toBuffer();
+    expect(large.byteLength).toBe(direct.byteLength);
   });
 
   it("never enlarges a small photo", async () => {
@@ -68,6 +81,40 @@ describe("resizePhoto", () => {
       .toBuffer();
     await expect(resizePhoto(huge)).rejects.toBeInstanceOf(PhotoRefused);
   }, 30_000);
+});
+
+describe("bestFit", () => {
+  /** A fake encoder whose size is the quality in bytes, recording what it was asked. */
+  const fake = () => {
+    const asked: number[] = [];
+    const encode = async (quality: number) => {
+      asked.push(quality);
+      return Buffer.alloc(quality);
+    };
+    return { asked, encode };
+  };
+
+  it("picks the highest quality that fits, mid-ladder", async () => {
+    const { encode } = fake();
+    const result = await bestFit(encode, 50, [82, 72, 62, 52, 42, 32, 24, 16, 8]);
+    expect(result.byteLength).toBe(42);
+  });
+
+  it("takes the top quality when it fits", async () => {
+    const result = await bestFit(fake().encode, 1000, [82, 72, 62]);
+    expect(result.byteLength).toBe(82);
+  });
+
+  it("returns the lowest quality when nothing fits", async () => {
+    const result = await bestFit(fake().encode, 5, [82, 72, 62, 52, 42, 32, 24, 16, 8]);
+    expect(result.byteLength).toBe(8);
+  });
+
+  it("encodes fewer times than there are rungs", async () => {
+    const { asked, encode } = fake();
+    await bestFit(encode, 50, [82, 72, 62, 52, 42, 32, 24, 16, 8]);
+    expect(asked.length).toBeLessThanOrEqual(4);
+  });
 });
 
 describe("the upload limit", () => {

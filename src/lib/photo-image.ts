@@ -24,32 +24,41 @@ const QUALITIES = [82, 72, 62, 52, 42, 32, 24, 16, 8];
 export class PhotoRefused extends Error {}
 
 /**
- * The highest of QUALITIES that fits the target. The image is decoded and resized
- * once, to raw pixels, so each try only encodes; and a lower quality makes a
- * smaller file, so bisecting the list finds it in four tries, not nine.
+ * The highest of `qualities` (descending) whose encoding is under `limit` bytes,
+ * found by bisecting, since a lower quality makes a smaller file: four tries for
+ * nine rungs, not nine. If nothing fits, the lowest quality, as small as this gets.
  */
-async function toWebp(image: Sharp) {
-  const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
-  const { width, height, channels } = info;
-  const encode = (quality: number) =>
-    sharp(data, { raw: { width, height, channels } }).webp({ quality }).toBuffer();
-
+export async function bestFit(
+  encode: (quality: number) => Promise<Buffer>,
+  limit: number = TARGET_BYTES,
+  qualities: readonly number[] = QUALITIES,
+) {
   let fits: Buffer | undefined;
   let tried: Buffer | undefined;
-  let [high, low] = [0, QUALITIES.length - 1];
+  let [high, low] = [0, qualities.length - 1];
   while (high <= low) {
     const middle = Math.floor((high + low) / 2);
-    tried = await encode(QUALITIES[middle]);
-    if (tried.byteLength < TARGET_BYTES) {
+    tried = await encode(qualities[middle]);
+    if (tried.byteLength < limit) {
       fits = tried;
       low = middle - 1;
     } else {
       high = middle + 1;
     }
   }
-  // The aim, not a promise: if nothing fits, the last try was the lowest quality,
-  // which is as small as this gets.
+  // The aim, not a promise: if nothing fits, the last try was the lowest quality.
   return fits ?? tried!;
+}
+
+/**
+ * The image is decoded and resized once, to raw pixels, so each try only encodes.
+ */
+async function toWebp(image: Sharp) {
+  const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  return bestFit((quality) =>
+    sharp(data, { raw: { width, height, channels } }).webp({ quality }).toBuffer(),
+  );
 }
 
 export async function resizePhoto(bytes: Uint8Array) {
