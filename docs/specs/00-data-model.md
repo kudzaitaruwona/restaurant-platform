@@ -68,14 +68,14 @@ categories
 
 menu_items
   id, restaurant_id, category_id → categories      -- exactly one category
-  name, description, photo_key null            -- storage key; `-800.webp` and `-320.webp` hang off it, URLs come from getUrl (D-07)
+  name, description, photo_key null            -- storage key; `-800.webp` and `-320.webp` hang off it (proposed), URLs come from getUrl (D-07)
   price_usd             numeric null
   price_zig             numeric null                -- set = fixed ZiG price
   CHECK (price_usd IS NOT NULL OR price_zig IS NOT NULL)
   CHECK (price_usd >= 0 AND price_zig >= 0)
   CHECK (price_usd < 'Infinity' AND price_zig < 'Infinity')  -- menu_items_prices_finite: a column is finite only with a lower bound and `< 'Infinity'` together. NaN and +Infinity both pass >= 0 and > 0 in Postgres numeric (NaN sorts above Infinity, so `< 'Infinity'` rejects both), and `< 'Infinity'` alone still admits -Infinity and any negative value. Here the adjacent >= 0 supplies the lower bound. Every money column needs both
   visibility            enum(regular, special_only) default 'regular'
-  is_available          bool default true           -- "kitchen ran out"
+  available             bool default true           -- "kitchen ran out"
   sort_order
   archived_at           null
 

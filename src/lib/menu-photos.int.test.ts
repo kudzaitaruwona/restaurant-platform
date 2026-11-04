@@ -174,6 +174,45 @@ describe("setItemPhoto", () => {
     expect([...bucket.files.keys()].sort()).toEqual([`${before}-320.webp`, `${before}-800.webp`]);
   });
 
+  it("sends both files at once, and cleans up only once neither is in flight", async () => {
+    const tenant = await newRestaurant();
+    const storage = await import("@/lib/storage");
+    const events: string[] = [];
+    let finishSlowUpload = () => {};
+    const slowUpload = new Promise<void>((resolve) => (finishSlowUpload = resolve));
+    const upload = vi
+      .spyOn(storage, "uploadImage")
+      .mockImplementationOnce(async () => {
+        events.push("first upload failed");
+        // The second upload has started by now, so the two run together.
+        setTimeout(finishSlowUpload, 20);
+        throw new Error("R2 is down");
+      })
+      .mockImplementationOnce(async (key) => {
+        await slowUpload;
+        events.push("second upload finished");
+        return { key, url: "" };
+      });
+    const remove = vi.spyOn(storage, "deleteImage").mockImplementation(async () => {
+      events.push("deleted");
+    });
+
+    try {
+      await expect(setItemPhoto(tenant, tenant.itemId, await jpeg())).rejects.toThrow(
+        "R2 is down",
+      );
+      expect(events).toEqual([
+        "first upload failed",
+        "second upload finished",
+        "deleted",
+        "deleted",
+      ]);
+    } finally {
+      upload.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
   it("does not undo the save if deleting the old photo fails", async () => {
     const tenant = await newRestaurant();
     await setItemPhoto(tenant, tenant.itemId, await jpeg());

@@ -27,8 +27,9 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 
 ### Photos
 - Upload from a phone camera. Resize and convert to WebP on the server, at 800px for the item view and 320px for the thumbnail, aiming for under 60KB each.
-- **Request size.** Vercel refuses a request body over 4.5MB, and a phone original can be larger. The editor shrinks the photo to a 1600px JPEG in the browser before sending it, and the server turns that into the two WebP files. The server also refuses anything over 4MB. That script is in the editor only; the public page stays script-free.
-- Each upload gets a new random storage key, so a replaced photo is never served from cache, and the old two files are deleted through `deleteImage`. The public page shows the 320px file at a fixed 64x64 with `loading="lazy"`.
+- **Request size.** Vercel refuses a request body over 4.5MB, and a phone original can be larger. The editor shrinks the photo to a 1600px JPEG *(proposed)* in the browser before sending it, and the server turns that into the two WebP files. The server also refuses anything over 4MB *(proposed)*. That script is in the editor only; the public page stays script-free.
+- Each upload gets a new random storage key *(proposed)*, so a replaced photo is never served from cache, and the old two files are deleted through `deleteImage`. The public page shows the 320px file at a fixed 64x64 *(proposed)* with `loading="lazy"`. The two files are named `{key}-800.webp` and `{key}-320.webp` *(proposed)*.
+- The photo controls are on the item's edit form, so a photo is added once the item exists, not while adding it *(proposed)*.
 - Archiving an item keeps its photo: the key and both files stay, the photo leaves the public page with the item, and it can't be changed while archived *(proposed)*.
 - Storage: Cloudflare R2 on a custom domain, behind an `uploadImage` / `deleteImage` / `getUrl` interface (decided, D-07).
 
@@ -65,6 +66,8 @@ To meet this, the page is a Route Handler that writes its own HTML rather than a
 ### Pricing display rules
 - Show prices exactly as computed. Never show a computed ZiG price without rounding.
 - `both` mode displays "$8.00 · ZiG 210". `usd_primary` displays "$8.00" with "ZiG 210" smaller underneath.
+- `zig_primary` mirrors `usd_primary`: "ZiG 210" with "$8.00" smaller underneath *(proposed)*.
+- A currency that can't be worked out is left out, and an item always shows a price: with no rate set yet, a USD-only item shows just its USD and a ZiG-only item just its ZiG. That holds in the single-currency modes too, so `usd_only` shows ZiG for a ZiG-only item before any rate is set, and `zig_only` shows USD for a USD-only item. Once there is a rate, a ZiG-only item's USD is calculated from it, rounded up to the USD step *(proposed)*.
 - During a promotion, show the normal price struck through next to the special price.
 
 ## Out of scope (v1)

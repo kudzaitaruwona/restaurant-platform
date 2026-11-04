@@ -252,16 +252,7 @@ function CategorySection({
                   </Button>
                 </ActionForm>
               </div>
-              {isOwner && (
-                <>
-                  <PhotoForm
-                    itemId={item.id}
-                    itemName={item.name}
-                    thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
-                  />
-                  <ItemEditor item={item} categories={all} pricing={pricing} />
-                </>
-              )}
+              {isOwner && <ItemEditor item={item} categories={all} pricing={pricing} />}
             </li>
           ))}
         </ul>
@@ -285,6 +276,11 @@ function ItemEditor({
     <details className="mt-1 text-sm">
       <summary className="cursor-pointer text-muted-foreground underline">Edit</summary>
       <div className="mt-2 flex flex-col gap-3">
+        <PhotoForm
+          itemId={item.id}
+          itemName={item.name}
+          thumbUrl={item.photoKey ? photoUrls(item.photoKey).thumb : null}
+        />
         <ActionForm
           action={`/api/menu/items/${item.id}`}
           savedMessage="Saved."

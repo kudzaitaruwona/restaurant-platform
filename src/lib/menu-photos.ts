@@ -52,11 +52,13 @@ async function deleteFiles(photoKey: string | null) {
   const { large, thumb } = photoKeys(photoKey);
   // Past the point of no return: the row no longer names these. A failure leaves
   // two stray files, which costs a little storage, so it mustn't fail the save.
-  for (const key of [large, thumb]) {
-    await deleteImage(key).catch((error) =>
-      console.error(`Couldn't delete stored photo ${key}`, error),
-    );
-  }
+  await Promise.all(
+    [large, thumb].map((key) =>
+      deleteImage(key).catch((error) =>
+        console.error(`Couldn't delete stored photo ${key}`, error),
+      ),
+    ),
+  );
 }
 
 async function savePhotoKey(
@@ -93,8 +95,14 @@ export async function setItemPhoto(
   const photoKey = `menu/${crypto.randomUUID()}`;
   const keys = photoKeys(photoKey);
   try {
-    await uploadImage(keys.large, large, "image/webp");
-    await uploadImage(keys.thumb, thumb, "image/webp");
+    // Settled, not Promise.all: the cleanup below mustn't race a PUT still in flight.
+    const uploads = await Promise.allSettled([
+      uploadImage(keys.large, large, "image/webp"),
+      uploadImage(keys.thumb, thumb, "image/webp"),
+    ]);
+    for (const upload of uploads) {
+      if (upload.status === "rejected") throw upload.reason;
+    }
     await savePhotoKey(ctx, itemId, photoKey, "menu_item.photo_set");
   } catch (error) {
     await deleteFiles(photoKey);

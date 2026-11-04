@@ -23,15 +23,33 @@ const QUALITIES = [82, 72, 62, 52, 42, 32, 24, 16, 8];
 /** The upload isn't an image this can use. The message is safe to show. */
 export class PhotoRefused extends Error {}
 
+/**
+ * The highest of QUALITIES that fits the target. The image is decoded and resized
+ * once, to raw pixels, so each try only encodes; and a lower quality makes a
+ * smaller file, so bisecting the list finds it in four tries, not nine.
+ */
 async function toWebp(image: Sharp) {
-  let smallest: Buffer | undefined;
-  for (const quality of QUALITIES) {
-    const bytes = await image.clone().webp({ quality }).toBuffer();
-    if (bytes.byteLength < TARGET_BYTES) return bytes;
-    smallest = bytes;
+  const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const encode = (quality: number) =>
+    sharp(data, { raw: { width, height, channels } }).webp({ quality }).toBuffer();
+
+  let fits: Buffer | undefined;
+  let tried: Buffer | undefined;
+  let [high, low] = [0, QUALITIES.length - 1];
+  while (high <= low) {
+    const middle = Math.floor((high + low) / 2);
+    tried = await encode(QUALITIES[middle]);
+    if (tried.byteLength < TARGET_BYTES) {
+      fits = tried;
+      low = middle - 1;
+    } else {
+      high = middle + 1;
+    }
   }
-  // The aim, not a promise: the lowest quality is as small as this gets.
-  return smallest!;
+  // The aim, not a promise: if nothing fits, the last try was the lowest quality,
+  // which is as small as this gets.
+  return fits ?? tried!;
 }
 
 export async function resizePhoto(bytes: Uint8Array) {

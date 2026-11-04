@@ -5,11 +5,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * waits for it. Better Auth is the heaviest thing in the app and the menu has no
  * use for it, so the public path must not load it (S-32).
  *
- * Importing better-auth here throws, so any route of the public path that reaches
- * it, however indirectly, fails to load.
+ * The image library and the S3 SDK are heavy too, and the page only prints
+ * addresses, so it must not load them either.
+ *
+ * Importing any of the three here throws, so any route of the public path that
+ * reaches one, however indirectly, fails to load.
  */
 vi.mock("better-auth", () => {
   throw new Error("better-auth was loaded");
+});
+vi.mock("sharp", () => {
+  throw new Error("sharp was loaded");
+});
+vi.mock("@aws-sdk/client-s3", () => {
+  throw new Error("the S3 SDK was loaded");
 });
 
 beforeEach(() => {
@@ -23,11 +32,20 @@ describe("the public path", () => {
     ["the menu it reads", () => import("@/lib/menu")],
     ["the tenant scope", () => import("./scope")],
     ["the public seam", () => import("./public")],
-  ])("%s loads without better-auth", async (_name, load) => {
+    ["the photo addresses", () => import("@/lib/photo-urls")],
+  ])("%s loads without better-auth, sharp or the S3 SDK", async (_name, load) => {
     await expect(load()).resolves.toBeDefined();
   });
 
   it("the tenant seam does load it, so the checks above mean something", async () => {
     await expect(import("@/lib/tenant")).rejects.toThrow("mocking a module");
+  });
+
+  it("the photo upload does load sharp, so the checks above mean something", async () => {
+    await expect(import("@/lib/photo-image")).rejects.toThrow("mocking a module");
+  });
+
+  it("the storage client does load the S3 SDK, so the checks above mean something", async () => {
+    await expect(import("@/lib/storage/storage")).rejects.toThrow("mocking a module");
   });
 });

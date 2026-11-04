@@ -478,7 +478,7 @@ describe("/dashboard/menu editing", () => {
     expect(await prices()).toEqual({ priceUsd: null, priceZig: "210" });
   });
 
-  it("keeps the photo form beside the edit form, and the photo through an edit", async () => {
+  it("keeps the photo form on the item's edit form, and the photo through an edit", async () => {
     const itemId = await newItem();
     await setPhoto(await photoPost(`/api/menu/items/${itemId}/photo`), itemParams(itemId));
     const photo = async () =>
@@ -497,8 +497,9 @@ describe("/dashboard/menu editing", () => {
     expect(before).not.toBeNull();
     expect(await photo()).toBe(before);
     const html = await screen(MenuScreen);
-    expect(html).toContain('aria-label="Change photo for Goat stew"');
-    expect(html).toContain(`action="/api/menu/items/${itemId}"`);
+    const editor = html.slice(html.indexOf("<details"), html.indexOf("</details>"));
+    expect(editor).toContain('aria-label="Change photo for Goat stew"');
+    expect(editor).toContain(`action="/api/menu/items/${itemId}"`);
   });
 
   it("answers a photo change on an archived item with a 404, and keeps the photo", async () => {

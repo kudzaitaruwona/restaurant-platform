@@ -76,7 +76,12 @@ export function SortableCategories({ entries }: { entries: Entry[] }) {
             <div className="mb-1 flex items-center gap-1 text-sm text-muted-foreground">
               <span
                 draggable
-                onDragStart={() => setDragging(id)}
+                onDragStart={(event) => {
+                  // A drag with no data doesn't start in every browser.
+                  event.dataTransfer.setData("text/plain", entry.name);
+                  event.dataTransfer.effectAllowed = "move";
+                  setDragging(id);
+                }}
                 onDragEnd={() => setDragging(undefined)}
                 aria-hidden="true"
                 title="Drag to reorder"

@@ -333,6 +333,22 @@ describe("an item's availability", () => {
     expect(await availableOf(theirs, itemId)).toBe(true);
   });
 
+  it("is refused for an archived item, which is left as it was", async () => {
+    const tenant = await newRestaurant();
+    const itemId = await addSadza(tenant);
+    await archiveMenuItem(tenant, itemId);
+    revalidateTag.mockClear();
+
+    expect(await setItemAvailability(tenant, itemId, false)).toBe("no_such_item");
+
+    const [item] = await owner.db
+      .select({ available: menuItems.available })
+      .from(menuItems)
+      .where(eq(menuItems.id, itemId));
+    expect(item.available).toBe(true);
+    expect(revalidateTag).not.toHaveBeenCalled();
+  });
+
   it.each(["not-a-uuid", "'; drop table menu_items; --", ""])(
     "treats the malformed id %j like an unknown one",
     async (itemId) => {

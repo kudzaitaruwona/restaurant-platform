@@ -303,7 +303,7 @@ export async function addMenuItem(
  * and staff both may (S-26), so this is the one item write that isn't owner
  * only. It changes nothing else about the item, and the composite key on the
  * tenant isn't needed here: the restaurant is in the where clause as well as
- * RLS, so another restaurant's item matches no row.
+ * RLS, so another restaurant's item matches no row, and nor does an archived one.
  */
 export async function setItemAvailability(
   ctx: Writer,
@@ -317,9 +317,7 @@ export async function setItemAvailability(
     const [updated] = await tx
       .update(menuItems)
       .set({ available })
-      .where(
-        and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.id, itemId)),
-      )
+      .where(liveItem(restaurantId, itemId))
       .returning({ id: menuItems.id });
     if (!updated) return false;
 
@@ -401,12 +399,14 @@ export async function reorderCategories(
       .for("update");
     if (live.length !== categoryIds.length) return false;
 
-    for (const [position, id] of categoryIds.entries()) {
-      await tx
-        .update(categories)
-        .set({ sortOrder: position })
-        .where(and(eq(categories.restaurantId, restaurantId), eq(categories.id, id)));
-    }
+    await tx
+      .update(categories)
+      .set({
+        sortOrder: sql`array_position(${sql.param(categoryIds)}::uuid[], ${categories.id}) - 1`,
+      })
+      .where(
+        and(eq(categories.restaurantId, restaurantId), inArray(categories.id, categoryIds)),
+      );
     await recordAdminAction(tx, ctx, {
       action: "category.reorder",
       entityType: "category",
@@ -484,7 +484,7 @@ export async function archiveCategory(
     await tx
       .update(categories)
       .set({ archivedAt: sql`now()` })
-      .where(eq(categories.id, categoryId));
+      .where(liveCategory(restaurantId, categoryId));
     await recordAdminAction(tx, ctx, {
       action: "category.archive",
       entityType: "category",

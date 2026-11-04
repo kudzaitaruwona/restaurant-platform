@@ -16,6 +16,7 @@ const owner = openOwnerDatabase();
 
 const CHECK_VIOLATION = "23514";
 const FOREIGN_KEY_VIOLATION = "23503";
+const INSUFFICIENT_PRIVILEGE = "42501";
 
 async function newRestaurant() {
   const restaurantId = crypto.randomUUID();
@@ -90,6 +91,33 @@ describe("the composite key from exchange_rates to staff", () => {
         .insert(exchangeRates)
         .values({ ...rate("26.2"), setBy: theirs.staffId }),
     ).rejects.toMatchObject({ cause: { code: FOREIGN_KEY_VIOLATION } });
+  });
+});
+
+describe("the rate history", () => {
+  const asMine = <T>(
+    fn: (tx: Parameters<Parameters<typeof app.db.transaction>[0]>[0]) => Promise<T>,
+  ) =>
+    app.db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('app.restaurant_id', ${mine.restaurantId}, true)`);
+      return fn(tx);
+    });
+
+  it("takes a new rate from the app role, inside its own restaurant", async () => {
+    await expect(
+      asMine((tx) => tx.insert(exchangeRates).values(rate("27.5"))),
+    ).resolves.toBeDefined();
+  });
+
+  it("is append-only for the app role: no update, no delete", async () => {
+    for (const statement of [
+      sql`update exchange_rates set usd_to_zig = 1`,
+      sql`delete from exchange_rates`,
+    ]) {
+      await expect(asMine((tx) => tx.execute(statement))).rejects.toMatchObject({
+        cause: { code: INSUFFICIENT_PRIVILEGE },
+      });
+    }
   });
 });
 

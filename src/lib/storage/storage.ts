@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   type S3Client,
 } from "@aws-sdk/client-s3";
+import { assertSafeKey, publicUrl } from "./url";
 
 export type ImageStorage = {
   /** Stores an image under `key` and returns its public URL. Overwrites. */
@@ -34,27 +35,12 @@ const ALLOWED_CONTENT_TYPES = new Set([
   "image/avif",
 ]);
 
-const SAFE_KEY = /^[A-Za-z0-9._+ -]+(\/[A-Za-z0-9._+ -]+)*$/;
-
-function assertSafeKey(key: string) {
-  const segments = key.split("/");
-  if (!SAFE_KEY.test(key) || segments.some((s) => s === "." || s === "..")) {
-    throw new Error(
-      `Invalid storage key ${JSON.stringify(key)}: use relative, slash-separated segments without "." or "..".`,
-    );
-  }
-}
-
 export function createImageStorage({
   bucket,
   publicBaseUrl,
   client,
 }: ImageStorageConfig): ImageStorage {
-  function getUrl(key: string) {
-    assertSafeKey(key);
-    const path = key.split("/").map(encodeURIComponent).join("/");
-    return `${publicBaseUrl}/${path}`;
-  }
+  const getUrl = (key: string) => publicUrl(publicBaseUrl, key);
 
   return {
     getUrl,
