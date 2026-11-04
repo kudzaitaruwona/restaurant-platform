@@ -1,6 +1,7 @@
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { proxy } from "./proxy";
+import { config, proxy } from "./proxy";
 
 const request = (
   path: string,
@@ -13,6 +14,21 @@ const request = (
 
 afterEach(() => vi.unstubAllEnvs());
 
+describe("the matcher", () => {
+  it.each([
+    "/dashboard",
+    "/dashboard/settings",
+    "/dashboard/staff",
+    "/admin",
+  ])("covers the staff and admin page %s", (url) => {
+    expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true);
+  });
+
+  it.each(["/", "/login", "/login/admin", "/r/restaurant-a"])("leaves %s alone", (url) => {
+    expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false);
+  });
+});
+
 describe("cross-site writes (S-30)", () => {
   it.each(["POST", "PUT", "PATCH", "DELETE"])("refuses a cross-site %s", (method) => {
     const response = proxy(
@@ -20,6 +36,21 @@ describe("cross-site writes (S-30)", () => {
         method,
         headers: { origin: "https://evil.example.test" },
       }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it.each([
+    "/api/restaurant",
+    "/api/staff",
+    "/api/staff/1/deactivate",
+    "/api/staff/1/role",
+    "/api/admin/restaurants",
+    "/api/admin/restaurants/1/owner",
+  ])("refuses a cross-site write to %s, and the matcher sends it here", (path) => {
+    expect(unstable_doesMiddlewareMatch({ config, url: path })).toBe(true);
+    const response = proxy(
+      request(path, { method: "POST", headers: { origin: "https://evil.example.test" } }),
     );
     expect(response.status).toBe(403);
   });

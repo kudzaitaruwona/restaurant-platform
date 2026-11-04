@@ -10,7 +10,7 @@ export default function DashboardPage() {
       <Suspense fallback={<p className="text-muted-foreground">Loading…</p>}>
         <Dashboard />
       </Suspense>
-      {devAuthBypassEnabled() ? <DevSwitcher /> : <SignOutButton />}
+      {devAuthBypassEnabled() ? <DevSwitcher /> : <SignOutButton audience="staff" />}
     </main>
   );
 }

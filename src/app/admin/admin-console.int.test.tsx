@@ -20,7 +20,7 @@ vi.mock("next/headers", () => ({
 // The form's useRouter needs the app router, which a static render doesn't mount.
 vi.mock("next/navigation", async (original) => ({
   ...(await original<typeof import("next/navigation")>()),
-  useRouter: () => ({ refresh: () => {} }),
+  useRouter: () => ({ refresh: () => {}, replace: () => {} }),
 }));
 
 beforeAll(() => {
@@ -66,5 +66,29 @@ describe("the admin screen", () => {
   it("is a 401 with no identity", async () => {
     session.identity = "nobody";
     expect(await statusOf(() => AdminConsole())).toBe(401);
+  });
+});
+
+describe("the admin page", () => {
+  const renderPage = async (bypass: string) => {
+    vi.stubEnv("DEV_AUTH_BYPASS", bypass);
+    vi.resetModules(); // fresh env cache
+    const [{ renderToString }, { default: AdminPage }] = await Promise.all([
+      import("react-dom/server"),
+      import("./page"),
+    ]);
+    return renderToString(<AdminPage />);
+  };
+
+  it("offers sign-out on a real session", async () => {
+    const html = await renderPage("");
+    expect(html).toContain("Sign out");
+    expect(html).not.toContain("Dev switcher");
+  });
+
+  it("offers the dev switcher instead under the bypass", async () => {
+    const html = await renderPage("1");
+    expect(html).toContain("Dev switcher");
+    expect(html).not.toContain("Sign out");
   });
 });

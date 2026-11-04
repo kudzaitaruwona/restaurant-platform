@@ -1,5 +1,7 @@
 import { Suspense } from "react";
+import { devAuthBypassEnabled } from "@/lib/env";
 import { DevSwitcher } from "../dashboard/dev-switcher";
+import { SignOutButton } from "../dashboard/sign-out-button";
 import { AdminConsole } from "./admin-console";
 
 export default function AdminPage() {
@@ -8,7 +10,7 @@ export default function AdminPage() {
       <Suspense fallback={<p className="text-muted-foreground">Loading…</p>}>
         <AdminConsole />
       </Suspense>
-      <DevSwitcher />
+      {devAuthBypassEnabled() ? <DevSwitcher /> : <SignOutButton audience="admin" />}
     </main>
   );
 }
