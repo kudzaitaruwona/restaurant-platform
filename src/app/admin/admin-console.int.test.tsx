@@ -56,14 +56,14 @@ describe("the admin screen", () => {
   });
 
   it.each(devIdentities.map((identity) => [identity.key] as const))(
-    "is a 403 for restaurant staff: %s",
+    "refuses restaurant staff with forbidden(), before any data renders: %s",
     async (key) => {
       session.identity = key;
       expect(await statusOf(() => AdminConsole())).toBe(403);
     },
   );
 
-  it("is a 401 with no identity", async () => {
+  it("refuses no identity with unauthorized(), before any data renders", async () => {
     session.identity = "nobody";
     expect(await statusOf(() => AdminConsole())).toBe(401);
   });

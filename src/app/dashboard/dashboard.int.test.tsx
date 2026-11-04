@@ -81,7 +81,7 @@ describe("the protected page", () => {
     expect(await render("a-staff")).not.toContain("/dashboard/settings");
   });
 
-  it("is a 401 with no identity", async () => {
+  it("refuses no identity with unauthorized(), before any data renders", async () => {
     vi.stubEnv("DEV_AUTH_BYPASS", "");
     const Dashboard = await dashboard();
     expect(await statusOf(() => Dashboard())).toBe(401);

@@ -201,7 +201,7 @@ describe("/dashboard/staff", () => {
     expect(html).not.toContain(`/api/staff/${id}/role`);
   });
 
-  it("is a 403 for staff", async () => {
+  it("refuses staff with forbidden(), before any data renders", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => StaffScreen())).toBe(403);
   });
@@ -396,7 +396,7 @@ describe("/dashboard/settings", () => {
     },
   );
 
-  it("is a 403 for staff, so they never receive the Wi-Fi password", async () => {
+  it("refuses staff with forbidden(), so they never receive the Wi-Fi password", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => SettingsScreen())).toBe(403);
   });
