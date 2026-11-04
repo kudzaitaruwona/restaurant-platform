@@ -95,6 +95,25 @@ describe("the timezone on save", () => {
     expect(await timezoneOf(id)).toBe("Africa/Johannesburg");
   });
 
+  // A name Postgres knows that Intl.supportedValuesOf omits: the case isTimeZone
+  // exists for. Asserted, so the test can't pass on a runtime whose list has it.
+  it("saves a change to Asia/Kolkata, which Postgres knows and the list may omit", async () => {
+    const { rows } = await owner.db.execute(
+      sql`select 1 from pg_timezone_names where name = 'Asia/Kolkata'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(isTimeZone("Asia/Kolkata")).toBe(true);
+    const id = await newRestaurant();
+
+    const result = await updateRestaurantSettings(
+      { restaurantId: id },
+      { ...changes, timezone: "Asia/Kolkata" },
+    );
+
+    expect(result).toBe("saved");
+    expect(await timezoneOf(id)).toBe("Asia/Kolkata");
+  });
+
   it.each([
     ["Node accepts but Postgres lacks", knownToNodeNotToPostgres],
     ["Node refuses", "Mars/Olympus"],

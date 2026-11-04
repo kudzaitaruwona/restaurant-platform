@@ -88,14 +88,15 @@ describe("parseRestaurantSettings", () => {
     expect(parse({ currencyMode: "gold" })).toMatchObject({ success: false });
   });
 
+  // The parser checks a zone's shape only; isTimeZone is the one test of a name.
   it.each(["Africa/Johannesburg", "Europe/London", "UTC"])(
-    "accepts the timezone %s",
+    "isTimeZone accepts the timezone %s",
     (timezone) => {
-      expect(parse({ timezone })).toMatchObject({ data: { timezone } });
+      expect(isTimeZone(timezone)).toBe(true);
     },
   );
 
-  // Real names this runtime's list leaves out, so a restaurant can hold them.
+  // Real names this runtime's list may leave out, so a restaurant can hold them.
   it.each([
     "Asia/Kolkata",
     "Europe/Kyiv",
@@ -103,8 +104,8 @@ describe("parseRestaurantSettings", () => {
     "Etc/UTC",
     "GMT",
     "Etc/GMT+2",
-  ])("accepts the alias %s, which the list needn't have", (timezone) => {
-    expect(parse({ timezone })).toMatchObject({ data: { timezone } });
+  ])("isTimeZone accepts the alias %s, which the list needn't have", (timezone) => {
+    expect(isTimeZone(timezone)).toBe(true);
   });
 
   // Whether a changed name is real is decided on save, against what is stored.
