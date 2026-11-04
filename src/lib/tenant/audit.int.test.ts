@@ -35,6 +35,25 @@ const rowFor = async (action: string) =>
   (await owner.db.select().from(auditLog).where(eq(auditLog.action, action)))[0];
 
 describe("recordAudit", () => {
+  it("records a platform admin inside a tenant as one, never by the shadow row (S-29)", async () => {
+    const { withTenant, recordAudit } = await modules();
+    const action = `test.inside.${crypto.randomUUID()}`;
+    const platformAdminId = crypto.randomUUID();
+
+    await withTenant(ctx, (tx) =>
+      recordAudit(tx, { ...ctx, platformAdminId }, {
+        action,
+        entityType: "staff",
+        entityId: entityId(),
+      }),
+    );
+
+    expect(await rowFor(action)).toMatchObject({
+      actorType: "platform_admin",
+      actorId: platformAdminId,
+    });
+  });
+
   it("writes an entry for the signed-in staff member, in the tenant from the context", async () => {
     const { withTenant, recordAudit } = await modules();
     const action = `test.staff.${crypto.randomUUID()}`;
@@ -105,5 +124,41 @@ describe("recordAudit", () => {
         ),
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe("recordAdminAction", () => {
+  const entry = (action: string) => ({
+    action,
+    entityType: "restaurant",
+    entityId: aOwner.restaurantId,
+  });
+
+  it("writes nothing for staff: the change isn't on spec 01's audit list", async () => {
+    vi.resetModules();
+    const { withTenant } = await import("@/lib/tenant");
+    const { recordAdminAction } = await import("@/lib/tenant/audit");
+    const action = `test.staff-edit.${crypto.randomUUID()}`;
+
+    await withTenant(ctx, (tx) => recordAdminAction(tx, ctx, entry(action)));
+
+    expect(await rowFor(action)).toBeUndefined();
+  });
+
+  it("writes an entry for a platform admin", async () => {
+    vi.resetModules();
+    const { withTenant } = await import("@/lib/tenant");
+    const { recordAdminAction } = await import("@/lib/tenant/audit");
+    const action = `test.admin-edit.${crypto.randomUUID()}`;
+    const platformAdminId = crypto.randomUUID();
+
+    await withTenant(ctx, (tx) =>
+      recordAdminAction(tx, { ...ctx, platformAdminId }, entry(action)),
+    );
+
+    expect(await rowFor(action)).toMatchObject({
+      actorType: "platform_admin",
+      actorId: platformAdminId,
+    });
   });
 });

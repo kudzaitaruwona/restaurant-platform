@@ -45,6 +45,20 @@ function tenantPolicy(column: "id" | "restaurant_id") {
   });
 }
 
+/**
+ * The reverse of tenantPolicy, for what belongs to no restaurant: visible only
+ * outside a tenant, so nothing inside withTenant() can read or change it. Same
+ * nullif, for the same reason.
+ */
+function outsideTenantOnly() {
+  const noTenant = sql`nullif(current_setting('app.restaurant_id', true), '') is null`;
+  return pgPolicy("outside_tenant_only", {
+    for: "all",
+    using: noTenant,
+    withCheck: noTenant,
+  });
+}
+
 export const currencyMode = pgEnum("currency_mode", [
   "usd_only",
   "zig_only",
@@ -118,9 +132,18 @@ export const staff = pgTable(
     // Sign-in compares emails without case, so uniqueness has to as well: one
     // email must resolve to one person and so to one restaurant (S-30).
     uniqueIndex("staff_email_lower_unique").on(sql`lower(${table.email})`),
+    // One shadow row per restaurant, however many first entries race (spec 00).
+    uniqueIndex("staff_one_shadow_per_restaurant")
+      .on(table.restaurantId)
+      .where(sql`${table.kind} = 'platform_admin'`),
     check(
       "staff_email_required",
       sql`${table.kind} = 'platform_admin' or ${table.email} is not null`,
+    ),
+    // A shadow row is only ever this. With no email, sign-in can't find it.
+    check(
+      "staff_shadow_row",
+      sql`${table.kind} = 'staff' or (${table.email} is null and ${table.role} = 'owner' and ${table.active})`,
     ),
     tenantPolicy("restaurant_id"),
   ],
@@ -252,24 +275,16 @@ export const menuItems = pgTable(
  * Better Auth's tables, one set per session type (S-30): a staff session, link
  * or code means nothing to the platform-admin sign-in, and the other way round.
  *
- * Better Auth runs as app_tenant before any tenant is known, so these can't
- * have a tenant policy. They get the reverse: visible only outside a tenant, so
- * nothing inside withTenant() can read or change a credential. Same nullif as
- * tenantPolicy, for the same reason.
+ * Better Auth runs before any tenant is known, so these can't have a tenant
+ * policy. They get the reverse: outsideTenantOnly. Staff sign-in connects as
+ * app_tenant. Admin sign-in connects as app_admin, and app_tenant holds no
+ * privilege on admin_auth_* at all (S-28).
  *
  * No password column and no OAuth token columns: S-27 stores no passwords, and
  * Google is only asked who someone is (src/lib/auth).
  */
 function authTables(prefix: "staff" | "admin") {
   const name = (model: string) => `${prefix}_auth_${model}`;
-  const outsideTenantOnly = () => {
-    const noTenant = sql`nullif(current_setting('app.restaurant_id', true), '') is null`;
-    return pgPolicy("outside_tenant_only", {
-      for: "all",
-      using: noTenant,
-      withCheck: noTenant,
-    });
-  };
   const at = (column: string) => timestamp(column, { withTimezone: true });
 
   const user = pgTable(
@@ -380,3 +395,34 @@ export const {
   rateLimit: adminAuthRateLimit,
   codeLimit: adminAuthCodeLimit,
 } = authTables("admin");
+
+/**
+ * Which restaurant an admin session has entered (spec 01). Keyed by the session,
+ * so the browser holds nothing that can choose a tenant, and a session that ends
+ * takes its entry with it. Only the functions that enter and leave write it, and
+ * they audit every write. A cascade isn't audited: a session ending on its own
+ * means no one acted, and signing out leaves first (S-28).
+ *
+ * `entered_restaurant_id`, not `restaurant_id`: this isn't a tenant table. It
+ * has to be read before there is a tenant, so it's outsideTenantOnly.
+ */
+export const adminAuthEntry = pgTable(
+  "admin_auth_entry",
+  {
+    sessionId: text("session_id")
+      .primaryKey()
+      .references(() => adminAuthSession.id, { onDelete: "cascade" }),
+    enteredRestaurantId: uuid("entered_restaurant_id").notNull(),
+    shadowStaffId: uuid("shadow_staff_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.enteredRestaurantId, table.shadowStaffId],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }).onDelete("cascade"),
+    outsideTenantOnly(),
+  ],
+);

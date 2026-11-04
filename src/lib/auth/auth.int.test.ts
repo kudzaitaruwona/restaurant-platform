@@ -45,13 +45,11 @@ const tag = crypto.randomUUID();
 const people = {
   active: `active-${tag}@example.test`,
   deactivated: `deactivated-${tag}@example.test`,
-  shadow: `shadow-${tag}@example.test`,
   admin: `admin-${tag}@example.test`,
   stranger: `stranger-${tag}@example.test`,
 };
 const activeId = crypto.randomUUID();
 const deactivatedId = crypto.randomUUID();
-const shadowId = crypto.randomUUID();
 
 let services: ReturnType<typeof installFakeServices>;
 
@@ -72,14 +70,6 @@ beforeAll(async () => {
       email: people.deactivated,
       displayName: "Deactivated",
       active: false,
-    },
-    {
-      id: shadowId,
-      restaurantId: aOwner.restaurantId,
-      kind: "platform_admin",
-      role: "owner",
-      email: people.shadow,
-      displayName: "Shadow",
     },
   ]);
   await owner.db.insert(platformAdmins).values({ email: people.admin });
@@ -255,7 +245,7 @@ describe("Google", () => {
     expect(response.headers.get("location")).toMatch(/\/dashboard$/);
   });
 
-  it.each(["stranger", "deactivated", "shadow"] as const)(
+  it.each(["stranger", "deactivated"] as const)(
     "gives a %s no session and creates no account: no self sign-up",
     async (who) => {
       const response = await googleSignIn("staff", profile(people[who]));
@@ -292,7 +282,7 @@ describe("Google", () => {
 });
 
 describe("who may sign in", () => {
-  it.each(["stranger", "deactivated", "shadow"] as const)(
+  it.each(["stranger", "deactivated"] as const)(
     "a %s gets the same answer and no email",
     async (who) => {
       const code = await requestCode("staff", people[who]);
@@ -504,7 +494,7 @@ describe("the platform admin", () => {
 
   it("signs in by code", async () => {
     request.cookie = await signIn(services, "admin", people.admin);
-    expect(await adminContext()).toEqual({ platformAdminId: await adminId() });
+    expect(await adminContext()).toMatchObject({ platformAdminId: await adminId() });
   });
 
   it("signs in by magic link", async () => {
@@ -512,7 +502,7 @@ describe("the platform admin", () => {
     const link = linkIn(await services.emailTo(people.admin));
     expect(link).toContain("/api/auth/admin/");
     request.cookie = cookiesFrom(await getAuthUrl("admin", link));
-    expect(await adminContext()).toEqual({ platformAdminId: await adminId() });
+    expect(await adminContext()).toMatchObject({ platformAdminId: await adminId() });
   });
 
   it("signs in with Google", async () => {
@@ -522,7 +512,7 @@ describe("the platform admin", () => {
       email_verified: true,
     });
     request.cookie = cookiesFrom(response);
-    expect(await adminContext()).toEqual({ platformAdminId: await adminId() });
+    expect(await adminContext()).toMatchObject({ platformAdminId: await adminId() });
   });
 
   it("staff can't sign in as one, by any route", async () => {
@@ -565,7 +555,7 @@ describe("the platform admin", () => {
     expect(adminCookie).toMatch(/^admin\.session_token=/);
     request.cookie = `${staffCookie}; ${adminCookie}`;
     expect((await tenantContext()).staffId).toBe(activeId);
-    expect(await adminContext()).toEqual({ platformAdminId: await adminId() });
+    expect(await adminContext()).toMatchObject({ platformAdminId: await adminId() });
   });
 
   it("a staff session cookie renamed to the admin cookie is nobody", async () => {

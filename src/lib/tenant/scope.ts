@@ -13,6 +13,12 @@ export type TenantContext = {
   restaurantId: string;
   staffId: string;
   role: "owner" | "staff";
+  /**
+   * Set only for a platform admin who has entered this restaurant: `staffId` is
+   * then the shadow row, and this is who really acts. What audit_log records
+   * (S-29), so pass the whole context along, not a part of it.
+   */
+  platformAdminId?: string;
 };
 
 export type TenantTransaction = Parameters<

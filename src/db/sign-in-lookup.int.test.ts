@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  openAdminDatabase,
   openOwnerDatabase,
   openTestDatabase,
 } from "../../test/integration/database";
@@ -9,18 +10,18 @@ import { platformAdmins, staff } from "./schema";
 
 /**
  * Sign-in happens before any tenant is known, so RLS rightly hides `staff` from
- * app_tenant. These two SECURITY DEFINER functions are the only way past it.
+ * app_tenant. These two SECURITY DEFINER functions are the only way past it. The
+ * admin one belongs to the admin login (S-28).
  */
 const app = openTestDatabase();
+const adminLogin = openAdminDatabase();
 const owner = openOwnerDatabase();
 
 const [aOwner] = devIdentities;
 const inactive = crypto.randomUUID();
-const shadow = crypto.randomUUID();
 const admin = crypto.randomUUID();
 const tag = crypto.randomUUID();
 const inactiveEmail = `inactive-${tag}@example.test`;
-const shadowEmail = `shadow-${tag}@example.test`;
 const adminEmail = `admin-${tag}@example.test`;
 
 beforeAll(async () => {
@@ -32,25 +33,14 @@ beforeAll(async () => {
       displayName: "Gone",
       active: false,
     },
-    {
-      // The data model says shadow rows have no email, but the CHECK allows one,
-      // so this is the row the function has to refuse by kind, not by luck.
-      id: shadow,
-      restaurantId: aOwner.restaurantId,
-      kind: "platform_admin",
-      role: "owner",
-      email: shadowEmail,
-      displayName: "Shadow",
-    },
   ]);
   await owner.db.insert(platformAdmins).values({ id: admin, email: adminEmail });
 });
 
 afterAll(async () => {
   await owner.db.delete(staff).where(eq(staff.id, inactive));
-  await owner.db.delete(staff).where(eq(staff.id, shadow));
   await owner.db.delete(platformAdmins).where(eq(platformAdmins.id, admin));
-  await Promise.all([app.pool.end(), owner.pool.end()]);
+  await Promise.all([app.pool.end(), adminLogin.pool.end(), owner.pool.end()]);
 });
 
 const staffLookup = async (email: string) =>
@@ -62,7 +52,7 @@ const staffLookup = async (email: string) =>
 
 const adminLookup = async (email: string) =>
   (
-    await app.db.execute(
+    await adminLogin.db.execute(
       sql`select platform_admin_id_by_email(${email}) as id`,
     )
   ).rows[0].id;
@@ -92,8 +82,16 @@ describe("staff_identity_by_email, as app_tenant with no tenant set", () => {
     expect(await staffLookup(inactiveEmail)).toEqual([]);
   });
 
-  it("refuses a platform_admin shadow row, even one with an email", async () => {
-    expect(await staffLookup(shadowEmail)).toEqual([]);
+  it("can never find a shadow row, because Postgres refuses one an email", async () => {
+    await expect(
+      owner.db.insert(staff).values({
+        restaurantId: aOwner.restaurantId,
+        kind: "platform_admin",
+        role: "owner",
+        email: `shadow-${tag}@example.test`,
+        displayName: "Shadow",
+      }),
+    ).rejects.toMatchObject({ cause: { constraint: "staff_shadow_row" } });
   });
 
   it("doesn't treat email as a pattern", async () => {
@@ -101,7 +99,7 @@ describe("staff_identity_by_email, as app_tenant with no tenant set", () => {
   });
 });
 
-describe("platform_admin_id_by_email, as app_tenant", () => {
+describe("platform_admin_id_by_email, as app_admin", () => {
   it("finds a platform admin, ignoring case", async () => {
     expect(await adminLookup(adminEmail.toUpperCase())).toBe(admin);
   });
@@ -155,7 +153,7 @@ describe("how the functions are locked down", () => {
     ]);
   });
 
-  it.each(functions)("%s can be executed by app_tenant and not by PUBLIC", async (name) => {
+  it.each(functions)("%s can be executed by one role and not by PUBLIC", async (name) => {
     const { rows } = await owner.db.execute(sql`
       select coalesce(grantee.rolname, 'PUBLIC') as grantee
       from pg_proc p
@@ -165,6 +163,8 @@ describe("how the functions are locked down", () => {
         and acl.privilege_type = 'EXECUTE'
         and acl.grantee <> p.proowner
     `);
-    expect(rows).toEqual([{ grantee: "app_tenant" }]);
+    expect(rows).toEqual([
+      { grantee: name.startsWith("platform_") ? "app_admin" : "app_tenant" },
+    ]);
   });
 });

@@ -15,6 +15,23 @@ const databaseSeam = [
   "test/**",
 ];
 
+// The admin login (S-28): the only files that may open it, because only they are
+// the admin path. A subset of the database seam, which can otherwise use getDb.
+const adminSeam = [
+  "src/db/**",
+  "src/lib/tenant/platform-admin.ts",
+  "src/lib/tenant/admin-entry.ts",
+  "src/lib/auth/database.ts",
+  "src/lib/auth/identity.ts",
+  "scripts/**",
+  "test/**",
+];
+
+// Sign-in's own files, the only ones that may use authDatabase(): it hands back
+// the admin login or the raw one, so anywhere else it's a way round both.
+const authSeam = ["src/lib/auth/**"];
+const authAndAdminSeam = adminSeam.filter((file) => file.startsWith("src/lib/auth/"));
+
 // Photo storage boundary (D-07): app code touches storage only through
 // uploadImage / deleteImage / getUrl from "@/lib/storage".
 const storageBoundary = [
@@ -43,6 +60,21 @@ const databaseBoundary = [
   },
 ];
 
+// Tenant code mustn't reach the role that can call the platform_* functions.
+const adminDatabaseBoundary = [
+  {
+    regex: "(^|/)db/admin$",
+    message: "Only the admin seam opens the admin login (S-28).",
+  },
+];
+
+const authDatabaseBoundary = [
+  {
+    regex: "(^|/)auth/database$",
+    message: "Only sign-in uses authDatabase (S-28).",
+  },
+];
+
 const restrictImports = (...boundaries) => ({
   "no-restricted-imports": ["error", { patterns: boundaries.flat() }],
 });
@@ -56,14 +88,33 @@ const eslintConfig = defineConfig([
   {
     files: appCode,
     ignores: [...storageModule, ...databaseSeam],
-    rules: restrictImports(storageBoundary, databaseBoundary),
+    rules: restrictImports(storageBoundary, databaseBoundary, authDatabaseBoundary),
   },
   {
     files: storageModule,
-    rules: restrictImports(databaseBoundary),
+    rules: restrictImports(databaseBoundary, authDatabaseBoundary),
   },
   {
     files: databaseSeam,
+    ignores: [...adminSeam, ...authSeam],
+    rules: restrictImports(
+      storageBoundary,
+      adminDatabaseBoundary,
+      authDatabaseBoundary,
+    ),
+  },
+  {
+    files: adminSeam,
+    ignores: authSeam,
+    rules: restrictImports(storageBoundary, authDatabaseBoundary),
+  },
+  {
+    files: authSeam,
+    ignores: adminSeam,
+    rules: restrictImports(storageBoundary, adminDatabaseBoundary),
+  },
+  {
+    files: authAndAdminSeam,
     rules: restrictImports(storageBoundary),
   },
   // Override default ignores of eslint-config-next.

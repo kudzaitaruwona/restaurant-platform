@@ -50,6 +50,14 @@ describe("the admin screen", () => {
     expect(html).toContain('value="zig_primary"');
   });
 
+  it("offers to enter every restaurant, as a plain post that can redirect", async () => {
+    const html = await render();
+    for (const { id } of devRestaurants) {
+      expect(html).toContain(`action="/api/admin/restaurants/${id}/enter"`);
+    }
+    expect(html).toContain("Enter restaurant");
+  });
+
   it("doesn't offer a first owner to a restaurant that has one", async () => {
     const html = await render();
     expect(html).not.toContain(`${devRestaurants[0].id}/owner`);

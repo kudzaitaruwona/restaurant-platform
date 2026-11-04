@@ -1,18 +1,19 @@
 import { eq, sql, type SQL } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  openAdminDatabase,
   openOwnerDatabase,
-  openTestDatabase,
 } from "../../test/integration/database";
 import { devPlatformAdmin, devRestaurants } from "../lib/tenant/dev-identities";
 import { auditLog, restaurants, staff } from "./schema";
 
 /**
- * The privileged path (S-28), driven the way the app drives it: as app_tenant,
+ * The privileged path (S-28), driven the way the app drives it: as app_admin,
  * which can reach these rows through nothing else. The app-layer guard is
- * tested in access.int.test.ts; this is what holds without it.
+ * tested in access.int.test.ts, and what app_tenant can't do in
+ * admin-role.int.test.ts; this is what holds without either.
  */
-const app = openTestDatabase();
+const app = openAdminDatabase();
 const owner = openOwnerDatabase();
 
 const SLUG_PREFIX = "fn-test-";
@@ -257,6 +258,8 @@ describe("who can reach the functions", () => {
     createRestaurantSql("Refused", slug(), actor),
     createOwnerSql(restaurantId, email(), actor),
     sql`select * from platform_list_restaurants(${actor})`,
+    sql`select platform_enter_restaurant(${actor}, ${"no-such-session"}, ${restaurantId})`,
+    sql`select platform_leave_restaurant(${actor}, ${"no-such-session"})`,
   ];
 
   it("an id that isn't a platform admin's gets nothing", async () => {
@@ -293,7 +296,7 @@ describe("who can reach the functions", () => {
     }
   });
 
-  it("the app role can't call the admin check on its own", async () => {
+  it("the admin login can't call the admin check on its own", async () => {
     await failsWith(
       app.db.execute(sql`select platform_assert_admin(${adminId})`),
       INSUFFICIENT_PRIVILEGE,
@@ -331,6 +334,8 @@ describe("every SECURITY DEFINER function", () => {
         "platform_admin_id_by_email",
         "platform_create_first_owner",
         "platform_create_restaurant",
+        "platform_enter_restaurant",
+        "platform_leave_restaurant",
         "platform_list_restaurants",
         "staff_identity_by_email",
         "staff_keep_last_owner",
@@ -338,11 +343,12 @@ describe("every SECURITY DEFINER function", () => {
     );
   });
 
-  it("pins search_path and can be run by app_tenant and nobody else", async () => {
+  it("pins search_path and can be run by exactly one role", async () => {
     for (const { name, config, isTrigger, executors } of await definers()) {
       expect(config, name).toContain("search_path=pg_catalog, pg_temp");
       // A trigger needs no EXECUTE grant, so nobody at all should hold one.
-      expect(executors, name).toEqual(isTrigger ? [] : ["app_tenant"]);
+      const runner = name.startsWith("platform_") ? "app_admin" : "app_tenant";
+      expect(executors, name).toEqual(isTrigger ? [] : [runner]);
     }
   });
 });

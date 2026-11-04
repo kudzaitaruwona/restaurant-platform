@@ -1,4 +1,5 @@
 import type { ComponentProps } from "react";
+import { Button } from "@/components/ui/button";
 import { currencyMode } from "@/db/schema";
 import {
   type CurrencyMode,
@@ -27,7 +28,7 @@ function Field({ label, ...input }: { label: string } & ComponentProps<"input">)
   );
 }
 
-/** Creates restaurants and their first owners (spec 01, S-26). */
+/** Creates restaurants and their first owners, and enters them (spec 01, S-26). */
 export async function AdminConsole() {
   const admin = await getPlatformAdminContext();
   const restaurants = await listRestaurants(admin);
@@ -79,6 +80,14 @@ export async function AdminConsole() {
                   {currencyModeLabels[restaurant.currencyMode]}
                 </p>
               </div>
+              <form
+                method="post"
+                action={`/api/admin/restaurants/${restaurant.id}/enter`}
+              >
+                <Button type="submit" variant="outline" size="sm">
+                  Enter restaurant
+                </Button>
+              </form>
               {!restaurant.hasOwner && (
                 <AdminForm
                   action={`/api/admin/restaurants/${restaurant.id}/owner`}

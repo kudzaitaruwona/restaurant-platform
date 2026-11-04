@@ -7,12 +7,12 @@ import type { TenantContext, TenantTransaction } from "./index";
  * commits or rolls back with the change it records (spec 01, Audit log).
  *
  * The restaurant and, by default, the actor come from the tenant context, never
- * from request input. A platform admin acting inside a tenant passes `actor`
- * (spec 01 requires actor_type = platform_admin); the system actor has no id.
- * A write for another restaurant than the transaction's is rejected by RLS.
+ * from request input: a platform admin who has entered a restaurant is recorded
+ * as one (spec 01), by platform_admins.id and never the shadow staff id (S-29).
+ * The system actor has no id, and is passed as `actor`. A write for another
+ * restaurant than the transaction's is rejected by RLS.
  *
- * A platform admin's `actor.id` is always platform_admins.id, never a shadow
- * staff id (S-29). Its actions outside any tenant don't come through here: no
+ * A platform admin's actions outside any tenant don't come through here: no
  * tenant is set, so app_tenant can't insert, and the privileged functions write
  * their own entries (S-28).
  */
@@ -26,18 +26,24 @@ export type AuditEntry = {
   entityType: string;
   entityId: string;
   details?: Record<string, unknown>;
-  /** Defaults to the signed-in staff member. */
+  /** Defaults to whoever the context says is acting. */
   actor?: AuditActor;
 };
 
-export async function recordAudit(
+/** Who a tenant context says is acting, for whoever writes the entry. */
+export type Acting = Pick<
+  TenantContext,
+  "restaurantId" | "staffId" | "platformAdminId"
+>;
+
+async function insertEntry(
   tx: TenantTransaction,
-  ctx: Pick<TenantContext, "restaurantId" | "staffId">,
+  restaurantId: string,
+  actor: AuditActor,
   entry: AuditEntry,
-): Promise<void> {
-  const actor = entry.actor ?? { type: "staff", id: ctx.staffId };
+) {
   await tx.insert(auditLog).values({
-    restaurantId: ctx.restaurantId,
+    restaurantId,
     actorType: actor.type,
     actorId: actor.id ?? null,
     action: entry.action,
@@ -45,4 +51,32 @@ export async function recordAudit(
     entityId: entry.entityId,
     details: entry.details ?? {},
   });
+}
+
+export async function recordAudit(
+  tx: TenantTransaction,
+  ctx: Acting,
+  entry: AuditEntry,
+): Promise<void> {
+  const actor: AuditActor =
+    entry.actor ??
+    (ctx.platformAdminId
+      ? { type: "platform_admin", id: ctx.platformAdminId }
+      : { type: "staff", id: ctx.staffId });
+  await insertEntry(tx, ctx.restaurantId, actor, entry);
+}
+
+/**
+ * For a change spec 01's audit list leaves out when staff make it, like a
+ * settings edit. The same list doesn't excuse a platform admin: every action
+ * they take inside a tenant is audited, so call this from those writes.
+ */
+export async function recordAdminAction(
+  tx: TenantTransaction,
+  ctx: Pick<Acting, "restaurantId" | "platformAdminId">,
+  entry: Omit<AuditEntry, "actor">,
+): Promise<void> {
+  if (!ctx.platformAdminId) return;
+  const actor = { type: "platform_admin", id: ctx.platformAdminId } as const;
+  await insertEntry(tx, ctx.restaurantId, actor, entry);
 }

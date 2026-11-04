@@ -36,6 +36,7 @@ jobs:
         env:
           DEV_AUTH_BYPASS: "1"
           DATABASE_URL: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
+          DATABASE_URL_ADMIN: postgres://app_admin:app_admin@localhost:5499/restaurant_test
           NEXT_PUBLIC_APP_URL: http://localhost:3000
           R2_ACCOUNT_ID: ci
           R2_ACCESS_KEY_ID: ci
@@ -82,14 +83,17 @@ jobs:
           - 5498:80
     env:
       # `app` is a superuser that owns the tables: migrations and fixtures only,
-      # because RLS skips it. Global setup creates app_tenant by migration and
-      # gives it this password. The tenant isolation tests connect as it.
+      # because RLS skips it. Global setup creates app_tenant and app_admin by
+      # migration and gives them these passwords. The tenant isolation tests
+      # connect as app_tenant, and the admin path's as app_admin.
       TEST_DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
       TEST_DATABASE_URL_APP: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
+      TEST_DATABASE_URL_ADMIN: postgres://app_admin:app_admin@localhost:5499/restaurant_test
       NEON_WS_PROXY: localhost:5498/v1
       # Stand-ins so code paths that read the validated env can load. No real
       # credentials exist in CI; nothing here reaches R2.
       DATABASE_URL: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
+      DATABASE_URL_ADMIN: postgres://app_admin:app_admin@localhost:5499/restaurant_test
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       R2_ACCOUNT_ID: ci
       R2_ACCESS_KEY_ID: ci

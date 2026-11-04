@@ -13,6 +13,7 @@ const valid = {
 
 // Sign-in has to work in production, so production can't start without these.
 const auth = {
+  DATABASE_URL_ADMIN: "postgres://app_admin:app_admin@localhost:5499/restaurant_dev",
   AUTH_SECRET: "a-secret-of-at-least-thirty-two-characters",
   GOOGLE_CLIENT_ID: "client-id",
   GOOGLE_CLIENT_SECRET: "client-secret",
@@ -34,6 +35,30 @@ describe("parseEnv", () => {
     const env = parseEnv(valid);
     expect(env.DATABASE_URL).toBe(valid.DATABASE_URL);
     expect(env.R2_PUBLIC_BASE_URL).toBe("https://images.example.test");
+  });
+
+  it("doesn't need the admin login outside production", () => {
+    expect(parseEnv(valid).DATABASE_URL_ADMIN).toBeUndefined();
+  });
+
+  it("requires the admin login in production", () => {
+    const error = errorFrom({
+      ...valid,
+      ...auth,
+      DATABASE_URL_ADMIN: undefined,
+      NODE_ENV: "production",
+    });
+    expect(error.message).toMatch(/DATABASE_URL_ADMIN is required in production/);
+  });
+
+  it.each([
+    ["the app's role", "postgres://app_tenant:secret@host/db"],
+    ["the role that owns the tables", "postgres://neondb_owner:secret@host/db"],
+    ["no URL at all", "app_admin"],
+  ])("refuses an admin login that connects as %s", (_name, url) => {
+    const error = errorFrom({ ...valid, DATABASE_URL_ADMIN: url });
+    expect(error.message).toMatch(/DATABASE_URL_ADMIN/);
+    expect(error.message).not.toContain("secret");
   });
 
   it("fails with a message naming a missing required variable", () => {

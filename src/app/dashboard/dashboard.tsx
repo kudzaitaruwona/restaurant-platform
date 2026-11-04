@@ -19,12 +19,20 @@ export async function Dashboard() {
         role: staff.role,
       })
       .from(staff)
-      .where(and(eq(staff.restaurantId, tenant.restaurantId), eq(staff.active, true)))
+      .where(
+        and(
+          eq(staff.restaurantId, tenant.restaurantId),
+          eq(staff.active, true),
+          eq(staff.kind, "staff"),
+        ),
+      )
       .orderBy(asc(staff.createdAt), asc(staff.id));
     return { restaurant, team };
   });
 
-  const me = team.find((member) => member.id === tenant.staffId);
+  const me = tenant.platformAdminId
+    ? "platform admin"
+    : team.find((member) => member.id === tenant.staffId)?.displayName;
 
   return (
     <div className="flex flex-col gap-6">
@@ -33,7 +41,7 @@ export async function Dashboard() {
           {restaurant.name}
         </h1>
         <p className="text-muted-foreground">
-          Signed in as {me?.displayName} ({tenant.role})
+          Signed in as {me} ({tenant.role})
         </p>
         {tenant.role === "owner" && (
           <nav className="mt-2 flex gap-4 text-sm underline">

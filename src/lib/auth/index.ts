@@ -4,7 +4,6 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP, magicLink } from "better-auth/plugins";
 import { after } from "next/server";
-import { getDb } from "@/db";
 import {
   adminAuthAccount,
   adminAuthRateLimit,
@@ -18,6 +17,7 @@ import {
   staffAuthVerification,
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
+import { authDatabase } from "./database";
 import {
   clearCodeAttempts,
   SIGN_IN_CODES_PAUSED,
@@ -40,8 +40,9 @@ import { findPlatformAdminId, findStaffIdentity } from "./identity";
 
 /**
  * Sign-in (S-27, S-30). Two separate Better Auth instances, one per session type
- * (D-07): own cookie, own tables, own URLs. The only way in is an email that
- * already belongs to an active staff record or a platform admin.
+ * (D-07): own cookie, own tables, own URLs, and for the platform admin its own
+ * database login (S-28). The only way in is an email that already belongs to an
+ * active staff record or a platform admin.
  */
 export type Audience = "staff" | "admin";
 
@@ -72,6 +73,7 @@ const signInExpirySeconds = SIGN_IN_EXPIRY_MINUTES * 60;
 
 const SEND_CODE_PATH = "/email-otp/send-verification-otp";
 const USE_CODE_PATH = "/sign-in/email-otp";
+const SIGN_OUT_PATH = "/sign-out";
 
 /**
  * The hook runs before Better Auth checks the address, so it sees whatever was
@@ -137,7 +139,7 @@ function createAuth(audience: Audience) {
     baseURL: env.NEXT_PUBLIC_APP_URL,
     basePath: basePath(audience),
     secret: env.AUTH_SECRET,
-    database: drizzleAdapter(getDb(), {
+    database: drizzleAdapter(authDatabase(audience), {
       provider: "pg",
       schema: schemas[audience],
     }),
@@ -159,6 +161,12 @@ function createAuth(audience: Audience) {
     // malformed body goes on to fail Better Auth's own validation.
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === SIGN_OUT_PATH && audience === "admin") {
+          // Here rather than at the top of the file: the seam imports this one.
+          const { leaveOnSignOut } = await import("@/lib/tenant/platform-admin");
+          await leaveOnSignOut(new Headers(ctx.headers));
+          return;
+        }
         if (ctx.path !== SEND_CODE_PATH && ctx.path !== USE_CODE_PATH) return;
         const email: unknown = ctx.body?.email;
         if (hasNul(email)) {
@@ -287,7 +295,7 @@ const signInPaths = new Set([
   "/sign-in/email-otp",
   "/sign-in/social",
   "/callback/google",
-  "/sign-out",
+  SIGN_OUT_PATH,
 ]);
 
 export function handleAuthRequest(audience: Audience, request: Request) {
@@ -296,8 +304,8 @@ export function handleAuthRequest(audience: Audience, request: Request) {
   return getAuth(audience).handler(request);
 }
 
-/** The email of whoever this request's session belongs to, if anyone's. */
-export async function sessionEmail(audience: Audience, requestHeaders: Headers) {
+/** This request's session and whose email it is, if it has one. */
+export async function sessionOf(audience: Audience, requestHeaders: Headers) {
   // Most anonymous requests stop here, with no database call.
   const cookie = requestHeaders.get("cookie") ?? "";
   if (!cookie.includes(sessionCookieName(audience))) return undefined;
@@ -305,5 +313,5 @@ export async function sessionEmail(audience: Audience, requestHeaders: Headers) 
   const session = await getAuth(audience).api.getSession({
     headers: requestHeaders,
   });
-  return session?.user.email;
+  return session ? { id: session.session.id, email: session.user.email } : undefined;
 }

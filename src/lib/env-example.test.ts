@@ -15,7 +15,11 @@ describe(".env.example", () => {
   });
 
   it("lists nothing the env schema doesn't validate, apart from test-only variables", () => {
-    const testOnly = ["TEST_DATABASE_URL", "TEST_DATABASE_URL_APP"];
+    const testOnly = [
+      "TEST_DATABASE_URL",
+      "TEST_DATABASE_URL_APP",
+      "TEST_DATABASE_URL_ADMIN",
+    ];
     const unknown = exampleKeys.filter(
       (key) => !(envKeys as string[]).includes(key) && !testOnly.includes(key),
     );

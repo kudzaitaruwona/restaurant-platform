@@ -3,7 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { staff, staffRole } from "@/db/schema";
 import { type TenantContext, withTenant } from "@/lib/tenant";
-import { recordAudit } from "@/lib/tenant/audit";
+import { type Acting, recordAudit } from "@/lib/tenant/audit";
 
 /**
  * Staff management, owner only (S-26): callers check requireOwner(ctx). Only
@@ -15,7 +15,6 @@ import { recordAudit } from "@/lib/tenant/audit";
  * entry.
  */
 
-type Actor = Pick<TenantContext, "restaurantId" | "staffId">;
 type Role = TenantContext["role"];
 export type StaffChange = "done" | "not_found" | "last_owner";
 
@@ -71,14 +70,14 @@ async function reportingLastOwner(change: () => Promise<StaffChange>) {
   }
 }
 
-const managed = (ctx: Actor, staffId: string) =>
+const managed = (ctx: Acting, staffId: string) =>
   and(
     eq(staff.restaurantId, ctx.restaurantId),
     eq(staff.id, staffId),
     eq(staff.kind, "staff"),
   );
 
-export async function listStaff(ctx: Pick<Actor, "restaurantId">) {
+export async function listStaff(ctx: Pick<Acting, "restaurantId">) {
   return withTenant(ctx, (tx) =>
     tx
       .select({
@@ -98,12 +97,33 @@ export async function listStaff(ctx: Pick<Actor, "restaurantId">) {
 export const countOwnerLogins = (team: Awaited<ReturnType<typeof listStaff>>) =>
   team.filter((member) => member.active && member.role === "owner").length;
 
+/**
+ * A restaurant's first staff record is its owner (S-26). Only a platform admin
+ * who has entered can get here with no owner yet. Once there is one, the
+ * last-owner trigger keeps it, so asking first leaves nothing to race.
+ */
 export async function addStaff(
-  ctx: Actor,
+  ctx: Acting,
   person: NewStaff,
-): Promise<"added" | "email_taken"> {
+): Promise<"added" | "email_taken" | "needs_owner_first"> {
   try {
-    await withTenant(ctx, async (tx) => {
+    return await withTenant(ctx, async (tx) => {
+      if (person.role !== "owner") {
+        const [owner] = await tx
+          .select({ id: staff.id })
+          .from(staff)
+          .where(
+            and(
+              eq(staff.restaurantId, ctx.restaurantId),
+              eq(staff.kind, "staff"),
+              eq(staff.role, "owner"),
+              eq(staff.active, true),
+            ),
+          )
+          .limit(1);
+        if (!owner) return "needs_owner_first";
+      }
+
       const [created] = await tx
         .insert(staff)
         .values({ ...person, restaurantId: ctx.restaurantId })
@@ -114,8 +134,8 @@ export async function addStaff(
         entityId: created.id,
         details: { role: person.role },
       });
+      return "added";
     });
-    return "added";
   } catch (error) {
     const constraint = constraintOf(error);
     // An exact match can trip the first, a match in another case only the second.
@@ -126,7 +146,7 @@ export async function addStaff(
   }
 }
 
-export async function deactivateStaff(ctx: Actor, staffId: string) {
+export async function deactivateStaff(ctx: Acting, staffId: string) {
   return reportingLastOwner(() =>
     withTenant(ctx, async (tx) => {
       const deactivated = await tx
@@ -146,7 +166,7 @@ export async function deactivateStaff(ctx: Actor, staffId: string) {
   );
 }
 
-export async function changeStaffRole(ctx: Actor, staffId: string, to: Role) {
+export async function changeStaffRole(ctx: Acting, staffId: string, to: Role) {
   return reportingLastOwner(() =>
     withTenant(ctx, async (tx) => {
       const [member] = await tx

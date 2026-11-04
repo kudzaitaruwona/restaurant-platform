@@ -3,12 +3,13 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { staff } from "@/db/schema";
 import { devAuthBypassEnabled } from "@/lib/env";
-import { withTenant } from "@/lib/tenant";
+import { currentIdentity, withTenant } from "@/lib/tenant";
 import {
   DEV_IDENTITY_COOKIE,
   devPlatformAdmin,
   findDevIdentity,
 } from "@/lib/tenant/dev-identities";
+import { leaveRestaurant } from "@/lib/tenant/platform-admin";
 
 /**
  * The dev switcher (S-25): picks which seeded identity getTenantContext() and
@@ -49,6 +50,10 @@ export async function POST(request: Request) {
       return Response.json({ error: "That staff member is deactivated." }, { status: 403 });
     }
   }
+
+  // Switching is the bypass's sign-out: the admin drops out of any restaurant.
+  const previous = await currentIdentity();
+  if (previous && "platformAdminId" in previous) await leaveRestaurant(previous);
 
   (await cookies()).set(DEV_IDENTITY_COOKIE, identity.key, {
     httpOnly: true,

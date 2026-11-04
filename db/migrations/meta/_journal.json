@@ -61,15 +61,29 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1793775127930,
-      "tag": "0008_menu_tables",
+      "when": 1793775087466,
+      "tag": "0008_shadow_row_and_entry",
       "breakpoints": true
     },
     {
       "idx": 9,
       "version": "7",
-      "when": 1793775172091,
-      "tag": "0009_public_token_lookup",
+      "when": 1793775088234,
+      "tag": "0009_admin_database_login",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793778471433,
+      "tag": "0010_menu_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793778472048,
+      "tag": "0011_public_token_lookup",
       "breakpoints": true
     }
   ]

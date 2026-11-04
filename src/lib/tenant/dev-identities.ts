@@ -51,6 +51,9 @@ export const devPlatformAdmin = {
   label: "Platform admin",
   platformAdminId: "00000000-0000-4000-8000-0000000000f1",
   email: "platform-admin@dev.example.test",
+  // The bypass has no real session, but entering a restaurant needs one to hang
+  // off, so the seed makes it (src/db/seed.ts).
+  sessionId: "dev-bypass-platform-admin",
 } as const;
 
 export type DevPlatformAdmin = typeof devPlatformAdmin;
