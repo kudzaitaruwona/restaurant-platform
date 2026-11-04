@@ -68,7 +68,13 @@ export async function getTenantContext(): Promise<TenantContext> {
     tx
       .select({ role: staff.role })
       .from(staff)
-      .where(and(eq(staff.id, staffId), eq(staff.active, true))),
+      .where(
+        and(
+          eq(staff.restaurantId, restaurantId),
+          eq(staff.id, staffId),
+          eq(staff.active, true),
+        ),
+      ),
   );
   if (!member) unauthorized();
 
