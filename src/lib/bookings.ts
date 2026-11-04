@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, gt, gte, lt } from "drizzle-orm";
+import { and, eq, gt, lt } from "drizzle-orm";
 import { z } from "zod";
 import {
   bookings,
@@ -18,17 +18,14 @@ import {
   instantOf,
   isLocalDate,
   type LocalDate,
-  localTime,
-  localToday,
   nearestTimes,
 } from "@/lib/booking-engine";
 import { mintQrToken } from "@/lib/qr-token";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
 /**
- * Bookings against the database: what /r/{slug}/book reads, the confirm, and the
- * staff day list. The rules are the engine's and Postgres's; this feeds one and
- * catches the other. On the public path, so it imports the tenant scope, not
+ * Bookings against the database: what /r/{slug}/book reads, and the confirm. The
+ * rules are the engine's and Postgres's; this feeds one and catches the other. On the public path, so it imports the tenant scope, not
  * "@/lib/tenant", which would load sign-in (S-32).
  */
 
@@ -366,49 +363,4 @@ export async function confirmBooking(
     // the guest's phone and the manage token, and whatever is thrown gets logged.
     throw new Error(`confirming a booking failed: ${dbErrorOf(error)?.code ?? "unknown"}`);
   }
-}
-
-// --- the staff day list -----------------------------------------------------
-
-/** Today's bookings on the restaurant's calendar, by time. */
-export function listTodaysBookings(tenant: Tenant, now = new Date()) {
-  return withTenant(tenant, async (tx) => {
-    const [{ timezone }] = await tx
-      .select({ timezone: restaurants.timezone })
-      .from(restaurants)
-      .where(eq(restaurants.id, tenant.restaurantId));
-    const today = localToday(now, timezone);
-    const rows = await tx
-      .select({
-        id: bookings.id,
-        startsAt: bookings.startsAt,
-        guestName: bookings.guestName,
-        partySize: bookings.partySize,
-        table: diningTables.label,
-        status: bookings.status,
-      })
-      .from(bookings)
-      .innerJoin(
-        diningTables,
-        and(
-          eq(diningTables.restaurantId, bookings.restaurantId),
-          eq(diningTables.id, bookings.tableId),
-        ),
-      )
-      .where(
-        and(
-          eq(bookings.restaurantId, tenant.restaurantId),
-          gte(bookings.startsAt, instantOf(today, "00:00", timezone)),
-          lt(bookings.startsAt, instantOf(addDays(today, 1), "00:00", timezone)),
-        ),
-      )
-      .orderBy(asc(bookings.startsAt), asc(diningTables.label));
-    return {
-      dateLabel: dateLabel(today),
-      bookings: rows.map(({ startsAt, ...row }) => ({
-        ...row,
-        time: localTime(startsAt, timezone),
-      })),
-    };
-  });
 }

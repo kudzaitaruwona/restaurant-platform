@@ -104,6 +104,14 @@ Staff pages live under `/dashboard/*` *(proposed)*, see D-10.
 | **Add booking** | The same engine, but staff may: book inside the lead time, exceed `max_online_party_size`, pick the table by hand, and leave the phone blank. `source = staff`. |
 | **Walk-in** | "Seat walk-in" on a table asks for the **party size**, then creates a `seated` staff booking: `guest_name = 'Walk-in'`, phone null, `whatsapp_opt_in = false`, `starts_at = now()`. `ends_at = min(now + sitting, next booking's starts_at on that table − buffer)`. If that leaves under 30 minutes, staff see "Table 7 has a booking at 19:00 — move that booking, or seat the walk-in elsewhere" instead. This stops the engine selling a table that's physically occupied. |
 
+*(Proposed)* How the day view and its actions behave where the table above leaves it open (ticket #35):
+- **Valid moves.** Seat, No-show and Cancel apply to `confirmed` only; Finish to `seated` only. Each is one `UPDATE ... WHERE status = expected`, so of two staff tapping at once, or a tap racing the guest's own cancel, one wins and the other is told what the booking now is (HTTP 409). Nothing leads out of `no_show`, `cancelled` or `completed`.
+- **Finish and the 960-minute cap.** The buffer gives way first, then `ends_at`: `ends_at = least(greatest(starts_at + 1 min, now), starts_at + 960 min)` and `hold_ends_at = least(ends_at + buffer, starts_at + 960 min)`. A party that stayed past its hold would stretch it into the next booking on that table, so the hold, and `ends_at` with it, stops at that booking's start. If one lands in that gap at the same instant, the constraint refuses and staff see "try Finish again".
+- **Audit.** Spec 01 lists cancellations and moves by staff, so Cancel is audited (`booking.cancel`). Seat, Finish and No-show are audited only when a platform admin who has entered the restaurant does them (S-28).
+- **Counts.** The header counts confirmed, seated and completed bookings and their covers per period; cancelled and no-show bookings are listed but not counted. A booking belongs to the period whose `[opens_at, closes_at)` holds its local start time, else "Other".
+- **Date picker.** `?date=YYYY-MM-DD`, within 366 days either side of today on the restaurant's calendar; anything else shows today with a notice.
+- **Contact buttons** appear for any booking with a stored number, whatever `whatsapp_opt_in` says: that flag governs automated messages, not staff tapping a link.
+
 Changing a booking's time in v1 means cancel plus a new booking. That keeps the messaging simple.
 
 ### Automatic status changes (proposed)

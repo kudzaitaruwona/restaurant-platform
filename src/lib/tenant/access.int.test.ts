@@ -77,6 +77,12 @@ vi.mock("next/server", async (importOriginal) => ({
   connection: async () => {},
 }));
 
+// The day view's forms ask the App Router for a router the harness doesn't mount.
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ refresh() {} }),
+}));
+
 // Only a real request has a cache to revalidate.
 vi.mock("next/cache", () => ({
   cacheLife: () => {},
@@ -165,6 +171,60 @@ const plantPeriod = async (restaurantId: string) => {
   return id;
 };
 const periodParams = (periodId: string) => ({ params: Promise.resolve({ periodId }) });
+/**
+ * Bookings the day view actions are aimed at. Each call plants one of its own, in
+ * the target's restaurant and on its fixture table: an action can be taken once,
+ * so it can't be run again on the same booking. Slots are three hours apart from
+ * 2031, so no two holds overlap on the table, and nothing is near a real day list.
+ */
+const plantedBookingPrefix = "Harness booking ";
+type BookingStatus = typeof bookings.$inferSelect.status;
+const plantedBookings: { id: string; restaurantId: string; status: BookingStatus }[] = [];
+let bookingSlot = 0;
+const plantBooking = async (target: Target, status: BookingStatus) => {
+  const id = crypto.randomUUID();
+  const starts = Date.UTC(2031, 0, 1) + bookingSlot++ * 3 * 3_600_000;
+  await owner.db.insert(bookings).values({
+    ...aBooking(
+      target.restaurantId,
+      target.tableId,
+      new Date(starts).toISOString(),
+      new Date(starts + 2 * 3_600_000).toISOString(),
+    ),
+    id,
+    guestName: `${plantedBookingPrefix}${id}`,
+    status,
+  });
+  plantedBookings.push({ id, restaurantId: target.restaurantId, status });
+  return id;
+};
+const bookingParams = (bookingId: string) => ({ params: Promise.resolve({ bookingId }) });
+const bookingRoutes = {
+  seat: () => import("@/app/api/bookings/[bookingId]/seat/route"),
+  finish: () => import("@/app/api/bookings/[bookingId]/finish/route"),
+  "no-show": () => import("@/app/api/bookings/[bookingId]/no-show/route"),
+  cancel: () => import("@/app/api/bookings/[bookingId]/cancel/route"),
+};
+/** An action on a booking planted for it: the one status it can act on. */
+const bookingAction = (
+  action: keyof typeof bookingRoutes,
+  from: BookingStatus,
+): TenantRoute => ({
+  name: `POST /api/bookings/[bookingId]/${action}`,
+  ownerOnly: false,
+  call: async (target) => {
+    // A made-up id, like the malformed ones tried above, is aimed at as it is.
+    const bookingId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+      ? await plantBooking(target, from)
+      : target.tableId;
+    return postBookingAction(action, bookingId);
+  },
+});
+const postBookingAction = async (action: keyof typeof bookingRoutes, bookingId: string, query = "") =>
+  (await bookingRoutes[action]()).POST(
+    request(`/api/bookings/${bookingId}/${action}${query}`, { method: "POST" }),
+    bookingParams(bookingId),
+  );
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -320,6 +380,10 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  bookingAction("seat", "confirmed"),
+  bookingAction("finish", "seated"),
+  bookingAction("no-show", "confirmed"),
+  bookingAction("cancel", "confirmed"),
 ];
 
 /**
@@ -703,6 +767,7 @@ afterAll(async () => {
     await owner.db.delete(staff).where(eq(staff.id, staffId));
   }
   await owner.db.delete(menuItems).where(eq(menuItems.name, harnessItem));
+  await owner.db.delete(bookings).where(like(bookings.guestName, `${plantedBookingPrefix}%`));
   await owner.db
     .delete(diningTables)
     .where(
@@ -872,6 +937,20 @@ const unremoved = async (restaurantId: string, mark: number) =>
     )
   ).every((row) => row !== undefined);
 
+/** Whether the bookings planted since `mark` in a restaurant are all as they were planted. */
+const bookingsAsPlanted = async (restaurantId: string, mark: number) => {
+  const rows = await Promise.all(
+    plantedBookings
+      .slice(mark)
+      .filter((booking) => booking.restaurantId === restaurantId)
+      .map(async ({ id, status }) => {
+        const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+        return row.status === status && row.cancelledBy === null;
+      }),
+  );
+  return rows.every(Boolean);
+};
+
 const harnessTables = (restaurantId: string) =>
   owner.db
     .select({ id: diningTables.id })
@@ -904,6 +983,7 @@ describe("cross-tenant access", () => {
       const bPeriod = await periodStanding(fixtures.b.periodId);
       const mark = planted.length;
       const periodMark = plantedPeriods.length;
+      const bookingMark = plantedBookings.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -916,6 +996,7 @@ describe("cross-tenant access", () => {
       expect(await unarchived(fixtures.b.restaurantId, mark)).toBe(true);
       expect(await periodStanding(fixtures.b.periodId)).toEqual(bPeriod);
       expect(await unremoved(fixtures.b.restaurantId, periodMark)).toBe(true);
+      expect(await bookingsAsPlanted(fixtures.b.restaurantId, bookingMark)).toBe(true);
     },
   );
 
@@ -1771,10 +1852,108 @@ describe("the guest's confirm", () => {
   });
 });
 
+describe("the day view's actions", () => {
+  const actions = ["seat", "finish", "no-show", "cancel"] as const;
+  const from = { seat: "confirmed", finish: "seated", "no-show": "confirmed", cancel: "confirmed" } as const;
+  const standingOf = async (id: string) => {
+    const [row] = await owner.db.select().from(bookings).where(eq(bookings.id, id));
+    return row;
+  };
+  const to = { seat: "seated", finish: "completed", "no-show": "no_show", cancel: "cancelled" } as const;
+
+  it.each(actions.flatMap((action) => [aOwner, aStaff].map((who) => [action, who.key, who] as const)))(
+    "%s: %s, an owner or staff, acts on a booking of their restaurant (S-26)",
+    async (action, _key, who) => {
+      session.identity = who.key;
+      const id = await plantBooking(fixtures.a, from[action]);
+
+      const response = await postBookingAction(action, id);
+
+      expect(response.status).toBeLessThan(400);
+      expect((await standingOf(id)).status).toBe(to[action]);
+    },
+  );
+
+  it.each(actions)("%s: a second tap is a 409 that says what the booking is now, and changes nothing more", async (action) => {
+    session.identity = aStaff.key;
+    const id = await plantBooking(fixtures.a, from[action]);
+    await postBookingAction(action, id);
+    const settled = await standingOf(id);
+
+    const response = await postBookingAction(action, id);
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/already (seated|finished|marked as a no-show|cancelled)/);
+    expect(await standingOf(id)).toEqual(settled);
+  });
+
+  it.each(actions)("%s: a malformed or unknown id is a 404", async (action) => {
+    session.identity = aOwner.key;
+    for (const id of ["not-a-uuid", "", "'; drop table bookings; --", "a\0b", crypto.randomUUID()]) {
+      expect(await statusOf(() => postBookingAction(action, id))).toBe(404);
+    }
+  });
+
+  it.each(actions)("%s: a restaurant id in the query, headers or body can't move it to B's booking", async (action) => {
+    session.identity = aOwner.key;
+    const id = await plantBooking(fixtures.b, from[action]);
+    const b = fixtures.b.restaurantId;
+
+    const status = await statusOf(async () =>
+      (await bookingRoutes[action]()).POST(
+        request(`/api/bookings/${id}/${action}?restaurantId=${b}&restaurant_id=${b}`, {
+          method: "POST",
+          headers: { "x-restaurant-id": b },
+          body: form({ restaurantId: b, restaurant_id: b }),
+        }),
+        bookingParams(id),
+      ),
+    );
+
+    expect(status).toBe(404);
+    expect((await standingOf(id)).status).toBe(from[action]);
+  });
+
+  const auditedFor = (id: string) =>
+    owner.db.select().from(auditLog).where(eq(auditLog.entityId, id));
+
+  it("only a cancel by staff is audited, and it names the person who did it", async () => {
+    session.identity = aStaff.key;
+    const ids = Object.fromEntries(
+      await Promise.all(actions.map(async (action) => [action, await plantBooking(fixtures.a, from[action])] as const)),
+    );
+
+    for (const action of actions) await postBookingAction(action, ids[action]);
+
+    expect(await auditedFor(ids.seat)).toEqual([]);
+    expect(await auditedFor(ids.finish)).toEqual([]);
+    expect(await auditedFor(ids["no-show"])).toEqual([]);
+    const [entry] = await auditedFor(ids.cancel);
+    expect(entry).toMatchObject({
+      restaurantId: fixtures.a.restaurantId,
+      actorType: "staff",
+      action: "booking.cancel",
+      entityType: "booking",
+    });
+    const [{ id: staffId }] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(and(eq(staff.restaurantId, fixtures.a.restaurantId), eq(staff.email, emailOf(aStaff.key))));
+    expect(entry.actorId).toBe(staffId);
+  });
+
+  it("is a 401 with no session, and changes nothing", async () => {
+    session.identity = "";
+    const id = await plantBooking(fixtures.a, "confirmed");
+    for (const action of actions) expect(await statusOf(() => postBookingAction(action, id))).toBe(401);
+    expect((await standingOf(id)).status).toBe("confirmed");
+  });
+});
+
 describe("the day list", () => {
   const screen = async () => {
     const { BookingsScreen } = await import("@/app/dashboard/bookings/bookings-screen");
-    return renderToStaticMarkup(await BookingsScreen());
+    return renderToStaticMarkup(await BookingsScreen({ searchParams: Promise.resolve({}) }));
   };
 
   const today = () => localToday(new Date(), "Africa/Harare");
