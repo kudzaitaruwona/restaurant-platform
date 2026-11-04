@@ -1,7 +1,17 @@
 import { gzipSync } from "node:zlib";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { categories, exchangeRates, menuItems, restaurants, specials, staff } from "@/db/schema";
+import { GET as tablePage } from "@/app/t/[qrToken]/route";
+import {
+  categories,
+  diningTables,
+  exchangeRates,
+  menuItems,
+  restaurants,
+  specials,
+  staff,
+} from "@/db/schema";
+import { mintQrToken } from "@/lib/qr-token";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -26,6 +36,7 @@ const owner = openOwnerDatabase();
 let restaurantId = "";
 let menuToken = "";
 let body = "";
+let tableBody = "";
 
 beforeAll(async () => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
@@ -103,6 +114,15 @@ beforeAll(async () => {
     params: Promise.resolve({ menuToken }),
   });
   body = await response.text();
+
+  const qrToken = mintQrToken();
+  await owner.db
+    .insert(diningTables)
+    .values({ restaurantId, label: "7", capacity: 4, qrToken });
+  const scanned = await tablePage(new Request(`http://localhost:3000/t/${qrToken}`), {
+    params: Promise.resolve({ qrToken }),
+  });
+  tableBody = await scanned.text();
 });
 
 afterAll(async () => {
@@ -111,6 +131,7 @@ afterAll(async () => {
   await owner.db.delete(staff).where(inArray(staff.restaurantId, [restaurantId]));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, [restaurantId]));
   await owner.db.delete(categories).where(inArray(categories.restaurantId, [restaurantId]));
+  await owner.db.delete(diningTables).where(inArray(diningTables.restaurantId, [restaurantId]));
   await owner.db.delete(restaurants).where(inArray(restaurants.id, [restaurantId]));
   await owner.pool.end();
   vi.unstubAllEnvs();
@@ -128,6 +149,11 @@ describe("public menu page weight, 30 items with photos", () => {
       `public menu page: ${bytes} bytes raw, ${gzipSync(body).length} gzipped, budget ${BUDGET_BYTES}`,
     );
     expect(bytes).toBeLessThan(BUDGET_BYTES);
+  });
+
+  it("a table's code serves the same page, so the same budget", () => {
+    expect(tableBody).toBe(body);
+    expect(Buffer.byteLength(tableBody)).toBeLessThan(BUDGET_BYTES);
   });
 
   it("loads every image lazily at a fixed size, and ships no script", () => {
