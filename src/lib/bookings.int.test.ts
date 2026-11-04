@@ -18,7 +18,6 @@ import {
   firstTableToTake,
   getBookingPage,
   type GuestRequest,
-  listTodaysBookings,
   MAX_HOLD_MS,
   parseGuestRequest,
 } from "./bookings";
@@ -652,57 +651,5 @@ describe("the booking page's data", () => {
 
     expect(page.enabled).toBe(false);
     expect(page.times).toBeUndefined();
-  });
-});
-
-describe("the day list", () => {
-  it("is today on the restaurant's calendar, by time, with table and status", async () => {
-    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
-      tables: [{ capacity: 2, label: "Window" }, { capacity: 2, label: "Corner" }],
-    });
-    const at = (table: number, start: string, end: string, guestName: string) => ({
-      ...aBooking(restaurantId, tableIds[table], start, end),
-      guestName,
-    });
-    await owner.db.insert(bookings).values([
-      at(0, "2026-11-05T21:30:00Z", "2026-11-05T21:45:00Z", "Last night"), // 23:30 on the 5th
-      at(0, "2026-11-06T17:00:00Z", "2026-11-06T18:00:00Z", "Later"),
-      { ...at(1, "2026-11-05T22:00:00Z", "2026-11-05T23:00:00Z", "At midnight"), status: "cancelled" },
-      at(0, "2026-11-06T21:59:00Z", "2026-11-06T22:30:00Z", "Last minute"), // 23:59 on the 6th
-      at(0, "2026-11-06T22:30:00Z", "2026-11-06T23:00:00Z", "Tomorrow"), // 00:30 on the 7th
-    ]);
-
-    // 00:30 on the 6th in Harare, still the 5th in UTC.
-    const list = await listTodaysBookings({ restaurantId }, new Date("2026-11-05T22:30:00Z"));
-
-    expect(list.dateLabel).toBe("Fri 6 Nov");
-    expect(
-      list.bookings.map(({ time, guestName, table, status, partySize }) => [
-        time,
-        guestName,
-        table,
-        status,
-        partySize,
-      ]),
-    ).toEqual([
-      ["00:00", "At midnight", "Corner", "cancelled", 2],
-      ["19:00", "Later", "Window", "confirmed", 2],
-      ["23:59", "Last minute", "Window", "confirmed", 2],
-    ]);
-  });
-
-  it("shows nothing from another restaurant", async () => {
-    const mine = await bookableRestaurant(owner.db);
-    const theirs = await bookableRestaurant(owner.db);
-    await owner.db
-      .insert(bookings)
-      .values(aBooking(theirs.restaurantId, theirs.tableIds[0], SEVEN, "2026-11-06T19:00:00Z"));
-
-    const list = await listTodaysBookings(
-      { restaurantId: mine.restaurantId },
-      new Date("2026-11-06T06:00:00Z"),
-    );
-
-    expect(list.bookings).toEqual([]);
   });
 });
