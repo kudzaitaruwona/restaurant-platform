@@ -44,6 +44,7 @@ const created: string[] = [];
 async function newRestaurant(
   name: string,
   currencyMode: "usd_only" | "zig_only" | "usd_primary" | "zig_primary" | "both" = "usd_only",
+  wifiName: string | null = null,
 ) {
   const id = crypto.randomUUID();
   await owner.db.insert(restaurants).values({
@@ -52,6 +53,7 @@ async function newRestaurant(
     slug: `public-menu-${id}`,
     menuToken: `token-${id}`,
     currencyMode,
+    wifiName,
     wifiPassword: "kept-off-the-page",
   });
   created.push(id);
@@ -154,7 +156,8 @@ describe("/m/{menu_token}", () => {
     await addItem(id, mains, { name: "Zebra steak", priceUsd: "21", sortOrder: 0 });
     await addItem(id, starters, { name: "Soup", priceUsd: "3" });
 
-    const body = await page(menuToken);
+    // Past the jump bar, which names the categories too.
+    const body = (await page(menuToken)).split("</nav>")[1];
 
     const order = ["Starters", "Soup", "$3.00", "Mains", "Zebra steak", "$21.00", "Beef stew", "$8.50", "With sadza"];
     const positions = order.map((text) => body.indexOf(text));
@@ -928,5 +931,69 @@ describe("bundles", () => {
     expect(body.match(/Bundle \d+/g)).toHaveLength(30);
     expect(new TextEncoder().encode(body).length).toBeLessThan(100_000);
     expect(body).not.toMatch(/<script|\son\w+=|javascript:/i);
+  });
+});
+
+describe("layout (issue 26)", () => {
+  async function menuWith(wifiName: string | null, categoryNames: string[]) {
+    const { id, menuToken } = await newRestaurant("Layout", "usd_only", wifiName);
+    for (const [index, name] of categoryNames.entries()) {
+      const categoryId = await addCategory(id, name, index);
+      await addItem(id, categoryId, { name: `${name} dish`, priceUsd: "5" });
+    }
+    return { id, menuToken };
+  }
+
+  it("shows the Wi-Fi network name when set, escaped, and never the password", async () => {
+    const { menuToken } = await menuWith("Guest <Net> & co", ["Mains"]);
+    const body = await page(menuToken);
+    expect(body).toContain("Guest &lt;Net&gt; &amp; co");
+    expect(body).not.toContain("Guest <Net>");
+    expect(body).not.toContain("kept-off-the-page");
+  });
+
+  it("shows no Wi-Fi line when none is set", async () => {
+    const { menuToken } = await menuWith(null, ["Mains"]);
+    expect(await page(menuToken)).not.toContain("Wi-Fi:");
+  });
+
+  it("has a jump bar of anchors to each category that has items, with no script", async () => {
+    const { id, menuToken } = await menuWith(null, ["Starters", "Mains"]);
+    await addCategory(id, "Empty one", 5);
+    const body = await page(menuToken);
+    const nav = /<nav[^>]*>([\s\S]*?)<\/nav>/.exec(body)?.[1] ?? "";
+    const links = [...nav.matchAll(/<a href="#([^"]+)">([^<]*)<\/a>/g)];
+    expect(links.map((link) => link[2])).toEqual(["Starters", "Mains"]);
+    for (const [, anchor] of links) {
+      expect(body).toMatch(new RegExp(`<section id="${anchor}"`));
+    }
+    expect(body).not.toContain("Empty one");
+    expect(body).not.toContain("<script");
+    // Sticky, and anchors land clear of it.
+    expect(body).toMatch(/nav\{[^}]*position:sticky/);
+    expect(body).toMatch(/scroll-margin-top/);
+  });
+
+  it("puts Specials first in the jump bar when there are some", async () => {
+    const { id, menuToken } = await menuWith(null, ["Mains"]);
+    const [dish] = await owner.db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(eq(menuItems.restaurantId, id));
+    await owner.db.insert(specials).values({
+      restaurantId: id,
+      menuItemId: dish.id,
+      title: "Deal",
+      specialPriceUsd: "4",
+    });
+    const body = await page(menuToken);
+    const nav = /<nav[^>]*>([\s\S]*?)<\/nav>/.exec(body)?.[1] ?? "";
+    expect([...nav.matchAll(/<a href="#([^"]+)">/g)].map((m) => m[1])[0]).toBe("specials");
+    expect(body).toContain('<section id="specials"');
+  });
+
+  it("has no jump bar on an empty menu", async () => {
+    const { menuToken } = await newRestaurant("Bare");
+    expect(await page(menuToken)).not.toContain("<nav");
   });
 });

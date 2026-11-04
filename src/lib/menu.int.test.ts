@@ -78,6 +78,7 @@ describe("a menu", () => {
     const tenant = await newRestaurant();
     expect(await getMenu(tenant)).toEqual({
       restaurantName: "Mama's Kitchen",
+      wifiName: null,
       menuToken: `menu-${tenant.restaurantId}`,
       currencyMode: "usd_only",
       timezone: "Africa/Harare",

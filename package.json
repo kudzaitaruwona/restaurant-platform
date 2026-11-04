@@ -11,6 +11,7 @@
     "test": "vitest run --project unit --project integration",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "test:budget": "vitest run --project integration budget.int",
     "test:production": "vitest run --project production",
     "test:watch": "vitest --project unit",
     "db:generate": "drizzle-kit generate",

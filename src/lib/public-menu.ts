@@ -26,8 +26,14 @@ const styles = `
 *{box-sizing:border-box}
 body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
-h1{margin:0 0 1rem;font-size:1.75rem;line-height:1.2}
-h2{margin:2rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
+h1{margin:0;font-size:1.75rem;line-height:1.2}
+.wifi{margin:.25rem 0 0;font-size:.9rem}
+nav{position:sticky;top:0;z-index:1;display:flex;gap:.5rem;margin:1rem -1rem 0;padding:.5rem 1rem;overflow-x:auto;background:Canvas;border-bottom:1px solid var(--line)}
+nav a{flex:none;padding:.25rem .75rem;border:1px solid var(--line);border-radius:999px;color:inherit;font-size:.9rem;text-decoration:none;white-space:nowrap}
+section{scroll-margin-top:3.5rem}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+h2{margin:1.5rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
 ul{margin:0;padding:0;list-style:none}
 li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom:1px solid var(--line)}
 .text{flex:1;min-width:0}
@@ -112,19 +118,29 @@ function specialsSection(menu: Menu) {
 }
 
 function menuPage(menu: Menu) {
-  const sections = menu.categories
-    .filter((category) => category.items.length > 0)
-    .map(
-      (category) => html`<section>
+  const shown = menu.categories.filter((category) => category.items.length > 0);
+  const specials = specialsSection(menu);
+  // Anchors are positions, not ids from the database: nothing internal on the page.
+  const anchorOf = (index: number) => `c${index + 1}`;
+  const sections = shown.map(
+    (category, index) => html`<section id="${anchorOf(index)}">
 <h2>${category.name}</h2>
 <ul>${availableFirst(category.items).map((item) => itemRow(item, menu))}</ul>
 </section>`,
-    );
+  );
+  // A plain list of anchors, so it works without JavaScript (spec 02).
+  const jumpBar =
+    sections.length > 0 &&
+    html`<nav aria-label="Menu sections">${specials && html`<a href="#specials">Specials</a>`}${shown.map(
+      (category, index) => html`<a href="#${anchorOf(index)}">${category.name}</a>`,
+    )}</nav>`;
 
   return page(
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
-${specialsSection(menu)}
+${menu.wifiName && html`<p class="wifi">Wi-Fi: ${menu.wifiName}</p>`}
+${jumpBar}
+${specials}
 ${sections.length > 0 || menu.bundles.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }
