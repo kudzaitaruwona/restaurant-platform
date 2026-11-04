@@ -17,6 +17,7 @@ describe("resendSender", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith("https://api.resend.com/emails", {
       method: "POST",
+      signal: expect.any(AbortSignal),
       headers: {
         authorization: "Bearer re_key",
         "content-type": "application/json",
@@ -28,6 +29,25 @@ describe("resendSender", () => {
         text: "Body",
       }),
     });
+  });
+
+  it("gives up on a call that hangs, after 10 seconds", async () => {
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation(() => AbortSignal.abort(new DOMException("Late", "TimeoutError")));
+    vi.stubGlobal(
+      "fetch",
+      (_url: string, { signal }: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          if (signal?.aborted) reject(signal.reason);
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+
+    await expect(resendSender("re_key", "f@example.test").send(email)).rejects.toMatchObject({
+      name: "TimeoutError",
+    });
+    expect(timeout).toHaveBeenCalledWith(10_000);
   });
 
   it("fails loudly on a refusal, without quoting the response or the key", async () => {

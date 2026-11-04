@@ -8,12 +8,16 @@ export interface EmailSender {
   send(email: Email): Promise<void>;
 }
 
+/** Well past a normal send, and short of holding a function open until it's killed. */
+const SEND_TIMEOUT_MS = 10_000;
+
 /** Resend's HTTP API. One POST, so it doesn't need their SDK. */
 export function resendSender(apiKey: string, from: string): EmailSender {
   return {
     async send({ to, subject, text }) {
       const response = await fetch("https://api.resend.com/emails", {
         method: "POST",
+        signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
         headers: {
           authorization: `Bearer ${apiKey}`,
           "content-type": "application/json",
