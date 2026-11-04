@@ -339,6 +339,8 @@ describe("/dashboard/settings", () => {
   it.each([
     [{ contactPhone: "0771234567" }, "international format"],
     [{ timezone: "Mars/Olympus" }, "timezone"],
+    // Known to Node's ICU, not to this Postgres, where AT TIME ZONE would fail.
+    [{ timezone: "Asia/Calcutta" }, "timezone"],
     [{ currencyMode: "gold" }, "currency"],
     [{ name: "" }, "name"],
   ])("refuses %j with a reason and saves nothing", async (bad, reason) => {
@@ -353,7 +355,8 @@ describe("/dashboard/settings", () => {
     expect(row.wifiName).toBe("Mamas Guest");
   });
 
-  describe.each(["US/Eastern", "Asia/Kolkata", "Etc/GMT+2"])(
+  // The last two are stored names one side has dropped: saving must still work.
+  describe.each(["US/Eastern", "Asia/Kolkata", "Etc/GMT+2", "Asia/Calcutta", "Mars/Olympus"])(
     "with a stored timezone the list leaves out: %s",
     (timezone) => {
       beforeEach(async () => {

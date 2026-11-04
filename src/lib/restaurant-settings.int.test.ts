@@ -7,6 +7,7 @@ import {
 } from "../../test/integration/database";
 import {
   getRestaurantSettings,
+  isTimeZone,
   updateRestaurantSettings,
 } from "./restaurant-settings";
 
@@ -62,6 +63,87 @@ describe("restaurant settings", () => {
 
     const [row] = await owner.db.select().from(restaurants).where(eq(restaurants.id, id));
     expect(row).toMatchObject({ slug: `settings-${id}`, menuToken: id });
+  });
+});
+
+/**
+ * Names Node's ICU takes that this server's Postgres doesn't, so a query using
+ * one fails. Which names those are depends on both tzdata versions.
+ */
+const knownToNodeNotToPostgres = "Asia/Calcutta";
+
+describe("the timezone on save", () => {
+  const timezoneOf = async (id: string) => {
+    const [row] = await owner.db.select().from(restaurants).where(eq(restaurants.id, id));
+    return row.timezone;
+  };
+
+  it("has a test name that Node accepts and this Postgres lacks", async () => {
+    const { rows } = await owner.db.execute(
+      sql`select 1 from pg_timezone_names where name = ${knownToNodeNotToPostgres}`,
+    );
+    expect(rows).toEqual([]);
+    expect(isTimeZone(knownToNodeNotToPostgres)).toBe(true);
+  });
+
+  it("saves a changed zone that both know", async () => {
+    const id = await newRestaurant();
+
+    const result = await updateRestaurantSettings({ restaurantId: id }, changes);
+
+    expect(result).toBe("saved");
+    expect(await timezoneOf(id)).toBe("Africa/Johannesburg");
+  });
+
+  it.each([
+    ["Node accepts but Postgres lacks", knownToNodeNotToPostgres],
+    ["Node refuses", "Mars/Olympus"],
+  ])("refuses a changed zone that %s, and saves nothing", async (_, timezone) => {
+    const id = await newRestaurant();
+
+    const result = await updateRestaurantSettings(
+      { restaurantId: id },
+      { ...changes, timezone },
+    );
+
+    expect(result).toBe("invalid_timezone");
+    expect(await getRestaurantSettings({ restaurantId: id })).toMatchObject({
+      name: "Before",
+      timezone: "Africa/Harare",
+    });
+  });
+
+  it.each([
+    ["Node accepts but Postgres lacks", knownToNodeNotToPostgres],
+    ["Node refuses", "Mars/Olympus"],
+  ])("still saves other edits when the stored zone is one that %s", async (_, stored) => {
+    const id = await newRestaurant();
+    await owner.db.update(restaurants).set({ timezone: stored }).where(eq(restaurants.id, id));
+
+    const result = await updateRestaurantSettings(
+      { restaurantId: id },
+      { ...changes, timezone: stored },
+    );
+
+    expect(result).toBe("saved");
+    expect(await getRestaurantSettings({ restaurantId: id })).toMatchObject({
+      wifiName: "Guest",
+      timezone: stored,
+    });
+  });
+
+  it("checks a change away from such a zone like any other", async () => {
+    const id = await newRestaurant();
+    await owner.db
+      .update(restaurants)
+      .set({ timezone: "Mars/Olympus" })
+      .where(eq(restaurants.id, id));
+
+    expect(
+      await updateRestaurantSettings({ restaurantId: id }, { ...changes, timezone: "Mars/Phobos" }),
+    ).toBe("invalid_timezone");
+    expect(await updateRestaurantSettings({ restaurantId: id }, changes)).toBe("saved");
+    expect(await timezoneOf(id)).toBe("Africa/Johannesburg");
   });
 });
 

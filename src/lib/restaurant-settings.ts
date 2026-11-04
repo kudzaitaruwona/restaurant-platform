@@ -1,5 +1,5 @@
 import "server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { currencyMode, restaurants } from "@/db/schema";
 import { type TenantContext, withTenant } from "@/lib/tenant";
@@ -43,13 +43,15 @@ export function isTimeZone(value: string) {
 
 const E164 = /^\+[1-9][0-9]{1,14}$/;
 
+export const invalidTimezoneMessage = "Choose a timezone from the list.";
+
 const messages = {
   name: "Enter the restaurant's name, up to 200 characters.",
   contactPhone: "Enter the phone number in international format, like +263771234567.",
   wifiName: "Enter a Wi-Fi name of up to 200 characters.",
   wifiPassword: "Enter a Wi-Fi password of up to 200 characters.",
   currencyMode: "Choose a currency mode.",
-  timezone: "Choose a timezone from the list.",
+  timezone: invalidTimezoneMessage,
 };
 
 const blankToNull = (value: string) => value || null;
@@ -73,7 +75,9 @@ const settingsForm = z.object({
     .max(200, messages.wifiPassword)
     .transform(blankToNull),
   currencyMode: z.enum(currencyMode.enumValues, messages.currencyMode),
-  timezone: z.string(messages.timezone).refine(isTimeZone, messages.timezone),
+  // Only its shape here. Whether it is a real zone depends on what is stored, so
+  // updateRestaurantSettings decides.
+  timezone: z.string(messages.timezone).min(1, messages.timezone).max(100, messages.timezone),
 });
 
 export type RestaurantSettings = z.output<typeof settingsForm>;
@@ -104,14 +108,33 @@ export async function getRestaurantSettings(
   return settings;
 }
 
+/**
+ * Saves the settings. A timezone that differs from the stored one has to work
+ * in JavaScript and in Postgres, where `AT TIME ZONE` would otherwise fail on
+ * it later, as restaurant creation already insists. One that is unchanged is
+ * never refused, whatever it is: the form sends it back with every save, and a
+ * name that has since fallen out of either list must not block other edits.
+ */
 export async function updateRestaurantSettings(
   ctx: Tenant,
   settings: RestaurantSettings,
-) {
-  await withTenant(ctx, (tx) =>
-    tx
+): Promise<"saved" | "invalid_timezone"> {
+  return withTenant(ctx, async (tx) => {
+    const [stored] = await tx
+      .select({ timezone: restaurants.timezone })
+      .from(restaurants)
+      .where(eq(restaurants.id, ctx.restaurantId));
+    if (stored.timezone !== settings.timezone) {
+      if (!isTimeZone(settings.timezone)) return "invalid_timezone";
+      const { rows } = await tx.execute(
+        sql`select 1 from pg_catalog.pg_timezone_names where name = ${settings.timezone}`,
+      );
+      if (rows.length === 0) return "invalid_timezone";
+    }
+    await tx
       .update(restaurants)
       .set(settings)
-      .where(eq(restaurants.id, ctx.restaurantId)),
-  );
+      .where(eq(restaurants.id, ctx.restaurantId));
+    return "saved";
+  });
 }

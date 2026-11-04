@@ -107,12 +107,17 @@ describe("parseRestaurantSettings", () => {
     expect(parse({ timezone })).toMatchObject({ data: { timezone } });
   });
 
+  // Whether a changed name is real is decided on save, against what is stored.
   it.each(["Mars/Olympus", "africa/harare", "AFRICA/HARARE", "+02:00", "CAT", ""])(
-    "refuses the timezone %j",
+    "doesn't take %j as a timezone",
     (timezone) => {
-      expect(parse({ timezone })).toMatchObject({ success: false });
+      expect(isTimeZone(timezone)).toBe(false);
     },
   );
+
+  it.each(["", "x".repeat(101)])("refuses the timezone %j by shape", (timezone) => {
+    expect(parse({ timezone })).toMatchObject({ success: false });
+  });
 
   it("offers the default timezone", () => {
     expect(timeZoneNames).toContain("Africa/Harare");
