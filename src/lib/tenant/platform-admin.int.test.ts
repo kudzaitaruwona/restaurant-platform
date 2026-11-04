@@ -12,6 +12,7 @@ vi.mock("next/headers", () => ({
         ? undefined
         : { name, value: session.identity },
   }),
+  headers: async () => new Headers(),
 }));
 
 const guard = async () =>
@@ -56,5 +57,23 @@ describe("getTenantContext", () => {
   it("is a 403 for the platform admin, who hasn't entered a restaurant", async () => {
     session.identity = devPlatformAdmin.key;
     expect(await statusOf(tenantContext)).toBe(403);
+  });
+});
+
+describe("without the bypass", () => {
+  it.each([
+    ["DEV_AUTH_BYPASS is unset", "DEV_AUTH_BYPASS", ""],
+    ["in production, even with the variable set", "NODE_ENV", "production"],
+  ])("the dev admin cookie is nobody: %s", async (_name, variable, value) => {
+    vi.stubEnv(variable, value);
+    vi.resetModules(); // fresh env cache
+    session.identity = devPlatformAdmin.key;
+
+    expect(await statusOf(guard)).toBe(401);
+    expect(await statusOf(tenantContext)).toBe(401);
+
+    vi.unstubAllEnvs();
+    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+    vi.stubEnv("DEV_AUTH_BYPASS", "1");
   });
 });
