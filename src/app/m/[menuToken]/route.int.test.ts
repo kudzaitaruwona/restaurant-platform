@@ -995,5 +995,59 @@ describe("layout (issue 26)", () => {
   it("has no jump bar on an empty menu", async () => {
     const { menuToken } = await newRestaurant("Bare");
     expect(await page(menuToken)).not.toContain("<nav");
+    expect(await page(menuToken)).toContain("This menu isn't up yet.");
+  });
+
+  /** A restaurant whose only content is bundles (live unless `live` is false), in a category of their own. */
+  async function bundlesOnly(live: boolean, wifiName: string | null = "Guest-Net") {
+    const { id, menuToken } = await newRestaurant("Combos only", "usd_only", wifiName);
+    const combos = await addCategory(id, "Combos");
+    const [{ id: bundleId }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId: combos, name: "Combo", priceUsd: "9", visibility: "special_only" })
+      .returning({ id: menuItems.id });
+    await owner.db
+      .insert(specials)
+      .values({ restaurantId: id, menuItemId: bundleId, title: "Deal", active: live });
+    return { id, menuToken };
+  }
+
+  it("a menu of only live bundles has the Specials section and a bar with just Specials, and is not 'not up yet'", async () => {
+    const { menuToken } = await bundlesOnly(true);
+    const body = await page(menuToken);
+    const nav = /<nav[^>]*>([\s\S]*?)<\/nav>/.exec(body)?.[1] ?? "";
+    expect([...nav.matchAll(/<a href="#([^"]+)">([^<]*)<\/a>/g)].map((m) => [m[1], m[2]])).toEqual([
+      ["specials", "Specials"],
+    ]);
+    expect(body).toContain('<section id="specials"');
+    expect(body).not.toContain("<h2>Combos</h2>");
+    expect(body).not.toMatch(/isn(&#39;|')t up yet/);
+    expect(body).toContain("Wi-Fi: Guest-Net");
+  });
+
+  it("a menu of only bundles that aren't live is the empty menu: no bar, the message, the Wi-Fi line", async () => {
+    const { menuToken } = await bundlesOnly(false);
+    const body = await page(menuToken);
+    expect(body).not.toContain("<nav");
+    expect(body).not.toContain("<section");
+    expect(body).toMatch(/isn(&#39;|')t up yet/);
+    expect(body).toContain("Wi-Fi: Guest-Net");
+  });
+
+  it("every link in the bar has a section, with bundles and an item-less category about", async () => {
+    const { id, menuToken } = await bundlesOnly(true);
+    const mains = await addCategory(id, "Mains", 5);
+    await addItem(id, mains, { name: "Stew", priceUsd: "8" });
+    await addCategory(id, "Empty one", 6);
+    const body = await page(menuToken);
+    const nav = /<nav[^>]*>([\s\S]*?)<\/nav>/.exec(body)?.[1] ?? "";
+    const links = [...nav.matchAll(/<a href="#([^"]+)">([^<]*)<\/a>/g)];
+    expect(links.map((m) => [m[1], m[2]])).toEqual([
+      ["specials", "Specials"],
+      ["c1", "Mains"],
+    ]);
+    for (const [, anchor] of links) expect(body).toContain(`<section id="${anchor}"`);
+    // No ids from the database on the page, only the positional ones.
+    expect([...body.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])).toEqual(["specials", "c1"]);
   });
 });

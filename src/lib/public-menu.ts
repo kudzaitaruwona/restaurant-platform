@@ -130,7 +130,7 @@ function menuPage(menu: Menu) {
   );
   // A plain list of anchors, so it works without JavaScript (spec 02).
   const jumpBar =
-    sections.length > 0 &&
+    (sections.length > 0 || specials) &&
     html`<nav aria-label="Menu sections">${specials && html`<a href="#specials">Specials</a>`}${shown.map(
       (category, index) => html`<a href="#${anchorOf(index)}">${category.name}</a>`,
     )}</nav>`;
@@ -141,7 +141,7 @@ function menuPage(menu: Menu) {
 ${menu.wifiName && html`<p class="wifi">Wi-Fi: ${menu.wifiName}</p>`}
 ${jumpBar}
 ${specials}
-${sections.length > 0 || menu.bundles.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
+${sections.length > 0 || specials ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }
 

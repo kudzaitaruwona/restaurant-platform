@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { categories, exchangeRates, menuItems, restaurants, specials, staff } from "@/db/schema";
 import {
@@ -78,6 +78,27 @@ beforeAll(async () => {
       );
     }
   }
+  // A bundle too, so the Specials section carries one as it does on a real page.
+  const [{ id: categoryId }] = await owner.db
+    .select({ id: categories.id })
+    .from(categories)
+    .where(eq(categories.restaurantId, restaurantId))
+    .limit(1);
+  const [{ id: bundleId }] = await owner.db
+    .insert(menuItems)
+    .values({
+      restaurantId,
+      categoryId,
+      name: "Lunch combo: burger, chips and a drink",
+      description: "A burger, a portion of chips and a cold drink, with sauce on the side.",
+      priceUsd: "12.50",
+      photoKey: `${restaurantId}/${crypto.randomUUID()}`,
+      visibility: "special_only",
+    })
+    .returning({ id: menuItems.id });
+  await owner.db
+    .insert(specials)
+    .values({ restaurantId, menuItemId: bundleId, title: "Lunch combo" });
   const response = await GET(new Request(`http://localhost:3000/m/${menuToken}`), {
     params: Promise.resolve({ menuToken }),
   });
