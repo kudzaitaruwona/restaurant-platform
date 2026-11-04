@@ -10,15 +10,18 @@ import {
   weekdayNames,
   weekdayOrder,
 } from "@/lib/booking-settings";
+import { getEnv } from "@/lib/env";
+import { bookingPageUrl, qrSvg } from "@/lib/qr-code";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { ActionForm } from "../../action-form";
 import { Field, inputClassName } from "../../field";
+import { CopyLinkButton } from "./copy-link-button";
 
 /**
  * Booking settings: owner only (S-26). Switch online booking on or off, set the
  * service periods for each day, and the rules. Spec 04 puts this at
  * /admin/bookings/settings; D-10 (proposed) puts staff pages under /dashboard.
- * Closures and the booking link are separate tickets.
+ * Closures are a separate ticket.
  */
 export async function BookingSettingsScreen() {
   const tenant = await getTenantContext();
@@ -33,6 +36,8 @@ export async function BookingSettingsScreen() {
     bookableTables: readiness.bookableTables,
     contactPhone: readiness.contactPhone,
   });
+  const bookingLink = bookingPageUrl(getEnv().NEXT_PUBLIC_APP_URL, readiness.slug);
+  const bookingQr = await qrSvg(bookingLink);
 
   return (
     <div className="flex flex-col gap-8">
@@ -76,6 +81,31 @@ export async function BookingSettingsScreen() {
           last table that can be booked, make that table walk-ins only, or clear the contact phone.
           Put back what&apos;s missing to turn it on again.
         </p>
+      </section>
+
+      <section className="flex flex-col gap-3" aria-labelledby="booking-link">
+        <h2 id="booking-link" className="text-xl font-semibold">
+          Share your booking page
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Put the link or the code on Instagram, your WhatsApp status or your Google profile.
+          {!settings.enabled && " Guests who open the link will see that online booking is off until you turn it on."}
+        </p>
+        <input
+          readOnly
+          aria-label="Booking link"
+          value={bookingLink}
+          className={inputClassName}
+        />
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+          <CopyLinkButton text={bookingLink} />
+          <div
+            role="img"
+            aria-label="QR code for the booking link"
+            className="w-40 shrink-0 [&>svg]:h-auto [&>svg]:w-full"
+            dangerouslySetInnerHTML={{ __html: bookingQr }}
+          />
+        </div>
       </section>
 
       <section className="flex flex-col gap-4" aria-labelledby="service-periods">

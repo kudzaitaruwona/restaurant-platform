@@ -1,4 +1,5 @@
 import { eq, inArray } from "drizzle-orm";
+import { revalidateTag } from "next/cache";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, diningTables, platformAdmins, restaurants, servicePeriods } from "@/db/schema";
 import {
@@ -16,7 +17,7 @@ import {
   updateServicePeriod,
 } from "./booking-settings";
 
-vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
+vi.mock("next/cache", () => ({ revalidateTag: vi.fn() }));
 
 /** Runs as app_tenant, so everything here also holds under RLS. */
 const owner = openOwnerDatabase();
@@ -305,6 +306,24 @@ describe("turning online booking on", () => {
     expect((await getBookingSettings(restaurant)).enabled).toBe(false);
   });
 
+  it("refreshes the restaurant's public menu once committed, on turning it on or off, but not when refused", async () => {
+    const restaurant = await newRestaurant({ contactPhone: "+263771234567" });
+    const menuTag = `menu:${restaurant.restaurantId}`;
+    vi.mocked(revalidateTag).mockClear();
+
+    await setBookingEnabled(ownerOf(restaurant), true);
+    expect(revalidateTag).not.toHaveBeenCalled();
+
+    await addServicePeriod(ownerOf(restaurant), lunch);
+    await addTable(restaurant.restaurantId);
+    expect(await setBookingEnabled(ownerOf(restaurant), true)).toEqual({ outcome: "saved" });
+    expect(revalidateTag).toHaveBeenCalledWith(menuTag, { expire: 0 });
+
+    vi.mocked(revalidateTag).mockClear();
+    await setBookingEnabled(ownerOf(restaurant), false);
+    expect(revalidateTag).toHaveBeenCalledWith(menuTag, { expire: 0 });
+  });
+
   it("is audited for a platform admin, as enable and disable", async () => {
     const restaurant = await newRestaurant({ contactPhone: "+263771234567" });
     await addServicePeriod(ownerOf(restaurant), lunch);
@@ -323,7 +342,7 @@ describe("turning online booking on", () => {
 });
 
 describe("the readiness the screen lists", () => {
-  it("counts live bookable tables and gives the phone and timezone", async () => {
+  it("counts live bookable tables and gives the phone, timezone and slug", async () => {
     const restaurant = await newRestaurant({ contactPhone: "+263771234567", timezone: "Africa/Johannesburg" });
     await addTable(restaurant.restaurantId);
     await addTable(restaurant.restaurantId, { bookable: false });
@@ -333,6 +352,7 @@ describe("the readiness the screen lists", () => {
       bookableTables: 1,
       contactPhone: "+263771234567",
       timezone: "Africa/Johannesburg",
+      slug: `booking-lib-${restaurant.restaurantId}`,
     });
   });
 

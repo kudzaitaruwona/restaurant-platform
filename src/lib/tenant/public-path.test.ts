@@ -23,6 +23,7 @@ describe("the public path", () => {
     ["the guest's booking route", () => import("@/app/api/r/[slug]/book/route")],
     ["the bookings it reads", () => import("@/lib/bookings")],
     ["the page it renders", () => import("@/lib/public-menu")],
+    ["the booking link it shows", () => import("@/lib/booking-link")],
     ["the menu it reads", () => import("@/lib/menu")],
     ["the tenant scope", () => import("./scope")],
     ["the public seam", () => import("./public")],

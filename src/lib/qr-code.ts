@@ -1,5 +1,6 @@
 import "server-only";
 import QRCode from "qrcode";
+import { bookingPagePath } from "@/lib/booking-link";
 
 /** What a table's printed code encodes (spec 03): no label, no restaurant id. */
 export const tableCodeUrl = (appUrl: string, qrToken: string) =>
@@ -8,6 +9,10 @@ export const tableCodeUrl = (appUrl: string, qrToken: string) =>
 /** What the generic "View our menu" card encodes (spec 03): the restaurant's own menu link. */
 export const menuCodeUrl = (appUrl: string, menuToken: string) =>
   `${appUrl.replace(/\/+$/, "")}/m/${menuToken}`;
+
+/** What the booking link and its QR code point at (spec 04 › Settings). */
+export const bookingPageUrl = (appUrl: string, slug: string) =>
+  `${appUrl.replace(/\/+$/, "")}${bookingPagePath(slug)}`;
 
 /**
  * The code as an SVG string, made here on the server so the print sheet needs no

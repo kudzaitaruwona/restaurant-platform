@@ -1,5 +1,6 @@
 import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
+import { bookAgainPath } from "@/lib/booking-link";
 import { html, trusted } from "@/lib/html";
 import { formatUsd, getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
@@ -25,6 +26,7 @@ const styles = `
 body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
 h1{margin:0 0 1rem;font-size:1.75rem;line-height:1.2}
+.book-again{margin:0 0 1rem}
 h2{margin:2rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
 ul{margin:0;padding:0;list-style:none}
 li{padding:.75rem 0;border-bottom:1px solid var(--line)}
@@ -59,7 +61,11 @@ const itemRow = (item: Item) => html`<li>
 ${item.description && html`<p>${item.description}</p>`}
 </li>`;
 
-function menuPage(menu: Menu) {
+/** Only on a table's page (spec 03), and only while booking is on. */
+const bookAgainLine = (path: string | null) =>
+  path === null ? "" : html`<p class="book-again"><a href="${path}">Book again</a></p>\n`;
+
+function menuPage(menu: Menu, bookAgain: string | null) {
   const sections = menu.categories
     .filter((category) => category.items.length > 0)
     .map(
@@ -72,7 +78,7 @@ function menuPage(menu: Menu) {
   return page(
     menu.restaurantName,
     html`<h1>${menu.restaurantName}</h1>
-${sections.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
+${bookAgainLine(bookAgain)}${sections.length > 0 ? sections : html`<p>This menu isn't up yet.</p>`}`,
   );
 }
 
@@ -111,7 +117,8 @@ async function cachedPage(kind: PublicTokenKind, token: string) {
   // the first visit after a quiet spell would still get the old page.
   cacheLife({ revalidate: FRESH_FOR_SECONDS, expire: FRESH_FOR_SECONDS });
   cacheTag(menuTag(tenant.restaurantId));
-  return menuPage(await getMenu(tenant)).toString();
+  const bookAgain = kind === "table" ? await bookAgainPath(tenant) : null;
+  return menuPage(await getMenu(tenant), bookAgain).toString();
 }
 
 export async function publicMenuResponse(kind: PublicTokenKind, token: string) {
