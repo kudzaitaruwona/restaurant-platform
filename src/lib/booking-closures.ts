@@ -13,7 +13,7 @@ import { recordAdminAction } from "@/lib/tenant/audit";
  * The rule that matters is Postgres's: closures_cover_bookings refuses a closure
  * over a confirmed booking and bookings_within_closure refuses a booking inside
  * one, whichever commits first (migration 0026). The list read first here is for
- * the screen: it is what staff are shown, so they can move or cancel each booking.
+ * the screen: it is what staff are shown, so they can cancel each booking.
  * Spec 01's audit list has no closures, so only a platform admin's are audited.
  *
  * Decided here *(proposed)*, where spec 04 is silent:
@@ -27,7 +27,7 @@ import { recordAdminAction } from "@/lib/tenant/audit";
  *    who is at the door. Staff's Add booking keeps to closures, as there is no
  *    override for it in spec 04.
  *  - A closure starts no earlier than today, ends in the future, runs at most 366
- *    days and ends within two years of today (so any date a form sends is either a
+ *    days (the start and end dates both counted) and ends within two years of today (so any date a form sends is either a
  *    refusal or a safe one), on the restaurant's calendar.
  */
 
@@ -190,7 +190,7 @@ async function blockingBookings(
 const blockedBy = (list: BlockingBooking[]) => ({
   outcome: "blocked" as const,
   message: list.length
-    ? "Those bookings are in the way. Move or cancel each one, then save the closure."
+    ? "Those bookings are in the way. Cancel each one, then save the closure. To keep a guest, add them again at another time."
     : "A booking was just made in that time. Try again.",
   bookings: list,
 });
@@ -260,7 +260,8 @@ export async function addClosure(
       if (request.endDate > addDays(today, MAX_DAYS_AHEAD)) {
         return { outcome: "invalid", message: messages.far };
       }
-      if (request.endDate > addDays(request.startDate, MAX_LENGTH_DAYS)) {
+      // The start and end dates are both days of the closure, so 366 days ends 365 days on.
+      if (request.endDate > addDays(request.startDate, MAX_LENGTH_DAYS - 1)) {
         return { outcome: "invalid", message: messages.long };
       }
 

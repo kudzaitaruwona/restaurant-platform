@@ -6,7 +6,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 /**
  * Adds a closure, from /dashboard/bookings/settings. Owner only (S-26). A closure
  * over confirmed bookings answers 409 with those bookings listed (name, time,
- * party: never a phone) so staff can move or cancel them first.
+ * party: never a phone) so staff can cancel them first.
  */
 export async function POST(request: NextRequest) {
   const tenant = await getTenantContext();

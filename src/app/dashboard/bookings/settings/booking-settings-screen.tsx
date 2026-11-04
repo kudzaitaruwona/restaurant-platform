@@ -186,7 +186,7 @@ export async function BookingSettingsScreen() {
             close whole days, from the start date to the end date; give both times to close part
             of a day. Guests can&apos;t book any time whose sitting would run into a closure. A
             closure can&apos;t be saved over a confirmed booking: you&apos;ll see the bookings
-            first, and move or cancel each one on the bookings page.
+            first, and cancel each one on the bookings page. To keep a guest, add them again at another time.
           </p>
         </div>
         {closures.length === 0 && <p className="text-sm text-muted-foreground">No upcoming closures.</p>}

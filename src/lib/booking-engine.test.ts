@@ -471,6 +471,21 @@ describe("closures", () => {
       expect(open(datesWith([closure], { periods: onlyEarly }), "2026-11-20")).toBe(true);
     });
 
+    it("disables a date whose every sitting runs past midnight into a whole-day closure on the next", () => {
+      // 22:30 and 23:45 both end after midnight with a 120-minute sitting, so the next
+      // day's closure empties this date although it starts exactly where the date ends.
+      const lateNight: Period[] = everyDay("Late", "22:30", "23:45");
+      const nextDay: Closure = { startsAt: instantOf("2026-11-21", "00:00", HARARE), endsAt: instantOf("2026-11-22", "00:00", HARARE) };
+      const days = datesWith([nextDay], { periods: lateNight, party: 5 });
+
+      expect(open(days, "2026-11-20")).toBe(false);
+      expect(open(days, "2026-11-19")).toBe(true);
+      expect(open(days, "2026-11-21")).toBe(false);
+      // A sitting that clears midnight keeps the date open.
+      const short = { ...rules, largePartySittingMinutes: 15 };
+      expect(open(datesWith([nextDay], { periods: lateNight, party: 5, rules: short }), "2026-11-20")).toBe(true);
+    });
+
     it("closes today when a closure takes the rest of it", () => {
       const rest: Closure = { startsAt: instantOf("2026-11-05", "00:00", HARARE), endsAt: instantOf("2026-11-06", "00:00", HARARE) };
       const [today, tomorrow] = datesWith([rest], { now: new Date("2026-11-05T06:00:00Z") });

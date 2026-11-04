@@ -275,11 +275,17 @@ export function bookableDates(input: {
   );
   return Array.from({ length: rules.maxDaysAhead + 1 }, (_, days) => {
     const date = addDays(today, days);
-    const touched = closures.some(
-      (closure) =>
-        closure.startsAt < instantOf(addDays(date, 1), "00:00", timezone) &&
-        instantOf(date, "00:00", timezone) < closure.endsAt,
-    );
+    // A sitting starts on `date` and may run on past its midnight, so a closure
+    // starting up to a sitting after the date's end can still take its times.
+    // Worked out once per date, and only when there is a closure to compare.
+    let touched = false;
+    if (closures.length > 0) {
+      const dayStart = instantOf(date, "00:00", timezone);
+      const reach = instantOf(addDays(date, 1), "00:00", timezone).getTime() + sittingMinutes * MINUTE;
+      touched = closures.some(
+        (closure) => closure.startsAt.getTime() < reach && dayStart < closure.endsAt,
+      );
+    }
     const open =
       date > leadTimeEnds && !touched
         ? periods.some((period) => period.weekday === weekdayOf(date))

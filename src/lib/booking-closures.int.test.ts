@@ -95,6 +95,19 @@ const timesOn = async (restaurantId: string, party = 2, onDate = date) =>
 const closeEvening = (restaurantId: string) =>
   addClosure(actor(restaurantId), parsed({ startDate: date, startTime: "19:00", endTime: "22:00" }), now);
 
+/** The backend that waits on `holder`'s lock: the one thing that proves the save is past its read. */
+const waitUntilSomeoneWaitsOn = (holder: number) =>
+  vi.waitFor(
+    async () => {
+      const { rows } = await owner.db.execute<{ pid: number }>(sql`
+        select pid from pg_stat_activity
+        where wait_event_type = 'Lock' and ${holder} = any(pg_blocking_pids(pid))
+      `);
+      expect(rows).not.toEqual([]);
+    },
+    { timeout: 5_000, interval: 20 },
+  );
+
 describe("what a form can say", () => {
   it("is a start date alone, which is that whole date", () => {
     expect(parsed({ startDate: "2026-12-25" })).toEqual({
@@ -235,6 +248,30 @@ describe("saving a closure", () => {
     expect(await closuresOf(restaurantId)).toEqual([]);
   });
 
+  it("accepts the last start-to-end length and refuses the first one over: 366 days, both dates counted", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(await addClosure(actor(restaurantId), parsed({ startDate: day(1), endDate: day(1 + 365) }), now)).toMatchObject({
+      outcome: "saved",
+    });
+    expect(await addClosure(actor(restaurantId), parsed({ startDate: day(1), endDate: day(1 + 366) }), now)).toEqual({
+      outcome: "invalid",
+      message: "A closure can run for 366 days at most.",
+    });
+  });
+
+  it("accepts a closure ending two years (730 days) from today and refuses one a day later", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    expect(await addClosure(actor(restaurantId), parsed({ startDate: day(700), endDate: day(730) }), now)).toMatchObject({
+      outcome: "saved",
+    });
+    expect(await addClosure(actor(restaurantId), parsed({ startDate: day(700), endDate: day(731) }), now)).toEqual({
+      outcome: "invalid",
+      message: "A closure can't end more than two years from today.",
+    });
+  });
+
   it("allows a closure beginning earlier today and running on: a private event under way", async () => {
     const { restaurantId } = await bookableRestaurant(owner.db);
 
@@ -307,7 +344,7 @@ describe("saving over bookings", () => {
     expect(await closuresOf(restaurantId)).toEqual([]);
   });
 
-  it("saves once those bookings are cancelled or moved out of the time", async () => {
+  it("saves once those bookings are cancelled", async () => {
     const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
     await book(restaurantId, one);
     expect(await closeEvening(restaurantId)).toMatchObject({ outcome: "blocked" });
@@ -335,15 +372,39 @@ describe("saving over bookings", () => {
   });
 
   it("answers a refusal by the database with the list as it stands, not an error", async () => {
-    // The pre-read is skipped by making the list empty at read time and the guard decide:
-    // a booking inserted by another connection after the owner's read is the real race, which
-    // the file below runs against the real functions. Here, the answer when the guard refuses.
+    // A booking another connection has written but not committed is invisible to the save's
+    // list, so the list is empty and the insert goes ahead. Its trigger then waits on the
+    // booking's shared lock; once the booking commits the guard refuses, and that refusal is
+    // what is answered (the catch in addClosure), with the booking now in the list.
     const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
-    await book(restaurantId, one);
+    const other = await owner.pool.connect();
+    try {
+      await other.query("begin");
+      await other.query(
+        `insert into bookings (restaurant_id, table_id, guest_name, guest_phone, whatsapp_opt_in, party_size,
+           starts_at, ends_at, hold_ends_at, status, source, manage_token)
+         values ($1, $2, 'Rudo Chikwanha', '+263772223333', true, 2, $3, $4, $5, 'confirmed', 'online', $6)`,
+        [
+          restaurantId,
+          one,
+          `${date}T17:00:00Z`,
+          `${date}T18:30:00Z`,
+          `${date}T18:45:00Z`,
+          crypto.randomUUID().replaceAll("-", ""),
+        ],
+      );
+      const { rows } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
 
-    const result = await closeEvening(restaurantId);
+      const saving = closeEvening(restaurantId);
+      await waitUntilSomeoneWaitsOn(rows[0].pid);
+      await other.query("commit");
+      const result = await saving;
 
-    expect(result).toMatchObject({ outcome: "blocked", bookings: [{ guestName: "Rudo Chikwanha" }] });
+      expect(result).toMatchObject({ outcome: "blocked", bookings: [{ guestName: "Rudo Chikwanha" }] });
+      expect(await closuresOf(restaurantId)).toEqual([]);
+    } finally {
+      other.release(true);
+    }
   });
 });
 
@@ -487,6 +548,50 @@ describe("a confirm and a closure save started together", () => {
       expect(inside).toEqual([]);
     },
   );
+});
+
+describe("a closure committed between a booking's read and its insert", () => {
+  // The closure is written, not committed, on another connection: the read doesn't see it,
+  // the insert's trigger waits on its lock, and the commit lets the guard decide.
+  async function closureCommittedDuringInsert<T>(restaurantId: string, booking: () => Promise<T>) {
+    const other = await owner.pool.connect();
+    try {
+      await other.query("begin");
+      await other.query(
+        "insert into closures (restaurant_id, starts_at, ends_at) values ($1, $2, $3)",
+        [restaurantId, `${date}T17:00:00Z`, `${date}T20:00:00Z`],
+      );
+      const { rows } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
+      const booked = booking();
+      await waitUntilSomeoneWaitsOn(rows[0].pid);
+      await other.query("commit");
+      return await booked;
+    } finally {
+      other.release(true);
+    }
+  }
+
+  it("is time unavailable for staff's Add booking, not an error", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    const result = await closureCommittedDuringInsert(restaurantId, () =>
+      addStaffBooking(actor(restaurantId), staffRequest({ time: "19:00" }), now),
+    );
+
+    expect(result).toEqual({ outcome: "time_unavailable" });
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("is the race-lost answer for a guest's confirm, with the times that are left", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    const result = await closureCommittedDuringInsert(restaurantId, () =>
+      confirmBooking({ restaurantId }, guest({ time: "19:00" }), now),
+    );
+
+    expect(result).toMatchObject({ outcome: "race_lost" });
+    expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
+  });
 });
 
 describe("listing and removing", () => {
