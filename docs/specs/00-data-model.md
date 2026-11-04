@@ -5,7 +5,7 @@ This is a reference schema written as Postgres-style pseudocode. It is not a mig
 ## Ground rules (decided)
 
 - **Every table carries `restaurant_id`.** Every foreign key between tenant tables is composite, for example `(restaurant_id, session_id)`, so a bug in the app can't link rows across restaurants. **Notation:** in the pseudocode below, `x_id → parent` is shorthand for the composite FK `(restaurant_id, x_id) → parent(restaurant_id, id)`, and every tenant parent table has `UNIQUE (restaurant_id, id)` to support it.
-- **Every "who did this" column points to `staff`.** When the platform admin enters a restaurant, the system creates (once) a shadow staff row in that tenant with `kind = platform_admin`. There is one per restaurant, shared by every platform admin (S-28). That row has no email and can't log in. Admin actions then satisfy the same FKs as staff actions, and the audit log still records `actor_type = platform_admin`.
+- **Every "who did this" column points to `staff`**, except `audit_log.actor_id`, which holds a `platform_admins` id (S-29), and *(proposed, S-33)* `onboarding_checklist.qr_codes_printed_by`, which does the same with no foreign key. When the platform admin enters a restaurant, the system creates (once) a shadow staff row in that tenant with `kind = platform_admin`. There is one per restaurant, shared by every platform admin (S-28). That row has no email and can't log in. Admin actions then satisfy the same FKs as staff actions, and the audit log still records `actor_type = platform_admin`.
 - **Row-level security on `restaurant_id`** sits on top of the composite keys as a second layer.
 - **Nothing customer-facing is hard-deleted.** Menu items and tables use `archived_at`.
 - **All timestamps are `timestamptz`.** Each restaurant has a `timezone`, which defaults to `Africa/Harare` (CAT, UTC+2, no daylight saving). Opening hours are local `time` values and are interpreted in that zone.
@@ -50,9 +50,9 @@ staff
 platform_admins                               -- Kudzai, for hand-onboarding
   id, email unique, created_at                -- case-insensitive; passwordless sign-in (S-27)
 
-onboarding_checklist                          -- S-33: admin only (app_tenant has no privilege); a row means "QR codes printed" is ticked
+onboarding_checklist                          -- (proposed, S-33) separate table; admin only (app_tenant has no privilege); a row means "QR codes printed" is ticked (proposed)
   restaurant_id         pk → restaurants    -- cascade; the other checklist items are derived, not stored
-  qr_codes_printed_at, qr_codes_printed_by    -- an admin's id, no foreign key (revoking an admin deletes their row)
+  qr_codes_printed_at, qr_codes_printed_by    -- an admin's id, no foreign key (proposed; revoking an admin deletes their row)
 
 audit_log
   id, restaurant_id

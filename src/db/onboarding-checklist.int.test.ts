@@ -187,11 +187,27 @@ describe("platform_onboarding_checklist", () => {
     });
   });
 
-  it("never counts a usd_only restaurant's exchange rate as set, since none is needed (proposed, see spec 01)", async () => {
+  it("leaves a usd_only restaurant's exchange rate undone until a rate row exists, though none is needed (proposed, see spec 01)", async () => {
     const { rows } = await admin.db.execute<{ id: string }>(
       sql`select platform_create_restaurant(${adminId}, 'UsdOnly', ${`usd-${crypto.randomUUID()}`}, 'Africa/Harare', 'usd_only') as id`,
     );
     expect((await checklistOf(rows[0].id))?.exchange_rate_set).toBe(false);
+  });
+
+  it("counts a usd_only restaurant's saved rate as set: the rule ignores currency_mode (proposed, see spec 01)", async () => {
+    const { rows } = await admin.db.execute<{ id: string }>(
+      sql`select platform_create_restaurant(${adminId}, 'UsdOnlyRate', ${`usd-${crypto.randomUUID()}`}, 'Africa/Harare', 'usd_only') as id`,
+    );
+    const id = rows[0].id;
+    const [member] = await owner.db
+      .insert(staff)
+      .values({ restaurantId: id, displayName: "Shadow", kind: "platform_admin", role: "owner" })
+      .returning();
+    await owner.db
+      .insert(exchangeRates)
+      .values({ restaurantId: id, usdToZig: "27", setBy: member.id });
+
+    expect((await checklistOf(id))?.exchange_rate_set).toBe(true);
   });
 
   it("refuses an id that isn't a platform admin's", async () => {
