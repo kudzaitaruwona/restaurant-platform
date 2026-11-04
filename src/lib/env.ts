@@ -4,8 +4,9 @@ import { z } from "zod";
  * Environment variables, validated with zod.
  *
  * Required: what the app needs to serve any request today (database, public
- * URL, photo storage). Required in production: sign-in, which development can
- * do without (it has the dev bypass, and prints emails to the console).
+ * URL, photo storage). Required in production: sign-in and the admin login,
+ * which development can do without (it has the dev bypass, and prints emails to
+ * the console).
  * Optional: variables owned by later tickets (WhatsApp, Turnstile, the
  * scheduled job) and the migration/system database URLs, which only scripts and
  * specific routes load. A later ticket that starts depending on one of them
@@ -20,6 +21,13 @@ import { z } from "zod";
  * db/migrations and provisionAppRole.
  */
 export const APP_DATABASE_ROLE = "app_tenant";
+
+/**
+ * The role the admin path connects as (S-28): the only one that can call the
+ * platform_* functions or touch the admin_auth_* tables, and nothing else. RLS
+ * applies to it too, and provisionAppRole holds it to the same rules.
+ */
+export const ADMIN_DATABASE_ROLE = "app_admin";
 
 const blankToUndefined = (value: unknown) => (value === "" ? undefined : value);
 
@@ -55,12 +63,20 @@ const r2PublicBaseUrl = text()
   })
   .transform((value) => value.replace(/\/+$/, ""));
 
+const connectsAs = (role: string, purpose: string) =>
+  postgresUrl().refine(
+    (value) => URL.canParse(value) && new URL(value).username === role,
+    { message: `must connect as ${role}, ${purpose}` },
+  );
+
 // Any other role could be exempt from RLS, and nothing would look wrong: every
 // query would just quietly see every tenant.
-const appDatabaseUrl = postgresUrl().refine(
-  (value) =>
-    URL.canParse(value) && new URL(value).username === APP_DATABASE_ROLE,
-  { message: `must connect as ${APP_DATABASE_ROLE}, the role RLS applies to` },
+const appDatabaseUrl = connectsAs(APP_DATABASE_ROLE, "the role RLS applies to");
+
+// app_tenant here would put the admin path back in reach of tenant code.
+const adminDatabaseUrl = connectsAs(
+  ADMIN_DATABASE_ROLE,
+  "the role only the admin path uses",
 );
 
 const configShape = {
@@ -69,6 +85,8 @@ const configShape = {
   DATABASE_URL: required(appDatabaseUrl),
   DATABASE_URL_UNPOOLED: optional(postgresUrl()),
   DATABASE_URL_SYSTEM: optional(postgresUrl()),
+  // The admin path's role (S-28). Only src/db/admin.ts opens it.
+  DATABASE_URL_ADMIN: optional(adminDatabaseUrl),
   // Local development and CI only: host:port/path of a Neon wsproxy in front
   // of a plain Postgres. Refused in production: setting it turns off TLS to the
   // database for the whole process (src/db/client.ts).
@@ -113,6 +131,7 @@ const configShape = {
 const developmentOnlyKeys = ["DEV_AUTH_BYPASS", "NEON_WS_PROXY"] as const;
 
 const productionOnlyKeys = [
+  "DATABASE_URL_ADMIN",
   "AUTH_SECRET",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",

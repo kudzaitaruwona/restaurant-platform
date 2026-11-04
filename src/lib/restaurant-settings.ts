@@ -3,11 +3,12 @@ import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { currencyMode, restaurants } from "@/db/schema";
 import { type TenantContext, withTenant } from "@/lib/tenant";
+import { recordAdminAction } from "@/lib/tenant/audit";
 
 /**
  * Restaurant settings, owner only (S-26): callers check requireOwner(ctx).
  * Holds the Wi-Fi password, so nothing here logs or audits the values. Settings
- * edits aren't on spec 01's audit list.
+ * edits aren't on spec 01's audit list, so only a platform admin's are recorded.
  */
 
 type Tenant = Pick<TenantContext, "restaurantId">;
@@ -116,7 +117,7 @@ export async function getRestaurantSettings(
  * name that has since fallen out of either list must not block other edits.
  */
 export async function updateRestaurantSettings(
-  ctx: Tenant,
+  ctx: Tenant & Pick<TenantContext, "platformAdminId">,
   settings: RestaurantSettings,
 ): Promise<"saved" | "invalid_timezone"> {
   return withTenant(ctx, async (tx) => {
@@ -135,6 +136,11 @@ export async function updateRestaurantSettings(
       .update(restaurants)
       .set(settings)
       .where(eq(restaurants.id, ctx.restaurantId));
+    await recordAdminAction(tx, ctx, {
+      action: "restaurant.update",
+      entityType: "restaurant",
+      entityId: ctx.restaurantId,
+    });
     return "saved";
   });
 }

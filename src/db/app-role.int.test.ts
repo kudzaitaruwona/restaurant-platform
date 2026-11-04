@@ -2,10 +2,13 @@ import { inspect } from "node:util";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
+  adminDatabaseSettings,
+  openAdminDatabase,
   openOwnerDatabase,
   ownerDatabaseSettings,
   testDatabaseSettings,
 } from "../../test/integration/database";
+import { ADMIN_DATABASE_ROLE } from "../lib/env";
 import { provisionAppRole } from "./app-role";
 
 describe("provisionAppRole when the database refuses", () => {
@@ -28,6 +31,35 @@ describe("provisionAppRole when the database refuses", () => {
     expect(printed(error)).not.toContain(password);
     expect(printed(error)).not.toMatch(/alter role/i);
     expect((error as Error).cause).toBeUndefined();
+  });
+});
+
+describe("provisionAppRole on the admin role", () => {
+  it("is safe to run again, leaving it able to log in", async () => {
+    const owner = openOwnerDatabase();
+    const admin = openAdminDatabase();
+    try {
+      await provisionAppRole(
+        ownerDatabaseSettings(),
+        adminDatabaseSettings().connectionString,
+        ADMIN_DATABASE_ROLE,
+      );
+
+      const { rows } = await admin.db.execute(sql`select current_user as name`);
+      expect(rows).toEqual([{ name: ADMIN_DATABASE_ROLE }]);
+    } finally {
+      await Promise.all([owner.pool.end(), admin.pool.end()]);
+    }
+  });
+
+  it("refuses the app's URL: each role takes the password from its own", async () => {
+    await expect(
+      provisionAppRole(
+        ownerDatabaseSettings(),
+        testDatabaseSettings().connectionString,
+        ADMIN_DATABASE_ROLE,
+      ),
+    ).rejects.toThrow(/must log in as app_admin/);
   });
 });
 

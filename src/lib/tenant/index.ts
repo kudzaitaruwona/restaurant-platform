@@ -6,9 +6,10 @@ import { forbidden, unauthorized } from "next/navigation";
 import { getDb } from "@/db";
 import type { Database } from "@/db/client";
 import { staff } from "@/db/schema";
-import { sessionEmail } from "@/lib/auth";
+import { sessionOf } from "@/lib/auth";
 import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
+import { enteredRestaurant } from "./admin-entry";
 import {
   defaultDevIdentity,
   DEV_IDENTITY_COOKIE,
@@ -25,6 +26,12 @@ export type TenantContext = {
   restaurantId: string;
   staffId: string;
   role: "owner" | "staff";
+  /**
+   * Set only for a platform admin who has entered this restaurant: `staffId` is
+   * then the shadow row, and this is who really acts. What audit_log records
+   * (S-29), so pass the whole context along, not a part of it.
+   */
+  platformAdminId?: string;
 };
 
 export type TenantTransaction = Parameters<
@@ -49,24 +56,47 @@ export function withTenant<T>(
 }
 
 /** The platform admin a real admin session belongs to, if any. */
-export async function sessionPlatformAdminId(requestHeaders: Headers) {
-  const email = await sessionEmail("admin", requestHeaders);
-  return email ? findPlatformAdminId(email) : undefined;
+export async function sessionPlatformAdmin(requestHeaders: Headers) {
+  const session = await sessionOf("admin", requestHeaders);
+  const platformAdminId = session && (await findPlatformAdminId(session.email));
+  return platformAdminId ? { platformAdminId, sessionId: session.id } : undefined;
+}
+
+/**
+ * The tenant a platform admin is inside, if any. The shadow row is always an
+ * owner: Postgres won't let it be anything else (staff_shadow_row).
+ */
+async function enteredContext(admin: {
+  platformAdminId: string;
+  sessionId: string;
+}): Promise<TenantContext | undefined> {
+  const entry = await enteredRestaurant(admin.sessionId);
+  return entry && {
+    ...entry,
+    role: "owner",
+    platformAdminId: admin.platformAdminId,
+  };
 }
 
 /**
  * Who the real session says this is. findStaffIdentity runs on every request,
  * not just at sign-in, so deactivating someone logs them out on their next one.
- * A platform admin has no tenant, so gets the 403 the dev bypass gives them
- * rather than being told they're signed out.
+ * Entering a restaurant is a deliberate act, so it wins over a staff session in
+ * the same browser. A platform admin who hasn't entered one has no tenant, so
+ * gets the 403 the dev bypass gives them rather than being told they're signed
+ * out.
  */
-async function sessionIdentity() {
+async function sessionIdentity(): Promise<TenantContext | undefined> {
   // First, because reading headers is what keeps pages that call this out of
   // `next build`, which has no secrets to build a session with.
   const requestHeaders = await headers();
-  const email = await sessionEmail("staff", requestHeaders);
-  const member = email ? await findStaffIdentity(email) : undefined;
-  if (!member && (await sessionPlatformAdminId(requestHeaders))) forbidden();
+  const admin = await sessionPlatformAdmin(requestHeaders);
+  const entered = admin && (await enteredContext(admin));
+  if (entered) return entered;
+
+  const session = await sessionOf("staff", requestHeaders);
+  const member = session ? await findStaffIdentity(session.email) : undefined;
+  if (!member && admin) forbidden();
   return member;
 }
 
@@ -85,7 +115,7 @@ export async function currentIdentity() {
  * The only source of tenant identity: the restaurant ID always comes from here,
  * never from request input. Ends the request with a 401 for anyone without an
  * active staff record, and a 403 for a platform admin, who has no tenant until
- * entering a restaurant (ticket 1.3).
+ * entering a restaurant. Once inside, they get its shadow staff row, as an owner.
  */
 export const getTenantContext = cache(async (): Promise<TenantContext> => {
   if (!devAuthBypassEnabled()) {
@@ -96,7 +126,11 @@ export const getTenantContext = cache(async (): Promise<TenantContext> => {
 
   const identity = await currentIdentity();
   if (!identity) unauthorized();
-  if ("platformAdminId" in identity) forbidden();
+  if ("platformAdminId" in identity) {
+    const entered = await enteredContext(identity);
+    if (!entered) forbidden();
+    return entered;
+  }
 
   const { restaurantId, staffId } = identity;
   const [member] = await withTenant({ restaurantId }, (tx) =>

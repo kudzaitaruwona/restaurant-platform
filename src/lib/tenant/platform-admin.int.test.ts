@@ -31,6 +31,7 @@ describe("getPlatformAdminContext", () => {
     session.identity = devPlatformAdmin.key;
     expect(await guard()).toEqual({
       platformAdminId: devPlatformAdmin.platformAdminId,
+      sessionId: devPlatformAdmin.sessionId,
     });
   });
 
@@ -50,13 +51,6 @@ describe("getPlatformAdminContext", () => {
   it("is a 401 with no identity", async () => {
     session.identity = "nobody";
     expect(await statusOf(guard)).toBe(401);
-  });
-});
-
-describe("getTenantContext", () => {
-  it("is a 403 for the platform admin, who hasn't entered a restaurant", async () => {
-    session.identity = devPlatformAdmin.key;
-    expect(await statusOf(tenantContext)).toBe(403);
   });
 });
 

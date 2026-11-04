@@ -93,7 +93,7 @@ describe("the last active owner", () => {
     const { ownerId } = await restaurantWithOwner();
 
     await expect(
-      owner.db.execute(sql`update staff set kind = 'platform_admin' where id = ${ownerId}`),
+      owner.db.execute(sql`update staff set kind = 'platform_admin', email = null where id = ${ownerId}`),
     ).rejects.toMatchObject(LAST_OWNER);
   });
 
@@ -180,7 +180,7 @@ describe("what the rule leaves alone", () => {
     const shadow = await addMember(restaurantId, { kind: "platform_admin" });
 
     await asTenant(restaurantId, sql`update staff set active = false where id = ${colleague}`);
-    await asTenant(restaurantId, sql`update staff set active = false where id = ${shadow}`);
+    await asTenant(restaurantId, sql`delete from staff where id = ${shadow}`);
     await asTenant(restaurantId, sql`delete from staff where id = ${colleague}`);
   });
 
@@ -194,7 +194,7 @@ describe("what the rule leaves alone", () => {
     const { restaurantId } = await restaurantWithOwner();
     const shadow = await addMember(restaurantId, { kind: "platform_admin" });
 
-    await asTenant(restaurantId, sql`update staff set active = false where id = ${shadow}`);
+    await asTenant(restaurantId, sql`delete from staff where id = ${shadow}`);
 
     expect(await activeOwners(restaurantId)).toBe(1);
   });

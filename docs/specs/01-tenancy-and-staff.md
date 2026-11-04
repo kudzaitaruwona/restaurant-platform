@@ -26,7 +26,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ## Requirements
 
 ### Tenant context and deferred auth (decided, S-25)
-- `getTenantContext()` is the only source of tenant identity. It returns `{ restaurantId, staffId, role }`, and refuses inactive staff.
+- `getTenantContext()` is the only source of tenant identity. It returns `{ restaurantId, staffId, role }`, and refuses inactive staff. For a platform admin inside a restaurant, `staffId` is the shadow row and the context also carries `platformAdminId`, which is what gets audited (S-29).
 - `withTenant(ctx, fn)` runs `fn` in a transaction that first sets `app.restaurant_id`. Every tenant query goes through it.
 - Until real login ships, `DEV_AUTH_BYPASS` makes `getTenantContext()` return a seeded identity. The seed has two restaurants, each with one owner and one staff member, and a dev-only switcher swaps between them.
 - **The app refuses to start if `DEV_AUTH_BYPASS` is set in production**, with a test.
@@ -36,7 +36,8 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
 - **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept.
 - **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
-- **Admin routes:** a platform admin works across tenants, so `POST /api/admin/restaurants/[restaurantId]/owner` takes the restaurant ID from the URL, the one exception to taking it from the session. It passes only to `platform_create_first_owner`, behind `getPlatformAdminContext()`, and that refuses a restaurant that already has staff (S-28).
+- **Admin routes:** a platform admin works across tenants, so two routes take the restaurant ID from the URL, the only exceptions to taking it from the session (S-28). `POST /api/admin/restaurants/[restaurantId]/owner` passes it only to `platform_create_first_owner`, which refuses a restaurant that already has staff. `POST /api/admin/restaurants/[restaurantId]/enter` passes it only to `platform_enter_restaurant`, and from then on the ID comes from the session. Both sit behind `getPlatformAdminContext()`.
+- **The admin path has its own database login,** `app_admin` (`DATABASE_URL_ADMIN`), which only the admin seam loads. Only it can run the `platform_*` functions or touch `admin_auth_*`. `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28).
 - **System routes** (the scheduled job and the Meta webhook, spec 05) work across all tenants. They use a separate database role with `BYPASSRLS`, whose credentials only those two route handlers load. They must still filter by `restaurant_id` explicitly whenever they act on one booking.
 - Postgres RLS policies on every tenant table use `current_setting('app.restaurant_id')`, set per transaction.
 - Composite foreign keys (see spec 00) are the backstop.
@@ -53,9 +54,11 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ### Platform admin and onboarding
 - Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26).
 - "Enter restaurant" switches the admin into that tenant's staff UI, with a persistent banner reading "Acting as admin in {restaurant}".
-- Entering a restaurant for the first time creates a shadow `staff` row (`kind = platform_admin`, `role = owner`, which can't log in) so the admin's actions satisfy the `→ staff` foreign keys (spec 00). The shadow row passes owner permission checks but is excluded from the soft-limit count and the last-owner rule (S-26).
+- A restaurant can be entered before it has an owner. Its first staff record is still its owner (S-26), so until there is one the staff screen adds only an owner.
+- Entering a restaurant for the first time creates a shadow `staff` row (`kind = platform_admin`, `role = owner`, which can't log in) so the admin's actions satisfy the `→ staff` foreign keys (spec 00). There is one per restaurant, however many first entries race, and Postgres enforces that and its shape. The shadow row passes owner permission checks but is excluded from the soft-limit count and the last-owner rule (S-26), and no staff screen or route shows it.
+- The entered restaurant is held against the admin's session in Postgres, never in anything the browser can edit. Leaving, signing out or the session ending drops the admin out of the tenant (S-28).
 - In development, the dev switcher also offers a platform-admin identity.
-- Every admin action inside a tenant is written to `audit_log` with `actor_type = platform_admin`.
+- Every admin action inside a tenant is written to `audit_log` with `actor_type = platform_admin`, including writes that aren't on the audit list below when staff make them, and so is each entry and leaving. Going straight to another restaurant and signing out inside one both count as leaving. A session expiring on its own isn't audited, because no one acted, and reads aren't audited *(proposed)* (S-28).
 - Onboarding checklist per restaurant: menu entered, photos, exchange rate set, tables added, QR codes printed, booking hours set, and booking enabled.
 
 ### Restaurant settings and staff management (owner only)

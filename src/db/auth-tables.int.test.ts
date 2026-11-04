@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  openAdminDatabase,
   openOwnerDatabase,
   openTestDatabase,
 } from "../../test/integration/database";
@@ -8,15 +9,17 @@ import { devIdentities } from "../lib/tenant/dev-identities";
 import { staff, staffAuthSession, staffAuthUser } from "./schema";
 
 /**
- * Better Auth's tables hold sessions and sign-in tokens. app_tenant has to use
- * them before any tenant is known, so they can't have a tenant policy. Instead
- * they're visible only OUTSIDE a tenant: nothing inside withTenant() can read
- * or touch a credential, and that is all the code the app runs on tenant data.
+ * Better Auth's tables hold sessions and sign-in tokens. They're used before any
+ * tenant is known, so they can't have a tenant policy. Instead they're visible
+ * only OUTSIDE a tenant: nothing inside withTenant() can read or touch a
+ * credential, and that is all the code the app runs on tenant data. The staff
+ * tables are app_tenant's and the admin tables app_admin's, and
+ * admin-role.int.test.ts proves app_tenant can't reach the admin ones at all.
  */
 const app = openTestDatabase();
+const adminLogin = openAdminDatabase();
 const owner = openOwnerDatabase();
 
-const prefixes = ["staff", "admin"];
 const models = [
   "user",
   "session",
@@ -25,9 +28,10 @@ const models = [
   "rate_limit",
   "code_limit",
 ];
-const tables = prefixes.flatMap((prefix) =>
-  models.map((model) => `${prefix}_auth_${model}`),
-);
+const tablesOf = (prefix: string) =>
+  models.map((model) => `${prefix}_auth_${model}`);
+const adminTables = [...tablesOf("admin"), "admin_auth_entry"];
+const tables = [...tablesOf("staff"), ...adminTables];
 
 const [aOwner] = devIdentities;
 const userId = `user-${crypto.randomUUID()}`;
@@ -57,11 +61,11 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.db.delete(staffAuthUser).where(eq(staffAuthUser.id, userId));
-  await Promise.all([app.pool.end(), owner.pool.end()]);
+  await Promise.all([app.pool.end(), adminLogin.pool.end(), owner.pool.end()]);
 });
 
-const insideATenant = <T>(fn: (tx: typeof app.db) => Promise<T>) =>
-  app.db.transaction(async (tx) => {
+const insideATenant = <T>(fn: (tx: typeof app.db) => Promise<T>, login = app) =>
+  login.db.transaction(async (tx) => {
     await tx.execute(
       sql`select set_config('app.restaurant_id', ${aOwner.restaurantId}, true)`,
     );
@@ -128,12 +132,21 @@ describe("as app_tenant", () => {
     }
   });
 
-  it.each(tables)("inside a tenant, %s shows nothing", async (table) => {
-    const { rows } = await insideATenant((tx) =>
-      tx.execute(sql`select count(*)::int as count from ${sql.identifier(table)}`),
-    );
+  const countIn = (table: string) => (tx: typeof app.db) =>
+    tx.execute(sql`select count(*)::int as count from ${sql.identifier(table)}`);
+
+  it.each(tablesOf("staff"))("inside a tenant, %s shows nothing", async (table) => {
+    const { rows } = await insideATenant(countIn(table));
     expect(rows).toEqual([{ count: 0 }]);
   });
+
+  it.each(adminTables)(
+    "even the admin login sees nothing of %s inside a tenant",
+    async (table) => {
+      const { rows } = await insideATenant(countIn(table), adminLogin);
+      expect(rows).toEqual([{ count: 0 }]);
+    },
+  );
 
   it("inside a tenant, a session can't be forged", async () => {
     await expect(

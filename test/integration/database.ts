@@ -24,10 +24,19 @@ export function testDatabaseSettings() {
   return settingsFor("TEST_DATABASE_URL_APP");
 }
 
+/** The admin path's role, app_admin: the only one the platform_* functions take. */
+export function adminDatabaseSettings() {
+  return settingsFor("TEST_DATABASE_URL_ADMIN");
+}
+
 export function openOwnerDatabase() {
   return createDatabase(ownerDatabaseSettings());
 }
 
 export function openTestDatabase() {
   return createDatabase(testDatabaseSettings());
+}
+
+export function openAdminDatabase() {
+  return createDatabase(adminDatabaseSettings());
 }
