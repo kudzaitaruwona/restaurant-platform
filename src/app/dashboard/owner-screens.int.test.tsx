@@ -15,7 +15,7 @@ import { POST as addTable } from "@/app/api/tables/route";
 import { categories, diningTables, restaurants, staff } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
-import { qrSvg, tableCodeUrl } from "@/lib/qr-code";
+import { menuCodeUrl, qrSvg, tableCodeUrl } from "@/lib/qr-code";
 import type { TenantContext } from "@/lib/tenant";
 import {
   openOwnerDatabase,
@@ -549,6 +549,148 @@ describe("/dashboard/tables/print", () => {
     expect(html).toContain("break-inside-avoid");
   });
 
+  it("fits three rows of cards in the A4 page: 3 x card height is within 297mm less margins", async () => {
+    await newTable("1");
+    const html = await screen(PrintSheet);
+    const margin = Number(/@page\{size:A4;margin:(\d+)mm\}/.exec(html)?.[1]);
+    const card = Number(/print:h-\[(\d+)mm\]/.exec(html)?.[1]);
+    expect(margin).toBeGreaterThan(0);
+    expect(card * 3).toBeLessThanOrEqual(297 - 2 * margin);
+    expect(html).toContain("print:gap-0");
+  });
+
+  describe("options", () => {
+    const render = (query: Record<string, string | string[]>) =>
+      screen(() => PrintSheet({ searchParams: Promise.resolve(query) }));
+    const cardsIn = (html: string) => html.match(/<li class="flex flex-col/g)?.length ?? 0;
+    const idOf = async (label: string) =>
+      (
+        await owner.db
+          .select({ id: diningTables.id })
+          .from(diningTables)
+          .where(and(eq(diningTables.restaurantId, tenant.restaurantId), eq(diningTables.label, label)))
+      )[0].id;
+
+    it("prints every table by default, with no menu card", async () => {
+      await newTable("A");
+      await newTable("B");
+      const html = await render({});
+      expect(cardsIn(html)).toBe(2);
+      expect(html).not.toContain("View our menu</p>");
+    });
+
+    it("prints only the selected tables", async () => {
+      await newTable("Alpha");
+      await newTable("Bravo");
+      await newTable("Charlie");
+      const html = await render({ scope: "selected", table: [await idOf("Bravo")] });
+      expect(cardsIn(html)).toBe(1);
+      expect(html).toContain(">Bravo</p>");
+      expect(html).not.toContain(">Alpha</p>");
+      expect(html).not.toContain(">Charlie</p>");
+    });
+
+    it("selected with nothing ticked prints no card and says so", async () => {
+      await newTable("Alpha");
+      const html = await render({ scope: "selected" });
+      expect(cardsIn(html)).toBe(0);
+      expect(html).toContain("Tick at least one table");
+    });
+
+    it("never renders a card for another restaurant's table id", async () => {
+      await newTable("Mine");
+      const otherId = crypto.randomUUID();
+      await owner.db.insert(restaurants).values({
+        id: otherId,
+        name: "Other place",
+        slug: `screens-${otherId}`,
+        menuToken: otherId,
+        currencyMode: "usd_only",
+      });
+      const [{ id: theirTable }] = await owner.db
+        .insert(diningTables)
+        .values({ restaurantId: otherId, label: "Theirs", capacity: 2, qrToken: "U".repeat(22) })
+        .returning({ id: diningTables.id });
+      try {
+        const html = await render({
+          scope: "selected",
+          table: [theirTable, await idOf("Mine")],
+        });
+        expect(cardsIn(html)).toBe(1);
+        expect(html).not.toContain("Theirs");
+        expect(html).not.toContain(await qrSvg(tableCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, "U".repeat(22))));
+
+        const onlyTheirs = await render({ scope: "selected", table: [theirTable] });
+        expect(cardsIn(onlyTheirs)).toBe(0);
+        expect(onlyTheirs).not.toContain("Theirs");
+      } finally {
+        await owner.db.delete(diningTables).where(eq(diningTables.restaurantId, otherId));
+        await owner.db.delete(restaurants).where(eq(restaurants.id, otherId));
+      }
+    });
+
+    it("ignores ids that aren't ids", async () => {
+      await newTable("Alpha");
+      const html = await render({ scope: "selected", table: ["x' or 1=1", "../../etc"] });
+      expect(cardsIn(html)).toBe(0);
+    });
+
+    it("adds the generic menu card, which encodes /m/{menu_token}, ahead of the tables", async () => {
+      await newTable("Alpha");
+      const html = await render({ menu: "1" });
+      expect(cardsIn(html)).toBe(2);
+      expect(html).toContain("View our menu");
+      const menuCode = await qrSvg(menuCodeUrl(getEnv().NEXT_PUBLIC_APP_URL, tenant.restaurantId));
+      expect(html).toContain(menuCode.trim());
+      expect(html.indexOf("View our menu")).toBeLessThan(html.indexOf(">Alpha</p>"));
+    });
+
+    it("can print the menu card alone", async () => {
+      await newTable("Alpha");
+      const html = await render({ scope: "selected", menu: "1" });
+      expect(cardsIn(html)).toBe(1);
+      expect(html).toContain("View our menu");
+    });
+
+    it("leaves the Wi-Fi password off when asked, and keeps the network name", async () => {
+      await newTable("Alpha");
+      const html = await render({ nopassword: "1" });
+      expect(html).toContain("Wi-Fi: Mamas Guest<");
+      expect(html).not.toContain("sadza-and-stew</p>");
+      expect(html).not.toContain("password sadza-and-stew");
+    });
+
+    it("shows no Wi-Fi line when none is set", async () => {
+      await owner.db
+        .update(restaurants)
+        .set({ wifiName: null, wifiPassword: null })
+        .where(eq(restaurants.id, tenant.restaurantId));
+      await newTable("Alpha");
+      expect(await render({})).not.toContain("Wi-Fi:");
+    });
+
+    it("the form keeps its ticks: selected, the table and the menu card", async () => {
+      await newTable("Alpha");
+      const html = await render({ scope: "selected", table: [await idOf("Alpha")], menu: "1" });
+      expect(html).toMatch(/<input[^>]*name="menu"[^>]*checked/);
+      expect(html).toMatch(/<input[^>]*name="scope"[^>]*checked=""[^>]*value="selected"/);
+    });
+
+    it("refuses staff with forbidden() whatever the options", async () => {
+      await newTable("Alpha");
+      session.tenant = { ...tenant, role: "staff" };
+      expect(await statusOf(() => render({ scope: "selected", menu: "1" }))).toBe(403);
+    });
+  });
+
+  it("gives long names and labels a box that can't grow past the card", async () => {
+    await newTable("A very long label for one table, going on and on!!");
+    const html = await screen(PrintSheet);
+    expect(html).toMatch(/line-clamp-2[^"]*print:h-\[\d+(\.\d+)?mm\]/);
+    expect(html).toContain("text-lg");
+    expect(html).not.toContain("text-5xl");
+  });
+
   it("holds only this restaurant's tables", async () => {
     await newTable("Mine");
     const otherId = crypto.randomUUID();
@@ -587,6 +729,12 @@ describe("/dashboard/tables/print", () => {
     await newTable("1");
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => PrintSheet())).toBe(403);
+  });
+
+  it("tells the owner on the settings screen that customers see the Wi-Fi password", async () => {
+    const html = await screen(SettingsScreen);
+    expect(html).toContain("customers will see it");
+    expect(html).toContain("guest network");
   });
 });
 

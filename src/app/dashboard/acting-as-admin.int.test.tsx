@@ -99,6 +99,11 @@ describe("the banner", () => {
     expect(html).toContain('method="post"');
   });
 
+  it("stays off paper, so it can't print on a sheet or push a row of cards off the page", async () => {
+    browser.cookie = adminCookie;
+    expect(await banner()).toMatch(/class="[^"]*\bprint:hidden\b/);
+  });
+
   it("isn't there for staff", async () => {
     browser.cookie = staffCookie;
     expect(await banner()).toBe("");

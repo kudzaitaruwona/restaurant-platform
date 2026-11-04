@@ -63,7 +63,7 @@ export async function SettingsScreen() {
             className={inputClassName}
           />
         </Field>
-        <Field label="Wi-Fi password" hint="Printed on the table QR sheet.">
+        <Field label="Wi-Fi password" hint="Printed on every table QR card, so customers will see it. Use a guest network, not the one your staff or tills use. You can leave it off the sheet when printing.">
           <input
             name="wifiPassword"
             type="password"

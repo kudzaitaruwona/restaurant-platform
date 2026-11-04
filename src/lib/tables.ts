@@ -253,7 +253,7 @@ export function listTables(ctx: Tenant) {
   );
 }
 
-/** What a printed card says besides the table: whose it is, and the Wi-Fi. */
+/** What a printed card says besides the table: whose it is, the Wi-Fi, and the menu link for the generic card. */
 export function getPrintHeader(ctx: Tenant) {
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
@@ -262,6 +262,7 @@ export function getPrintHeader(ctx: Tenant) {
         name: restaurants.name,
         wifiName: restaurants.wifiName,
         wifiPassword: restaurants.wifiPassword,
+        menuToken: restaurants.menuToken,
       })
       .from(restaurants)
       .where(eq(restaurants.id, restaurantId));
