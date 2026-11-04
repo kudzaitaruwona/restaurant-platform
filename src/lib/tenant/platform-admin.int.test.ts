@@ -31,6 +31,7 @@ describe("getPlatformAdminContext", () => {
     session.identity = devPlatformAdmin.key;
     expect(await guard()).toEqual({
       platformAdminId: devPlatformAdmin.platformAdminId,
+      sessionId: devPlatformAdmin.sessionId,
     });
   });
 

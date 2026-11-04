@@ -1,17 +1,24 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
   vi,
 } from "vitest";
-import { adminAuthUser, restaurants, staff, staffAuthUser } from "@/db/schema";
+import {
+  adminAuthUser,
+  auditLog,
+  restaurants,
+  staff,
+  staffAuthUser,
+} from "@/db/schema";
 import { signIn } from "../../../test/integration/auth";
 import {
   openOwnerDatabase,
@@ -32,6 +39,8 @@ import {
  * gets a 403 on anything owner-only. A route handler that isn't listed fails
  * the coverage test, so a new one can't skip the harness. Platform-admin routes
  * go in `adminRoutes`: no restaurant identity gets past them, on anyone's IDs.
+ * Every tenant route also runs as a platform admin who has entered restaurant A:
+ * the same walls apply, and every write has to reach audit_log as that admin.
  *
  * Handlers run for real against Postgres, as the RLS-bound role, and every
  * identity below is a real session: signed in through the real endpoints with
@@ -206,7 +215,24 @@ const adminRoutes: AdminRoute[] = [
         { params: Promise.resolve({ restaurantId }) },
       ),
   },
+  {
+    name: "POST /api/admin/restaurants/[restaurantId]/enter",
+    call: async (restaurantId) =>
+      (await import("@/app/api/admin/restaurants/[restaurantId]/enter/route")).POST(
+        request(`/api/admin/restaurants/${restaurantId}/enter`, { method: "POST" }),
+        { params: Promise.resolve({ restaurantId }) },
+      ),
+  },
+  {
+    name: "POST /api/admin/leave",
+    call: async () =>
+      (await import("@/app/api/admin/leave/route")).POST(
+        request("/api/admin/leave", { method: "POST" }),
+      ),
+  },
 ];
+
+const [enterRoute, leaveRoute] = adminRoutes.slice(-2);
 
 /** Holds no tenant data: tested in src/app/api/dev/identity/route.int.test.ts. */
 const outsideTheHarness = [
@@ -565,7 +591,14 @@ describe("the example routes", () => {
   );
 });
 
+const leave = () => {
+  session.identity = devPlatformAdmin.key;
+  return leaveRoute.call("");
+};
+
 describe("platform-admin routes", () => {
+  afterEach(leave);
+
   const eachStaffIdentity = adminRoutes.flatMap((route) =>
     devIdentities.map(
       (identity) => [route.name, identity.key, route, identity] as const,
@@ -647,6 +680,158 @@ describe("the platform admin on tenant routes", () => {
   );
 });
 
+describe("a platform admin inside restaurant A", () => {
+  const writes = routes.filter((route) => !route.name.startsWith("GET "));
+
+  const inside = async () => {
+    session.identity = devPlatformAdmin.key;
+    expect(await statusOf(() => enterRoute.call(fixtures.a.restaurantId))).toBeLessThan(400);
+  };
+
+  const shadowOfA = async () => {
+    const [row] = await owner.db
+      .select({ id: staff.id })
+      .from(staff)
+      .where(
+        and(eq(staff.restaurantId, fixtures.a.restaurantId), eq(staff.kind, "platform_admin")),
+      );
+    return row.id;
+  };
+
+  const auditEntries = (restaurantId: string) =>
+    owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, restaurantId));
+
+  /** What `call` adds to restaurant A's audit log. */
+  const auditedBy = async (call: () => Promise<unknown>) => {
+    const known = new Set(
+      (await auditEntries(fixtures.a.restaurantId)).map(({ id }) => id),
+    );
+    await call();
+    return (await auditEntries(fixtures.a.restaurantId)).filter(
+      ({ id, actorId }) =>
+        !known.has(id) && actorId === devPlatformAdmin.platformAdminId,
+    );
+  };
+
+  beforeEach(inside);
+  afterEach(leave);
+
+  it.each(routes.map((route) => [route.name, route] as const))(
+    "%s: reaches restaurant A's resource as an owner",
+    async (_name, route) => {
+      expect(await statusOf(() => route.call(fixtures.a))).toBeLessThan(400);
+    },
+  );
+
+  it.each(routes.map((route) => [route.name, route] as const))(
+    "%s: gets a 404 or 403 on restaurant B's resource and changes nothing",
+    async (_name, route) => {
+      expect([403, 404]).toContain(await statusOf(() => route.call(fixtures.b)));
+
+      expect(await displayName(fixtures.b.staffId)).toBe(fixtureName);
+      expect(await standing(fixtures.b.staffId)).toEqual(untouched);
+    },
+  );
+
+  it.each(writes.map((route) => [route.name, route] as const))(
+    "%s: is audited as the platform admin, by platform_admins.id",
+    async (_name, route) => {
+      const entries = await auditedBy(() => route.call(fixtures.a));
+
+      expect(entries).not.toEqual([]);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          actorType: "platform_admin",
+          actorId: devPlatformAdmin.platformAdminId,
+        });
+      }
+    },
+  );
+
+  it.each(sessionRoutes.map((route) => [route.name, route] as const))(
+    "%s: is audited as the platform admin too",
+    async (_name, route) => {
+      const entries = await auditedBy(() => route.call());
+
+      expect(entries).not.toEqual([]);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          actorType: "platform_admin",
+          actorId: devPlatformAdmin.platformAdminId,
+        });
+      }
+    },
+  );
+
+  it("no write is audited under the shadow row: S-29", async () => {
+    const shadowId = await shadowOfA();
+    for (const route of writes) await route.call(fixtures.a);
+    for (const route of sessionRoutes) await route.call();
+
+    const actors = (await auditEntries(fixtures.a.restaurantId)).map(
+      ({ actorId }) => actorId,
+    );
+    expect(actors).not.toContain(shadowId);
+  });
+
+  it("no audit entry holds the Wi-Fi password an admin saved", async () => {
+    const wifiPassword = `secret-${crypto.randomUUID()}`;
+    const [settings] = sessionRoutes;
+
+    const entries = await auditedBy(() => settings.call({ wifiPassword }));
+
+    expect(JSON.stringify(entries)).not.toContain(wifiPassword);
+  });
+
+  it("settings go to the entered restaurant, whatever id the request names", async () => {
+    const theirs = await restaurantRow(fixtures.b.restaurantId);
+    const [settings] = sessionRoutes;
+
+    await settings.call(
+      { restaurantId: fixtures.b.restaurantId, restaurant_id: fixtures.b.restaurantId },
+      {
+        headers: { "x-restaurant-id": fixtures.b.restaurantId },
+        path: `/api/restaurant?restaurantId=${fixtures.b.restaurantId}`,
+      },
+    );
+
+    expect(await restaurantRow(fixtures.b.restaurantId)).toEqual(theirs);
+  });
+
+  it("after leaving, the same calls are refused again", async () => {
+    await leave();
+
+    for (const route of routes) {
+      expect(await statusOf(() => route.call(fixtures.a))).toBe(403);
+    }
+  });
+
+  describe("the shadow row", () => {
+    const eachOwner = routes.flatMap((route) =>
+      [aOwner.key, devPlatformAdmin.key].map(
+        (key) => [route.name, key, route] as const,
+      ),
+    );
+
+    it.each(eachOwner)(
+      "%s: to %s it doesn't exist, so it's a 404 and changes nothing",
+      async (_name, key, route) => {
+        const staffId = await shadowOfA();
+        session.identity = key;
+
+        expect(await statusOf(() => route.call({ staffId }))).toBe(404);
+
+        const [row] = await owner.db.select().from(staff).where(eq(staff.id, staffId));
+        expect(row).toMatchObject({
+          displayName: "Platform admin",
+          role: "owner",
+          active: true,
+        });
+      },
+    );
+  });
+});
+
 describe("harness coverage", () => {
   const appDirectory = join(process.cwd(), "src", "app");
   const methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -701,11 +886,36 @@ describe("harness coverage", () => {
       (file) =>
         /\.tsx?$/.test(file) &&
         !/\.test\.tsx?$/.test(file) &&
-        /platform_(create|list)_/.test(
+        /platform_(create|list|enter|leave)_/.test(
           readFileSync(join(sourceDirectory, file), "utf8"),
         ),
     );
     expect(callers).toEqual([join("lib", "tenant", "platform-admin.ts")]);
+  });
+
+  it("only the admin seam opens the admin login", () => {
+    const sourceDirectory = join(process.cwd(), "src");
+    const openers = readdirSync(sourceDirectory, {
+      recursive: true,
+      encoding: "utf8",
+    }).filter(
+      (file) =>
+        /\.tsx?$/.test(file) &&
+        !/\.test\.tsx?$/.test(file) &&
+        /getAdminDb\(|DATABASE_URL_ADMIN/.test(
+          readFileSync(join(sourceDirectory, file), "utf8"),
+        ),
+    );
+    expect(openers.sort()).toEqual(
+      [
+        join("db", "admin.ts"),
+        join("lib", "auth", "database.ts"),
+        join("lib", "auth", "identity.ts"),
+        join("lib", "env.ts"),
+        join("lib", "tenant", "admin-entry.ts"),
+        join("lib", "tenant", "platform-admin.ts"),
+      ].sort(),
+    );
   });
 
   it("identities really are in the restaurants the tests assume", () => {

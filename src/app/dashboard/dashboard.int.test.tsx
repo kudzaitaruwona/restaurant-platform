@@ -56,6 +56,25 @@ describe("the protected page", () => {
     expect(await render("a-staff")).not.toContain('method="post"');
   });
 
+  it("leaves the admin's shadow row out of the team, and offers no rename for it", async () => {
+    const owner = openOwnerDatabase();
+    // Left behind: another file may be inside this restaurant through this row.
+    await owner.db
+      .insert(staff)
+      .values({
+        restaurantId: "00000000-0000-4000-8000-00000000000a",
+        kind: "platform_admin",
+        role: "owner",
+        displayName: "Platform admin",
+      })
+      .onConflictDoNothing();
+    try {
+      expect(await render("a-owner")).not.toContain("Platform admin");
+    } finally {
+      await owner.pool.end();
+    }
+  });
+
   it("leaves deactivated colleagues out of the team", async () => {
     const id = crypto.randomUUID();
     const owner = openOwnerDatabase();

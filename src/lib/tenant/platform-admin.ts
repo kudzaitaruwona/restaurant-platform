@@ -2,21 +2,21 @@ import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 import { headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
-import { getDb } from "@/db";
+import { getAdminDb } from "@/db/admin";
 import type { currencyMode } from "@/db/schema";
-import { sessionEmail } from "@/lib/auth";
+import { sessionOf } from "@/lib/auth";
 import { findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
-import { currentIdentity, sessionPlatformAdminId } from "./index";
+import { currentIdentity, sessionPlatformAdmin } from "./index";
 
 /**
  * The platform-admin seam: who the admin is, and the only code that calls the
- * privileged database functions (S-28). A restaurant id here is the admin's
- * choice of tenant, so unlike tenant code it does come from the request. Tenant
- * code never sees it.
+ * privileged database functions (S-28), through its own login. A restaurant id
+ * here is the admin's choice of tenant, so unlike tenant code it does come from
+ * the request. Tenant code never sees it.
  */
 
-export type PlatformAdminContext = { platformAdminId: string };
+export type PlatformAdminContext = { platformAdminId: string; sessionId: string };
 
 export type CurrencyMode = (typeof currencyMode.enumValues)[number];
 
@@ -32,16 +32,17 @@ export async function getPlatformAdminContext(): Promise<PlatformAdminContext> {
     if (!identity) unauthorized();
     if (!("platformAdminId" in identity)) forbidden();
 
-    return { platformAdminId: identity.platformAdminId };
+    const { platformAdminId, sessionId } = identity;
+    return { platformAdminId, sessionId };
   }
 
   const requestHeaders = await headers();
 
-  const platformAdminId = await sessionPlatformAdminId(requestHeaders);
-  if (platformAdminId) return { platformAdminId };
+  const admin = await sessionPlatformAdmin(requestHeaders);
+  if (admin) return admin;
 
-  const staffEmail = await sessionEmail("staff", requestHeaders);
-  if (staffEmail && (await findStaffIdentity(staffEmail))) forbidden();
+  const session = await sessionOf("staff", requestHeaders);
+  if (session && (await findStaffIdentity(session.email))) forbidden();
   unauthorized();
 }
 
@@ -55,14 +56,14 @@ const ALREADY_HAS_STAFF = "PA001";
 /**
  * Runs a privileged function that returns a new row's id (S-28). These functions
  * are one statement and refuse to run inside a tenant, so there's no withTenant:
- * outside it, app_tenant reaches these rows through the functions alone.
+ * app_admin reaches these rows through the functions alone.
  */
 async function createdId<Problem extends string>(
   query: SQL,
   problems: Record<string, Problem>,
 ): Promise<{ id: string } | { problem: Problem }> {
   try {
-    const { rows } = await getDb().execute<{ id: string }>(query);
+    const { rows } = await getAdminDb().execute<{ id: string }>(query);
     return { id: rows[0].id };
   } catch (error) {
     const { code } = (error as { cause?: { code?: string } }).cause ?? {};
@@ -71,8 +72,10 @@ async function createdId<Problem extends string>(
   }
 }
 
+type Admin = Pick<PlatformAdminContext, "platformAdminId">;
+
 export function createRestaurant(
-  admin: PlatformAdminContext,
+  admin: Admin,
   restaurant: {
     name: string;
     slug: string;
@@ -92,7 +95,7 @@ export function createRestaurant(
 
 /** Makes a restaurant's first staff record, its owner (S-26), and audits it. */
 export function createFirstOwner(
-  admin: PlatformAdminContext,
+  admin: Admin,
   restaurantId: string,
   owner: { email: string; displayName: string },
 ) {
@@ -106,8 +109,28 @@ export function createFirstOwner(
   );
 }
 
-export async function listRestaurants(admin: PlatformAdminContext) {
-  const { rows } = await getDb().execute<{
+/**
+ * Takes this admin session into a restaurant (spec 01). The restaurant is held
+ * against the session, in Postgres, so later requests get it from
+ * getTenantContext() and never from the browser. Returns the shadow staff row,
+ * which the function makes on the first entry, and audits every entry.
+ */
+export function enterRestaurant(admin: PlatformAdminContext, restaurantId: string) {
+  return createdId(
+    sql`select platform_enter_restaurant(${admin.platformAdminId}, ${admin.sessionId}, ${restaurantId}) as id`,
+    { [NO_DATA_FOUND]: "no_restaurant" },
+  );
+}
+
+/** Takes this admin session back out, if it's in one. The shadow row stays. */
+export async function leaveRestaurant(admin: PlatformAdminContext) {
+  await getAdminDb().execute(
+    sql`select platform_leave_restaurant(${admin.platformAdminId}, ${admin.sessionId})`,
+  );
+}
+
+export async function listRestaurants(admin: Admin) {
+  const { rows } = await getAdminDb().execute<{
     id: string;
     name: string;
     slug: string;

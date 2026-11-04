@@ -20,7 +20,7 @@ import {
 } from "../../../test/integration/fake-services";
 import { devIdentities } from "../tenant/dev-identities";
 import { sessionCookieName } from "./cookies";
-import { sessionEmail } from "./index";
+import { sessionOf } from "./index";
 
 /**
  * The session cookie as production sets it, from Better Auth itself. If its name
@@ -102,13 +102,15 @@ describe.each(["staff", "admin"] as const)("the %s session cookie in production"
     expect(cookie).toMatch(/;\s*Max-Age=2592000/i);
   });
 
-  it("is the cookie sessionEmail() finds a person by", async () => {
+  it("is the cookie sessionOf() finds a person by", async () => {
     const response = await signIn();
     const cookie = response.headers
       .getSetCookie()
       .find((value) => value.includes("session_token"))!
       .split(";")[0];
 
-    expect(await sessionEmail(audience, new Headers({ cookie }))).toBe(people[audience]);
+    expect(await sessionOf(audience, new Headers({ cookie }))).toMatchObject({
+      email: people[audience],
+    });
   });
 });

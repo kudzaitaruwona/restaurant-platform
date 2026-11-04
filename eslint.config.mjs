@@ -15,6 +15,18 @@ const databaseSeam = [
   "test/**",
 ];
 
+// The admin login (S-28): the only files that may open it, because only they are
+// the admin path. A subset of the database seam, which can otherwise use getDb.
+const adminSeam = [
+  "src/db/**",
+  "src/lib/tenant/platform-admin.ts",
+  "src/lib/tenant/admin-entry.ts",
+  "src/lib/auth/database.ts",
+  "src/lib/auth/identity.ts",
+  "scripts/**",
+  "test/**",
+];
+
 // Photo storage boundary (D-07): app code touches storage only through
 // uploadImage / deleteImage / getUrl from "@/lib/storage".
 const storageBoundary = [
@@ -43,6 +55,14 @@ const databaseBoundary = [
   },
 ];
 
+// Tenant code mustn't reach the role that can call the platform_* functions.
+const adminDatabaseBoundary = [
+  {
+    regex: "(^|/)db/admin$",
+    message: "Only the admin seam opens the admin login (S-28).",
+  },
+];
+
 const restrictImports = (...boundaries) => ({
   "no-restricted-imports": ["error", { patterns: boundaries.flat() }],
 });
@@ -64,6 +84,11 @@ const eslintConfig = defineConfig([
   },
   {
     files: databaseSeam,
+    ignores: adminSeam,
+    rules: restrictImports(storageBoundary, adminDatabaseBoundary),
+  },
+  {
+    files: adminSeam,
     rules: restrictImports(storageBoundary),
   },
   // Override default ignores of eslint-config-next.

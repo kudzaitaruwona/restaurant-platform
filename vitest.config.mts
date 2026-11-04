@@ -13,6 +13,13 @@ for (const [key, value] of Object.entries(loadEnv("test", root, ""))) {
   process.env[key] ??= value;
 }
 
+// Tests stub DATABASE_URL at the test database themselves. The admin login is
+// used by far fewer of them, so point it there once: nothing here should ever
+// reach the development database.
+if (process.env.TEST_DATABASE_URL_ADMIN) {
+  process.env.DATABASE_URL_ADMIN = process.env.TEST_DATABASE_URL_ADMIN;
+}
+
 // forbidden() and unauthorized() check this flag. Next.js sets it at build time
 // from experimental.authInterrupts; there is no build here, so read the same
 // setting. Without it they throw, and the access harness fails, as the app would.

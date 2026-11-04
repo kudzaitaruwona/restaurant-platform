@@ -3,16 +3,17 @@ import { APP_DATABASE_ROLE } from "../lib/env";
 import { createDatabase, type Database, type DatabaseSettings } from "./client";
 
 /**
- * Lets the app role log in, with the password from its own connection URL.
- * Migrations create the role without a password so that no secret is committed;
- * this keeps DATABASE_URL the one place that password is written down. Safe to
- * re-run, which is also how the password is rotated.
+ * Lets a role the app connects as, app_tenant or app_admin, log in with the
+ * password from its own connection URL. Migrations create these roles without a
+ * password so that no secret is committed; this keeps the URL the one place that
+ * password is written down. Safe to re-run, which is also how a password is
+ * rotated.
  *
  * Then refuses a role that RLS wouldn't apply to. The migration accepts any
  * existing role of this name, and one created in the Neon Console joins
  * neon_superuser: the app would run with every tenant's rows in view and
- * nothing would look wrong. `role` is only for the tests, because roles are per
- * cluster and they mustn't change the shared one.
+ * nothing would look wrong. The tests also pass throwaway roles, because roles
+ * are per cluster and they mustn't change the shared ones.
  */
 export async function provisionAppRole(
   ownerSettings: DatabaseSettings,
@@ -48,7 +49,7 @@ export async function provisionAppRole(
 
   if (exemptions.length > 0) {
     throw new Error(
-      `Row-level security would not apply to ${role}: ${exemptions.join("; ")}. Create it with SQL, as db/migrations/0002_app_tenant_role.sql does.`,
+      `Row-level security would not apply to ${role}: ${exemptions.join("; ")}. Create it with SQL, as the migrations do.`,
     );
   }
 }

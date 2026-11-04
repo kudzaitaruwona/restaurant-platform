@@ -1,7 +1,7 @@
 import "server-only";
 import { eq, sql } from "drizzle-orm";
-import { getDb } from "@/db";
 import { adminAuthCodeLimit, staffAuthCodeLimit } from "@/db/schema";
+import { authDatabase } from "./database";
 import type { Audience } from "./index";
 
 /**
@@ -22,7 +22,7 @@ const tables = { staff: staffAuthCodeLimit, admin: adminAuthCodeLimit };
 export async function spendCodeAttempt(audience: Audience, email: string) {
   const table = tables[audience];
   const windowIsOver = sql`${table.windowStartedAt} <= now() - ${WINDOW}::interval`;
-  const [{ attempts }] = await getDb()
+  const [{ attempts }] = await authDatabase(audience)
     .insert(table)
     .values({ email, attempts: 1, windowStartedAt: sql`now()` })
     .onConflictDoUpdate({
@@ -38,5 +38,5 @@ export async function spendCodeAttempt(audience: Audience, email: string) {
 
 export async function clearCodeAttempts(audience: Audience, email: string) {
   const table = tables[audience];
-  await getDb().delete(table).where(eq(table.email, email));
+  await authDatabase(audience).delete(table).where(eq(table.email, email));
 }

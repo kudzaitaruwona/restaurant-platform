@@ -6,7 +6,7 @@ import {
   devPlatformAdmin,
   devRestaurants,
 } from "../lib/tenant/dev-identities";
-import { platformAdmins, restaurants, staff } from "./schema";
+import { adminAuthSession, platformAdmins, restaurants, staff } from "./schema";
 import { seedDevData } from "./seed";
 
 const { db, pool } = openOwnerDatabase();
@@ -24,6 +24,16 @@ const seededStaff = () =>
     );
 
 describe("the development seed", () => {
+  it("gives the bypass's platform admin a session to enter restaurants with", async () => {
+    await seedDevData(db);
+
+    const sessions = await db
+      .select({ id: adminAuthSession.id })
+      .from(adminAuthSession)
+      .where(eq(adminAuthSession.id, devPlatformAdmin.sessionId));
+    expect(sessions).toHaveLength(1);
+  });
+
   it("creates two restaurants, each with one owner and one staff member, and can re-run", async () => {
     await seedDevData(db);
 

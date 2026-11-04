@@ -3,7 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { staff, staffRole } from "@/db/schema";
 import { type TenantContext, withTenant } from "@/lib/tenant";
-import { recordAudit } from "@/lib/tenant/audit";
+import { type Acting, recordAudit } from "@/lib/tenant/audit";
 
 /**
  * Staff management, owner only (S-26): callers check requireOwner(ctx). Only
@@ -15,7 +15,6 @@ import { recordAudit } from "@/lib/tenant/audit";
  * entry.
  */
 
-type Actor = Pick<TenantContext, "restaurantId" | "staffId">;
 type Role = TenantContext["role"];
 export type StaffChange = "done" | "not_found" | "last_owner";
 
@@ -71,14 +70,14 @@ async function reportingLastOwner(change: () => Promise<StaffChange>) {
   }
 }
 
-const managed = (ctx: Actor, staffId: string) =>
+const managed = (ctx: Acting, staffId: string) =>
   and(
     eq(staff.restaurantId, ctx.restaurantId),
     eq(staff.id, staffId),
     eq(staff.kind, "staff"),
   );
 
-export async function listStaff(ctx: Pick<Actor, "restaurantId">) {
+export async function listStaff(ctx: Pick<Acting, "restaurantId">) {
   return withTenant(ctx, (tx) =>
     tx
       .select({
@@ -99,7 +98,7 @@ export const countOwnerLogins = (team: Awaited<ReturnType<typeof listStaff>>) =>
   team.filter((member) => member.active && member.role === "owner").length;
 
 export async function addStaff(
-  ctx: Actor,
+  ctx: Acting,
   person: NewStaff,
 ): Promise<"added" | "email_taken"> {
   try {
@@ -126,7 +125,7 @@ export async function addStaff(
   }
 }
 
-export async function deactivateStaff(ctx: Actor, staffId: string) {
+export async function deactivateStaff(ctx: Acting, staffId: string) {
   return reportingLastOwner(() =>
     withTenant(ctx, async (tx) => {
       const deactivated = await tx
@@ -146,7 +145,7 @@ export async function deactivateStaff(ctx: Actor, staffId: string) {
   );
 }
 
-export async function changeStaffRole(ctx: Actor, staffId: string, to: Role) {
+export async function changeStaffRole(ctx: Acting, staffId: string, to: Role) {
   return reportingLastOwner(() =>
     withTenant(ctx, async (tx) => {
       const [member] = await tx

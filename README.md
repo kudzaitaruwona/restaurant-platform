@@ -29,7 +29,7 @@ Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, p
 npm install
 cp .env.example .env.local   # fill in values; the "local" hints match docker-compose.yml
 npm run db:up                # Postgres 17 on :5499 and Neon's wsproxy on :5498
-npm run db:migrate           # also lets the app role log in
+npm run db:migrate           # also lets the app and admin roles log in
 npm run db:seed              # restaurants A and B and the platform admin, for DEV_AUTH_BYPASS
 npm run dev
 ```
@@ -45,17 +45,17 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run lint` | ESLint, including the photo-storage and database import boundaries |
 | `npm run typecheck` | Route type generation plus `tsc --noEmit` |
 | `npm run test:unit` | Unit tests (no database) |
-| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant` |
+| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin` |
 | `npm test` | Both test projects |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
-| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` and fails if RLS wouldn't apply to that role |
+| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` and the `app_admin` password from `DATABASE_URL_ADMIN`, and fails if RLS wouldn't apply to either role |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
 
 ### Tenant isolation
 
 All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` says who is asking, `requireOwner(ctx)` guards owner-only actions, and `withTenant(ctx, fn)` runs `fn` in a transaction scoped to that restaurant. ESLint keeps `getDb` out of everything else.
 
-There are two database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
+There are three database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), under the same rules and with its own pool (see "Platform admin"). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
@@ -63,7 +63,11 @@ Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, co
 
 ### Platform admin
 
-The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
+The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403 until it enters one. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them, and only `app_admin` can: `app_tenant` has no `EXECUTE` on `platform_*` and no privilege on `admin_auth_*`. ESLint and `access.int.test.ts` keep `getAdminDb` to the files listed as `adminSeam` in `eslint.config.mjs`. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
+
+"Enter restaurant" on `/admin` puts the session in that tenant's staff UI, under a banner with a way back out. `getTenantContext()` then returns the restaurant's shadow staff row, as an owner, plus `platformAdminId`. The restaurant is held in `admin_auth_entry` against the session, so nothing in the browser chooses it and it ends with the session. Inside a tenant the admin works through `withTenant()` as `app_tenant`, like anyone else.
+
+Every admin action inside a tenant has to reach `audit_log`. `recordAudit` records the admin by itself as long as it's given the whole context, so pass `tenant` along rather than picking fields out of it. A write that isn't on spec 01's audit list calls `recordAdminAction`, which records only an admin. The harness fails a write route that doesn't. A `staff` query must filter on `kind = 'staff'`, or the shadow row shows up as a colleague.
 
 ### Sign-in
 
@@ -73,4 +77,4 @@ Staff and the platform admin sign in with a magic link, an emailed code or Googl
 
 ### Environment
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine.
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine.

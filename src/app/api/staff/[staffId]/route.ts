@@ -4,9 +4,18 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { staff } from "@/db/schema";
 import { getTenantContext, requireOwner, withTenant } from "@/lib/tenant";
+import { recordAdminAction } from "@/lib/tenant/audit";
 
 const staffIdParam = z.uuid();
 const displayName = z.string().trim().min(1).max(200);
+
+/** One colleague: a platform_admin shadow row is nobody's colleague. */
+const colleague = (restaurantId: string, staffId: string) =>
+  and(
+    eq(staff.restaurantId, restaurantId),
+    eq(staff.id, staffId),
+    eq(staff.kind, "staff"),
+  );
 
 async function staffIdFrom(context: RouteContext<"/api/staff/[staffId]">) {
   const { staffId } = await context.params;
@@ -31,9 +40,7 @@ export async function GET(
         role: staff.role,
       })
       .from(staff)
-      .where(
-        and(eq(staff.restaurantId, tenant.restaurantId), eq(staff.id, staffId)),
-      ),
+      .where(colleague(tenant.restaurantId, staffId)),
   );
   if (!member) notFound();
 
@@ -57,15 +64,21 @@ export async function POST(
     return Response.json({ error: "Enter a name." }, { status: 400 });
   }
 
-  const updated = await withTenant(tenant, (tx) =>
-    tx
+  const updated = await withTenant(tenant, async (tx) => {
+    const renamed = await tx
       .update(staff)
       .set({ displayName: name.data })
-      .where(
-        and(eq(staff.restaurantId, tenant.restaurantId), eq(staff.id, staffId)),
-      )
-      .returning({ id: staff.id }),
-  );
+      .where(colleague(tenant.restaurantId, staffId))
+      .returning({ id: staff.id });
+    if (renamed.length > 0) {
+      await recordAdminAction(tx, tenant, {
+        action: "staff.rename",
+        entityType: "staff",
+        entityId: staffId,
+      });
+    }
+    return renamed;
+  });
   if (updated.length === 0) notFound();
 
   // Not formSaved(): this is a plain form on /dashboard, not an ActionForm, so

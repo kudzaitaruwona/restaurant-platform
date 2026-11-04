@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testDatabaseSettings } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
@@ -5,11 +6,13 @@ import {
   DEV_IDENTITY_COOKIE,
   devIdentities,
   devPlatformAdmin,
+  devRestaurants,
 } from "@/lib/tenant/dev-identities";
 
 const jar = vi.hoisted(() => new Map<string, string>());
 
 vi.mock("next/headers", () => ({
+  headers: async () => new Headers(),
   cookies: async () => ({
     get: (name: string) =>
       jar.has(name) ? { name, value: jar.get(name) } : undefined,
@@ -62,6 +65,52 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
     );
     expect(await getPlatformAdminContext()).toEqual({
       platformAdminId: devPlatformAdmin.platformAdminId,
+      sessionId: devPlatformAdmin.sessionId,
+    });
+  });
+
+  // The only file that enters as the dev admin: there's one seeded session, so
+  // anywhere else would race these.
+  describe("entering a restaurant under the bypass", () => {
+    const [restaurant] = devRestaurants;
+
+    async function enter() {
+      await pick(devPlatformAdmin.key);
+      const { POST } = await import(
+        "@/app/api/admin/restaurants/[restaurantId]/enter/route"
+      );
+      return POST(
+        new NextRequest(
+          new URL(`/api/admin/restaurants/${restaurant.id}/enter`, "http://localhost:3000"),
+          { method: "POST" },
+        ),
+        { params: Promise.resolve({ restaurantId: restaurant.id }) },
+      );
+    }
+
+    it("lands on the dashboard, in that restaurant, with the cookie still only a key", async () => {
+      const response = await enter();
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get("Location")).toBe("/dashboard");
+      expect(jar.get(DEV_IDENTITY_COOKIE)).toBe(devPlatformAdmin.key);
+
+      const { getTenantContext } = await import("@/lib/tenant");
+      expect(await getTenantContext()).toMatchObject({
+        restaurantId: restaurant.id,
+        role: "owner",
+        platformAdminId: devPlatformAdmin.platformAdminId,
+      });
+    });
+
+    it("drops the admin out when they switch to someone else", async () => {
+      await enter();
+
+      await pick(devIdentities[0].key);
+      await pick(devPlatformAdmin.key);
+
+      const { getTenantContext } = await import("@/lib/tenant");
+      expect(await statusOf(getTenantContext)).toBe(403);
     });
   });
 

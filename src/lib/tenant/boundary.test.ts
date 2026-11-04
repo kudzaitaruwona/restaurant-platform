@@ -45,6 +45,42 @@ export { withTenant, staff };`,
     ).toEqual([]);
   }, 30_000);
 
+  it.each(["src/app/admin/page.tsx", "src/lib/staff-management.ts"])(
+    "the admin login is out of reach of %s, like every other handle",
+    async (filePath) => {
+      expect(
+        await restrictedImports(
+          `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+          filePath,
+        ),
+      ).not.toEqual([]);
+    },
+    30_000,
+  );
+
+  it("the tenant seam itself can't open the admin login", async () => {
+    expect(
+      await restrictedImports(
+        `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+        "src/lib/tenant/index.ts",
+      ),
+    ).not.toEqual([]);
+  }, 30_000);
+
+  it.each([
+    "src/lib/tenant/platform-admin.ts",
+    "src/lib/tenant/admin-entry.ts",
+    "src/lib/auth/identity.ts",
+    "src/lib/auth/database.ts",
+  ])("the admin seam may open it: %s", async (filePath) => {
+    expect(
+      await restrictedImports(
+        `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+        filePath,
+      ),
+    ).toEqual([]);
+  }, 30_000);
+
   it("adding this boundary keeps the storage one: both apply to app code", async () => {
     const messages = await restrictedImports(
       `import { getDb } from "@/db";

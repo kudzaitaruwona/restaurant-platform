@@ -1,8 +1,6 @@
 import { Suspense } from "react";
-import { devAuthBypassEnabled } from "@/lib/env";
 import { Dashboard } from "./dashboard";
-import { DevSwitcher } from "./dev-switcher";
-import { SignOutButton } from "./sign-out-button";
+import { SessionControls } from "./session-controls";
 
 export default function DashboardPage() {
   return (
@@ -10,7 +8,9 @@ export default function DashboardPage() {
       <Suspense fallback={<p className="text-muted-foreground">Loading…</p>}>
         <Dashboard />
       </Suspense>
-      {devAuthBypassEnabled() ? <DevSwitcher /> : <SignOutButton audience="staff" />}
+      <Suspense>
+        <SessionControls />
+      </Suspense>
     </main>
   );
 }
