@@ -28,7 +28,7 @@ The token identifies the table on the server. The URL never contains the table l
 - `bookable = false` keeps a table out of online booking, for walk-in-only or bar tables.
 
 ## Print sheet
-- One page, `/dashboard/tables/print` (staff pages live under `/dashboard/*`, see S-33), prints with the browser's print function (no PDF library).
+- One page, `/dashboard/tables/print` (staff pages live under `/dashboard/*` *(proposed)*, see D-10), prints with the browser's print function (no PDF library).
 - A4 layout with 2×3 cards per page *(proposed)*. Each card shows the restaurant name, the table label in large type, the QR code (SVG, at least 3cm wide), a short instruction, and the Wi-Fi details if set.
 - Options: print all tables, print selected tables, and include the generic menu QR card (for the door or the counter).
 - QR codes are generated server-side as SVG with error-correction level M, using the `qrcode` npm package.
