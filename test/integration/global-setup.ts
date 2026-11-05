@@ -12,7 +12,10 @@ import {
 
 // Once per run: brings the test database up to the latest migration, lets the
 // app and admin roles log in, and seeds restaurants A and B. Tests must not change the
-// seeded rows, because test files run in parallel against this database.
+// seeded rows, because test files run in parallel against this database. For the
+// same reason they must not run DDL on a shared table: it queues behind another
+// file's open transaction, shows up as a waiter on that file's lock, and holds up
+// every later write to the table.
 export default async function setup() {
   try {
     const owner = ownerDatabaseSettings();

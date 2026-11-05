@@ -3404,6 +3404,10 @@ describe("harness coverage", () => {
 
   it("only the platform-admin seam calls the privileged functions", () => {
     const sourceDirectory = join(process.cwd(), "src");
+    // Any platform_ name followed by a bracket, so a new function is caught
+    // without being listed here, and a comment or table that only names one isn't.
+    // platform_admin_id_by_email is the sign-in lookup: no admin exists yet.
+    const privilegedCall = /\bplatform_(?!admin_id_by_email\b)\w+\s*\(/;
     const callers = readdirSync(sourceDirectory, {
       recursive: true,
       encoding: "utf8",
@@ -3411,9 +3415,7 @@ describe("harness coverage", () => {
       (file) =>
         /\.tsx?$/.test(file) &&
         !/\.test\.tsx?$/.test(file) &&
-        /platform_(create|list|enter|leave)_/.test(
-          readFileSync(join(sourceDirectory, file), "utf8"),
-        ),
+        privilegedCall.test(readFileSync(join(sourceDirectory, file), "utf8")),
     );
     expect(callers).toEqual([join("lib", "tenant", "platform-admin.ts")]);
   });
