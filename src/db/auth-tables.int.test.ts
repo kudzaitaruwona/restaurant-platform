@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   openAdminDatabase,
   openOwnerDatabase,
+  openStaffAuthDatabase,
   openTestDatabase,
 } from "../../test/integration/database";
 import { devIdentities } from "../lib/tenant/dev-identities";
@@ -13,10 +14,12 @@ import { staff, staffAuthSession, staffAuthUser } from "./schema";
  * tenant is known, so they can't have a tenant policy. Instead they're visible
  * only OUTSIDE a tenant: nothing inside withTenant() can read or touch a
  * credential, and that is all the code the app runs on tenant data. The staff
- * tables are app_tenant's and the admin tables app_admin's, and
- * admin-role.int.test.ts proves app_tenant can't reach the admin ones at all.
+ * tables are app_staff_auth's and the admin tables app_admin's, and
+ * staff-auth-role.int.test.ts and admin-role.int.test.ts prove app_tenant can't
+ * reach either at all.
  */
 const app = openTestDatabase();
+const staffLogin = openStaffAuthDatabase();
 const adminLogin = openAdminDatabase();
 const owner = openOwnerDatabase();
 
@@ -61,7 +64,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await owner.db.delete(staffAuthUser).where(eq(staffAuthUser.id, userId));
-  await Promise.all([app.pool.end(), adminLogin.pool.end(), owner.pool.end()]);
+  await Promise.all([
+    app.pool.end(),
+    staffLogin.pool.end(),
+    adminLogin.pool.end(),
+    owner.pool.end(),
+  ]);
 });
 
 const insideATenant = <T>(fn: (tx: typeof app.db) => Promise<T>, login = app) =>
@@ -105,9 +113,9 @@ describe("the auth tables", () => {
   });
 });
 
-describe("as app_tenant", () => {
+describe("as app_staff_auth, the staff audience's login", () => {
   it("outside a tenant, Better Auth can read them", async () => {
-    const rows = await app.db
+    const rows = await staffLogin.db
       .select({ userId: staffAuthSession.userId })
       .from(staffAuthSession)
       .where(eq(staffAuthSession.token, `token-${userId}`));
@@ -115,7 +123,7 @@ describe("as app_tenant", () => {
   });
 
   it("outside a tenant on a connection a tenant just used, too", async () => {
-    const client = await app.pool.connect();
+    const client = await staffLogin.pool.connect();
     try {
       await client.query("begin");
       await client.query(
@@ -136,7 +144,7 @@ describe("as app_tenant", () => {
     tx.execute(sql`select count(*)::int as count from ${sql.identifier(table)}`);
 
   it.each(tablesOf("staff"))("inside a tenant, %s shows nothing", async (table) => {
-    const { rows } = await insideATenant(countIn(table));
+    const { rows } = await insideATenant(countIn(table), staffLogin);
     expect(rows).toEqual([{ count: 0 }]);
   });
 
@@ -150,15 +158,17 @@ describe("as app_tenant", () => {
 
   it("inside a tenant, a session can't be forged", async () => {
     await expect(
-      insideATenant((tx) =>
-        tx.insert(staffAuthSession).values({
-          id: `forged-${userId}`,
-          token: `forged-${userId}`,
-          userId,
-          expiresAt: later,
-          createdAt: now,
-          updatedAt: now,
-        }),
+      insideATenant(
+        (tx) =>
+          tx.insert(staffAuthSession).values({
+            id: `forged-${userId}`,
+            token: `forged-${userId}`,
+            userId,
+            expiresAt: later,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        staffLogin,
       ),
     ).rejects.toMatchObject({ cause: { code: "42501" } });
   });
@@ -170,7 +180,7 @@ describe("as app_tenant", () => {
         .set({ expiresAt: new Date(0) })
         .where(eq(staffAuthSession.userId, userId));
       await tx.delete(staffAuthSession).where(eq(staffAuthSession.userId, userId));
-    });
+    }, staffLogin);
     const [row] = await owner.db
       .select({ expiresAt: staffAuthSession.expiresAt })
       .from(staffAuthSession)
@@ -224,6 +234,8 @@ describe("deactivating staff kills their sessions, in Postgres", () => {
     await owner.db.delete(staff).where(eq(staff.id, subject));
   });
 
+  // app_tenant holds no privilege on staff_auth_* at all (staff-auth-role.int.test.ts),
+  // so these prove the SECURITY DEFINER trigger needs none.
   it("through the role the app uses, inside a tenant, where it can't see sessions", async () => {
     await signIn();
     await insideATenant((tx) =>
@@ -247,10 +259,12 @@ describe("deactivating staff kills their sessions, in Postgres", () => {
   });
 
   it("changing the email also ends them: the old address no longer proves anything", async () => {
-    await owner.db
-      .update(staff)
-      .set({ email: `moved-${subjectEmail}` })
-      .where(eq(staff.id, subject));
+    await insideATenant((tx) =>
+      tx
+        .update(staff)
+        .set({ email: `moved-${subjectEmail}` })
+        .where(eq(staff.id, subject)),
+    );
     expect(await sessionsLeft()).toBe(0);
   });
 });

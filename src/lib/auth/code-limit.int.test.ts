@@ -27,7 +27,8 @@ import { devIdentities } from "../tenant/dev-identities";
 
 /**
  * The per-email ceiling on sign-in codes (S-30), through the real endpoints and
- * a real database as app_tenant. Better Auth's own limiter is off here, as it is
+ * a real database, under sign-in's own logins: app_staff_auth for staff and
+ * app_admin for the admin. Better Auth's own limiter is off here, as it is
  * everywhere outside production, so anything refused was refused by the ceiling.
  */
 vi.mock("next/headers", () => ({

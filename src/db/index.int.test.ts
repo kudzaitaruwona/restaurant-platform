@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   adminDatabaseSettings,
+  staffAuthDatabaseSettings,
   testDatabaseSettings,
 } from "../../test/integration/database";
 
@@ -42,5 +43,29 @@ describe("@/db/admin (the admin path's database)", () => {
     const { getAdminDb } = await import("@/db/admin");
 
     expect(() => getAdminDb()).toThrow(/DATABASE_URL_ADMIN is missing/);
+  });
+});
+
+describe("@/db/staff-auth (staff sign-in's database)", () => {
+  afterAll(() => vi.unstubAllEnvs());
+
+  it("connects as app_staff_auth, from DATABASE_URL_STAFF_AUTH", async () => {
+    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+    vi.stubEnv("DATABASE_URL_STAFF_AUTH", staffAuthDatabaseSettings().connectionString);
+    vi.resetModules();
+    const { getStaffAuthDb } = await import("@/db/staff-auth");
+
+    const { rows } = await getStaffAuthDb().execute(sql`select current_user as name`);
+
+    expect(rows[0].name).toBe("app_staff_auth");
+  });
+
+  it("says what's missing rather than falling back to the app's role", async () => {
+    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+    vi.stubEnv("DATABASE_URL_STAFF_AUTH", "");
+    vi.resetModules();
+    const { getStaffAuthDb } = await import("@/db/staff-auth");
+
+    expect(() => getStaffAuthDb()).toThrow(/DATABASE_URL_STAFF_AUTH is missing/);
   });
 });

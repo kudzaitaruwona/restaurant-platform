@@ -14,6 +14,8 @@ const valid = {
 // Sign-in has to work in production, so production can't start without these.
 const auth = {
   DATABASE_URL_ADMIN: "postgres://app_admin:app_admin@localhost:5499/restaurant_dev",
+  DATABASE_URL_STAFF_AUTH:
+    "postgres://app_staff_auth:app_staff_auth@localhost:5499/restaurant_dev",
   AUTH_SECRET: "a-secret-of-at-least-thirty-two-characters",
   GOOGLE_CLIENT_ID: "client-id",
   GOOGLE_CLIENT_SECRET: "client-secret",
@@ -58,6 +60,21 @@ describe("parseEnv", () => {
   ])("refuses an admin login that connects as %s", (_name, url) => {
     const error = errorFrom({ ...valid, DATABASE_URL_ADMIN: url });
     expect(error.message).toMatch(/DATABASE_URL_ADMIN/);
+    expect(error.message).not.toContain("secret");
+  });
+
+  it("doesn't need staff sign-in's login outside production", () => {
+    expect(parseEnv(valid).DATABASE_URL_STAFF_AUTH).toBeUndefined();
+  });
+
+  it.each([
+    ["the app's role", "postgres://app_tenant:secret@host/db"],
+    ["the admin's role", "postgres://app_admin:secret@host/db"],
+    ["the role that owns the tables", "postgres://neondb_owner:secret@host/db"],
+    ["no URL at all", "app_staff_auth"],
+  ])("refuses a staff sign-in login that connects as %s", (_name, url) => {
+    const error = errorFrom({ ...valid, DATABASE_URL_STAFF_AUTH: url });
+    expect(error.message).toMatch(/DATABASE_URL_STAFF_AUTH must connect as app_staff_auth/);
     expect(error.message).not.toContain("secret");
   });
 

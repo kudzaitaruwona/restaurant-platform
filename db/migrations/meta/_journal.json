@@ -211,6 +211,13 @@
       "when": 1793834759658,
       "tag": "0029_booking_success_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794207370125,
+      "tag": "0030_staff_auth_database_login",
+      "breakpoints": true
     }
   ]
 }
