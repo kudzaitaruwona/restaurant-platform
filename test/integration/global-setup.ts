@@ -1,18 +1,20 @@
 // Relative imports: global setup runs outside the test projects' resolver.
 import { provisionAppRole } from "../../src/db/app-role";
-import { ADMIN_DATABASE_ROLE } from "../../src/lib/env";
+import { ADMIN_DATABASE_ROLE, STAFF_AUTH_DATABASE_ROLE } from "../../src/lib/env";
 import { runMigrations } from "../../src/db/migrate";
 import { seedDevData } from "../../src/db/seed";
 import {
   adminDatabaseSettings,
   openOwnerDatabase,
   ownerDatabaseSettings,
+  staffAuthDatabaseSettings,
   testDatabaseSettings,
 } from "./database";
 
 // Once per run: brings the test database up to the latest migration, lets the
-// app and admin roles log in, and seeds restaurants A and B. Tests must not change the
-// seeded rows, because test files run in parallel against this database.
+// app, admin and staff sign-in roles log in, and seeds restaurants A and B.
+// Tests must not change the seeded rows, because test files run in parallel
+// against this database.
 export default async function setup() {
   try {
     const owner = ownerDatabaseSettings();
@@ -22,6 +24,11 @@ export default async function setup() {
       owner,
       adminDatabaseSettings().connectionString,
       ADMIN_DATABASE_ROLE,
+    );
+    await provisionAppRole(
+      owner,
+      staffAuthDatabaseSettings().connectionString,
+      STAFF_AUTH_DATABASE_ROLE,
     );
 
     const { db, pool } = openOwnerDatabase();

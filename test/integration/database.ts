@@ -29,6 +29,11 @@ export function adminDatabaseSettings() {
   return settingsFor("TEST_DATABASE_URL_ADMIN");
 }
 
+/** Staff sign-in's role, app_staff_auth: the only one that reaches staff_auth_*. */
+export function staffAuthDatabaseSettings() {
+  return settingsFor("TEST_DATABASE_URL_STAFF_AUTH");
+}
+
 export function openOwnerDatabase() {
   return createDatabase(ownerDatabaseSettings());
 }
@@ -39,4 +44,8 @@ export function openTestDatabase() {
 
 export function openAdminDatabase() {
   return createDatabase(adminDatabaseSettings());
+}
+
+export function openStaffAuthDatabase() {
+  return createDatabase(staffAuthDatabaseSettings());
 }

@@ -81,8 +81,37 @@ export { withTenant, staff };`,
     ).toEqual([]);
   }, 30_000);
 
-  // authDatabase() hands back the admin login or the raw one, so it's a way round
-  // both of the boundaries above.
+  // Staff sign-in's login (S-28, S-30) can write a working magic link for anyone.
+  const staffAuthImports = [
+    `import { getStaffAuthDb } from "@/db/staff-auth";\nexport { getStaffAuthDb };`,
+    `import { getStaffAuthDb } from "../../db/staff-auth";\nexport { getStaffAuthDb };`,
+  ];
+
+  it.each(
+    [
+      "src/app/login/page.tsx",
+      "src/lib/staff-management.ts",
+      "src/lib/storage/index.ts",
+      "src/lib/tenant/index.ts",
+      "src/lib/tenant/platform-admin.ts",
+      "src/lib/tenant/admin-entry.ts",
+      "src/lib/auth/index.ts",
+      "src/lib/auth/code-limit.ts",
+    ].flatMap((filePath) => staffAuthImports.map((code) => [filePath, code])),
+  )("staff sign-in's login is out of reach of %s: %s", async (filePath, code) => {
+    expect(await restrictedImports(code, filePath)).not.toEqual([]);
+  }, 30_000);
+
+  it.each(["src/lib/auth/database.ts", "src/lib/auth/identity.ts"])(
+    "sign-in's own handles may open it: %s",
+    async (filePath) => {
+      expect(await restrictedImports(staffAuthImports[0], filePath)).toEqual([]);
+    },
+    30_000,
+  );
+
+  // authDatabase() hands back the admin login or staff sign-in's, so it's a way
+  // round both of the boundaries above.
   const authDatabaseImports = [
     `import { authDatabase } from "@/lib/auth/database";\nexport { authDatabase };`,
     `import { authDatabase } from "../auth/database";\nexport { authDatabase };`,

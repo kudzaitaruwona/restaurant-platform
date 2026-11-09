@@ -3,17 +3,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   openAdminDatabase,
   openOwnerDatabase,
-  openTestDatabase,
+  openStaffAuthDatabase,
 } from "../../test/integration/database";
 import { devIdentities } from "../lib/tenant/dev-identities";
 import { platformAdmins, staff } from "./schema";
 
 /**
- * Sign-in happens before any tenant is known, so RLS rightly hides `staff` from
- * app_tenant. These two SECURITY DEFINER functions are the only way past it. The
- * admin one belongs to the admin login (S-28).
+ * Sign-in happens before any tenant is known, so RLS rightly hides `staff`.
+ * These two SECURITY DEFINER functions are the only way past it, each for its
+ * own audience's login: the staff one for staff sign-in's, the admin one for the
+ * admin's (S-28). staff-auth-role.int.test.ts proves app_tenant can call neither.
  */
-const app = openTestDatabase();
+const staffLogin = openStaffAuthDatabase();
 const adminLogin = openAdminDatabase();
 const owner = openOwnerDatabase();
 
@@ -40,12 +41,12 @@ beforeAll(async () => {
 afterAll(async () => {
   await owner.db.delete(staff).where(eq(staff.id, inactive));
   await owner.db.delete(platformAdmins).where(eq(platformAdmins.id, admin));
-  await Promise.all([app.pool.end(), adminLogin.pool.end(), owner.pool.end()]);
+  await Promise.all([staffLogin.pool.end(), adminLogin.pool.end(), owner.pool.end()]);
 });
 
 const staffLookup = async (email: string) =>
   (
-    await app.db.execute(
+    await staffLogin.db.execute(
       sql`select * from staff_identity_by_email(${email})`,
     )
   ).rows;
@@ -57,7 +58,7 @@ const adminLookup = async (email: string) =>
     )
   ).rows[0].id;
 
-describe("staff_identity_by_email, as app_tenant with no tenant set", () => {
+describe("staff_identity_by_email, as app_staff_auth with no tenant set", () => {
   it("finds an active staff member and returns only what a session needs", async () => {
     expect(await staffLookup(`${aOwner.key}@dev.example.test`)).toEqual([
       {
@@ -164,7 +165,7 @@ describe("how the functions are locked down", () => {
         and acl.grantee <> p.proowner
     `);
     expect(rows).toEqual([
-      { grantee: name.startsWith("platform_") ? "app_admin" : "app_tenant" },
+      { grantee: name.startsWith("platform_") ? "app_admin" : "app_staff_auth" },
     ]);
   });
 });

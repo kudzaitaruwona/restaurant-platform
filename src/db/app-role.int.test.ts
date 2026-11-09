@@ -5,10 +5,12 @@ import {
   adminDatabaseSettings,
   openAdminDatabase,
   openOwnerDatabase,
+  openStaffAuthDatabase,
   ownerDatabaseSettings,
+  staffAuthDatabaseSettings,
   testDatabaseSettings,
 } from "../../test/integration/database";
-import { ADMIN_DATABASE_ROLE } from "../lib/env";
+import { ADMIN_DATABASE_ROLE, STAFF_AUTH_DATABASE_ROLE } from "../lib/env";
 import { provisionAppRole } from "./app-role";
 
 describe("provisionAppRole when the database refuses", () => {
@@ -60,6 +62,34 @@ describe("provisionAppRole on the admin role", () => {
         ADMIN_DATABASE_ROLE,
       ),
     ).rejects.toThrow(/must log in as app_admin/);
+  });
+});
+
+describe("provisionAppRole on staff sign-in's role", () => {
+  it("is safe to run again, leaving it able to log in", async () => {
+    const staffAuth = openStaffAuthDatabase();
+    try {
+      await provisionAppRole(
+        ownerDatabaseSettings(),
+        staffAuthDatabaseSettings().connectionString,
+        STAFF_AUTH_DATABASE_ROLE,
+      );
+
+      const { rows } = await staffAuth.db.execute(sql`select current_user as name`);
+      expect(rows).toEqual([{ name: STAFF_AUTH_DATABASE_ROLE }]);
+    } finally {
+      await staffAuth.pool.end();
+    }
+  });
+
+  it("refuses the app's URL: each role takes the password from its own", async () => {
+    await expect(
+      provisionAppRole(
+        ownerDatabaseSettings(),
+        testDatabaseSettings().connectionString,
+        STAFF_AUTH_DATABASE_ROLE,
+      ),
+    ).rejects.toThrow(/must log in as app_staff_auth/);
   });
 });
 

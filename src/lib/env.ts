@@ -4,9 +4,9 @@ import { z } from "zod";
  * Environment variables, validated with zod.
  *
  * Required: what the app needs to serve any request today (database, public
- * URL, photo storage). Required in production: sign-in and the admin login,
- * which development can do without (it has the dev bypass, and prints emails to
- * the console).
+ * URL, photo storage). Required in production: sign-in, with its own login, and
+ * the admin login, which development can do without (it has the dev bypass,
+ * and prints emails to the console).
  * Optional: variables owned by later tickets (WhatsApp, Turnstile, the
  * scheduled job) and the migration/system database URLs, which only scripts and
  * specific routes load. A later ticket that starts depending on one of them
@@ -28,6 +28,15 @@ export const APP_DATABASE_ROLE = "app_tenant";
  * applies to it too, and provisionAppRole holds it to the same rules.
  */
 export const ADMIN_DATABASE_ROLE = "app_admin";
+
+/**
+ * The role staff sign-in connects as (S-28, S-30): the only one that can touch
+ * the staff_auth_* tables or find who an email belongs to, and nothing else. A
+ * magic link is only a row in staff_auth_verification, so app_tenant mustn't be
+ * able to write one. RLS applies to it too, and provisionAppRole holds it to
+ * the same rules.
+ */
+export const STAFF_AUTH_DATABASE_ROLE = "app_staff_auth";
 
 const blankToUndefined = (value: unknown) => (value === "" ? undefined : value);
 
@@ -79,6 +88,12 @@ const adminDatabaseUrl = connectsAs(
   "the role only the admin path uses",
 );
 
+// app_tenant here would hand every tenant query the power to forge a sign-in.
+const staffAuthDatabaseUrl = connectsAs(
+  STAFF_AUTH_DATABASE_ROLE,
+  "the role only staff sign-in uses",
+);
+
 const configShape = {
   // Postgres (Neon) through the WebSocket Pool driver (D-07). The app's role;
   // DATABASE_URL_UNPOOLED is the role that owns the tables, for migrations.
@@ -87,6 +102,8 @@ const configShape = {
   DATABASE_URL_SYSTEM: optional(postgresUrl()),
   // The admin path's role (S-28). Only src/db/admin.ts opens it.
   DATABASE_URL_ADMIN: optional(adminDatabaseUrl),
+  // Staff sign-in's role (S-28, S-30). Only src/db/staff-auth.ts opens it.
+  DATABASE_URL_STAFF_AUTH: optional(staffAuthDatabaseUrl),
   // Local development and CI only: host:port/path of a Neon wsproxy in front
   // of a plain Postgres. Refused in production: setting it turns off TLS to the
   // database for the whole process (src/db/client.ts).
@@ -132,6 +149,7 @@ const developmentOnlyKeys = ["DEV_AUTH_BYPASS", "NEON_WS_PROXY"] as const;
 
 const productionOnlyKeys = [
   "DATABASE_URL_ADMIN",
+  "DATABASE_URL_STAFF_AUTH",
   "AUTH_SECRET",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",

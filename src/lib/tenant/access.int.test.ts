@@ -3459,6 +3459,29 @@ describe("harness coverage", () => {
     );
   });
 
+  it("only sign-in opens staff sign-in's login", () => {
+    const sourceDirectory = join(process.cwd(), "src");
+    const openers = readdirSync(sourceDirectory, {
+      recursive: true,
+      encoding: "utf8",
+    }).filter(
+      (file) =>
+        /\.tsx?$/.test(file) &&
+        !/\.test\.tsx?$/.test(file) &&
+        /getStaffAuthDb\(|DATABASE_URL_STAFF_AUTH/.test(
+          readFileSync(join(sourceDirectory, file), "utf8"),
+        ),
+    );
+    expect(openers.sort()).toEqual(
+      [
+        join("db", "staff-auth.ts"),
+        join("lib", "auth", "database.ts"),
+        join("lib", "auth", "identity.ts"),
+        join("lib", "env.ts"),
+      ].sort(),
+    );
+  });
+
   it("identities really are in the restaurants the tests assume", () => {
     expect(findDevIdentity("a-owner")?.restaurantId).toBe(fixtures.a.restaurantId);
     expect(findDevIdentity("b-owner")?.restaurantId).toBe(fixtures.b.restaurantId);
