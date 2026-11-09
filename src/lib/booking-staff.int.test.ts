@@ -56,6 +56,19 @@ const date = "2026-11-06"; // a Friday
 const SEVEN = "2026-11-06T17:00:00Z";
 const QUARTER_TO_NINE = "2026-11-06T18:45:00Z";
 
+/**
+ * The race tests below need bookings that hold their table by the database's
+ * clock (booking_holds_table, migration 0023: hold_ends_at > now()), or the
+ * table lock is never taken and there is nothing to wait behind. So they book a
+ * real evening, two Harare days from whenever they run, and ask the engine at the
+ * real time. The fixed-clock tests above and below keep the fixed day.
+ */
+const harareDay = (instant: Date) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Harare" }).format(instant);
+const LIVE_DATE = harareDay(new Date(Date.now() + 2 * 86_400_000));
+const LIVE_SEVEN = `${LIVE_DATE}T17:00:00Z`;
+const LIVE_QUARTER_TO_NINE = `${LIVE_DATE}T18:45:00Z`;
+
 const actor = (restaurantId: string, extra: { platformAdminId?: string } = {}) => ({
   restaurantId,
   staffId: crypto.randomUUID(),
@@ -486,9 +499,9 @@ describe("two staff taking one table", () => {
     const [a, b] = await withTableLock(tableIds[0], async (holder) => {
       // Each has read the table as free and inserted; the first insert is held
       // up behind the lock, so the second one waits on the first's row.
-      const first = addStaffBooking(actor(restaurantId), request({ name: "First" }), now);
+      const first = addStaffBooking(actor(restaurantId), request({ name: "First", date: LIVE_DATE }), new Date());
       const firstPid = await blockedBehind(holder.pid);
-      const second = addStaffBooking(actor(restaurantId), request({ name: "Second" }), now);
+      const second = addStaffBooking(actor(restaurantId), request({ name: "Second", date: LIVE_DATE }), new Date());
       await blockedBehind(firstPid);
       await holder.release();
       return Promise.all([first, second]);
@@ -507,9 +520,9 @@ describe("two staff taking one table", () => {
     });
 
     const [a, b] = await withTableLock(tableIds[0], async (holder) => {
-      const first = addStaffBooking(actor(restaurantId), request({ name: "First" }), now);
+      const first = addStaffBooking(actor(restaurantId), request({ name: "First", date: LIVE_DATE }), new Date());
       const firstPid = await blockedBehind(holder.pid);
-      const second = addStaffBooking(actor(restaurantId), request({ name: "Second" }), now);
+      const second = addStaffBooking(actor(restaurantId), request({ name: "Second", date: LIVE_DATE }), new Date());
       await blockedBehind(firstPid);
       await holder.release();
       return Promise.all([first, second]);
@@ -524,9 +537,9 @@ describe("two staff taking one table", () => {
     const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
 
     const [staffResult, guestResult] = await withTableLock(tableIds[0], async (holder) => {
-      const first = addStaffBooking(actor(restaurantId), request(), now);
+      const first = addStaffBooking(actor(restaurantId), request({ date: LIVE_DATE }), new Date());
       const firstPid = await blockedBehind(holder.pid);
-      const second = confirmBooking({ restaurantId }, guest(), now);
+      const second = confirmBooking({ restaurantId }, guest({ date: LIVE_DATE }), new Date());
       await blockedBehind(firstPid);
       await holder.release();
       return Promise.all([first, second]);
@@ -870,8 +883,8 @@ describe("a move racing a seat or a cancel", () => {
     const [one, two] = await owner.db
       .insert(bookings)
       .values([
-        aBooking(restaurantId, tableIds[0], SEVEN, QUARTER_TO_NINE),
-        aBooking(restaurantId, tableIds[1], SEVEN, QUARTER_TO_NINE),
+        aBooking(restaurantId, tableIds[0], LIVE_SEVEN, LIVE_QUARTER_TO_NINE),
+        aBooking(restaurantId, tableIds[1], LIVE_SEVEN, LIVE_QUARTER_TO_NINE),
       ])
       .returning();
     const who = actor(restaurantId);

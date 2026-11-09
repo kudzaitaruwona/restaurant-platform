@@ -396,7 +396,11 @@ describe("every SECURITY DEFINER function", () => {
     for (const { name, config, isTrigger, executors } of await definers()) {
       expect(config, name).toContain("search_path=pg_catalog, pg_temp");
       // A trigger needs no EXECUTE grant, so nobody at all should hold one.
-      const runner = name.startsWith("platform_") ? "app_admin" : "app_tenant";
+      const runner = name.startsWith("platform_")
+        ? "app_admin"
+        : name === "staff_identity_by_email"
+          ? "app_staff_auth"
+          : "app_tenant";
       expect(executors, name).toEqual(isTrigger ? [] : [runner]);
     }
   });

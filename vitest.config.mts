@@ -13,11 +13,14 @@ for (const [key, value] of Object.entries(loadEnv("test", root, ""))) {
   process.env[key] ??= value;
 }
 
-// Tests stub DATABASE_URL at the test database themselves. The admin login is
-// used by far fewer of them, so point it there once: nothing here should ever
-// reach the development database.
+// Tests stub DATABASE_URL at the test database themselves. The admin and staff
+// sign-in logins are used by far fewer of them, so point them there once:
+// nothing here should ever reach the development database.
 if (process.env.TEST_DATABASE_URL_ADMIN) {
   process.env.DATABASE_URL_ADMIN = process.env.TEST_DATABASE_URL_ADMIN;
+}
+if (process.env.TEST_DATABASE_URL_STAFF_AUTH) {
+  process.env.DATABASE_URL_STAFF_AUTH = process.env.TEST_DATABASE_URL_STAFF_AUTH;
 }
 
 // forbidden() and unauthorized() check this flag. Next.js sets it at build time

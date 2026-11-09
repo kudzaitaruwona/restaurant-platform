@@ -31,7 +31,7 @@ The public menu page is the one exception: a Route Handler with no React, Tailwi
 npm install
 cp .env.example .env.local   # fill in values; the "local" hints match docker-compose.yml
 npm run db:up                # Postgres 17 on :5499 and Neon's wsproxy on :5498
-npm run db:migrate           # also lets the app and admin roles log in
+npm run db:migrate           # also lets the app, admin and staff sign-in roles log in
 npm run db:seed              # restaurants A and B and the platform admin, for DEV_AUTH_BYPASS
 npm run dev
 ```
@@ -47,11 +47,11 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run lint` | ESLint, including the photo-storage and database import boundaries |
 | `npm run typecheck` | Route type generation plus `tsc --noEmit` |
 | `npm run test:unit` | Unit tests (no database) |
-| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin` |
+| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin`, `TEST_DATABASE_URL_STAFF_AUTH` as `app_staff_auth` |
 | `npm test` | Both test projects |
 | `npm run test:production` | The public pages' cache, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
-| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL` and the `app_admin` password from `DATABASE_URL_ADMIN`, and fails if RLS wouldn't apply to either role |
+| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL`, the `app_admin` password from `DATABASE_URL_ADMIN` and the `app_staff_auth` password from `DATABASE_URL_STAFF_AUTH`, and fails if RLS wouldn't apply to any of them |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
 
 ### Tenant isolation
@@ -60,7 +60,7 @@ All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` 
 
 A public route has no session, so `resolvePublicToken()` (`src/lib/tenant/public.ts`) turns its token into a tenant for `withTenant()` (S-31). Code on a public route imports `@/lib/tenant/scope`, not `@/lib/tenant`, which loads sign-in; a test fails if it reaches Better Auth (S-32).
 
-There are three database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), under the same rules and with its own pool (see "Platform admin"). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
+There are four database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), and staff sign-in as `app_staff_auth` (`DATABASE_URL_STAFF_AUTH`), each under the same rules and with its own pool (see "Platform admin" and "Sign-in"). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
@@ -74,7 +74,7 @@ Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, co
 
 ### Platform admin
 
-The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403 until it enters one. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them, and only `app_admin` can: `app_tenant` has no `EXECUTE` on `platform_*` and no privilege on `admin_auth_*`. ESLint and `access.int.test.ts` keep `getAdminDb` to the files listed as `adminSeam` in `eslint.config.mjs`, and `authDatabase`, which hands back that login or the raw one, to `src/lib/auth`. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. The onboarding checklist for each restaurant is on `/admin` and shown to no one else (S-33): `platform_onboarding_checklist` derives it, and `platform_set_qr_codes_printed` ticks the one manual item and audits it. `/admin` also lists every restaurant's booking success metrics through `platform_list_booking_metrics`, a read across tenants *(proposed, S-34)*. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
+The platform admin belongs to no restaurant: `getPlatformAdminContext()` (`src/lib/tenant/platform-admin.ts`) says who it is, and `getTenantContext()` answers it with a 403 until it enters one. `/admin` creates restaurants and their first owners through `SECURITY DEFINER` functions, because `app_tenant` can't do either itself. Only that file calls them, and only `app_admin` can: `app_tenant` has no `EXECUTE` on `platform_*` and no privilege on `admin_auth_*`. ESLint and `access.int.test.ts` keep `getAdminDb` to the files listed as `adminSeam` in `eslint.config.mjs`, and `authDatabase`, which hands back that login or staff sign-in's, to `src/lib/auth`. S-28 in `docs/decisions.md` says what stops a tenant identity reaching them and what doesn't. The onboarding checklist for each restaurant is on `/admin` and shown to no one else (S-33): `platform_onboarding_checklist` derives it, and `platform_set_qr_codes_printed` ticks the one manual item and audits it. `/admin` also lists every restaurant's booking success metrics through `platform_list_booking_metrics`, a read across tenants *(proposed, S-34)*. Adding an admin route: add it to `adminRoutes` in `src/lib/tenant/access.int.test.ts`.
 
 "Enter restaurant" on `/admin` puts the session in that tenant's staff UI, under a banner with a way back out. `getTenantContext()` then returns the restaurant's shadow staff row, as an owner, plus `platformAdminId`. The restaurant is held in `admin_auth_entry` against the session, so nothing in the browser chooses it and it ends with the session. Inside a tenant the admin works through `withTenant()` as `app_tenant`, like anyone else.
 
@@ -84,8 +84,10 @@ Every admin action inside a tenant has to reach `audit_log`. `recordAudit` recor
 
 Staff and the platform admin sign in with a magic link, an emailed code or Google (S-27, S-30). `src/lib/auth` holds Better Auth, with one instance per session type: `/api/auth/staff/*` and `/api/auth/admin/*`. `getTenantContext()` and `getPlatformAdminContext()` read those sessions and check the staff or admin row on every request. Only an existing active staff record or platform admin can get a session, and the lookups go through `SECURITY DEFINER` functions, because RLS hides `staff` before a tenant is known.
 
+Each session type has its own database login: the staff audience connects as `app_staff_auth` (`src/db/staff-auth.ts`) and the admin audience as `app_admin`. `app_tenant` holds no privilege on `staff_auth_*` or `admin_auth_*`, because a magic link is only a row there, and it can't run the lookups either (S-28, S-30). ESLint and `access.int.test.ts` keep `getStaffAuthDb` to `src/lib/auth/database.ts` and `src/lib/auth/identity.ts`.
+
 `src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher. It also runs on public pages, but only to refuse methods the cache can't take (S-32).
 
 ### Environment
 
-Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine. A build that needs the local database goes through the wsproxy, which production refuses, so start it with `NODE_ENV=test npx next start` and the variables in the shell: the bundle is still the production build, and `.env.local` isn't read.
+Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN`, `DATABASE_URL_STAFF_AUTH` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine. A build that needs the local database goes through the wsproxy, which production refuses, so start it with `NODE_ENV=test npx next start` and the variables in the shell: the bundle is still the production build, and `.env.local` isn't read.

@@ -1,13 +1,15 @@
 import "server-only";
 import { sql } from "drizzle-orm";
-import { getDb } from "@/db";
 import { getAdminDb } from "@/db/admin";
+import { getStaffAuthDb } from "@/db/staff-auth";
 
 /**
  * Who an email belongs to, before any tenant is known. RLS hides `staff` here,
  * so these go through the SECURITY DEFINER functions in the migration (S-30),
- * which refuse deactivated staff and platform_admin shadow rows themselves. Who
- * the platform admins are is for the admin login alone (S-28).
+ * which refuse deactivated staff and platform_admin shadow rows themselves.
+ * Each is for its own audience's login alone: who the staff are for staff
+ * sign-in's, and who the platform admins are for the admin's (S-28). Both run on
+ * every signed-in request, on the login that has just read the session.
  */
 export type StaffIdentity = {
   restaurantId: string;
@@ -18,7 +20,7 @@ export type StaffIdentity = {
 export async function findStaffIdentity(
   email: string,
 ): Promise<StaffIdentity | undefined> {
-  const { rows } = await getDb().execute<{
+  const { rows } = await getStaffAuthDb().execute<{
     restaurant_id: string;
     staff_id: string;
     role: StaffIdentity["role"];

@@ -27,10 +27,21 @@ const adminSeam = [
   "test/**",
 ];
 
+// Staff sign-in's login (S-28, S-30): the only files that may open it, because
+// it can write a working magic link for anyone. The tooling that runs outside
+// any request may open it too, as it may the admin login.
+const tooling = ["src/db/**", "scripts/**", "test/**"];
+const staffAuthSeam = [
+  ...tooling,
+  "src/lib/auth/database.ts",
+  "src/lib/auth/identity.ts",
+];
+
 // Sign-in's own files, the only ones that may use authDatabase(): it hands back
-// the admin login or the raw one, so anywhere else it's a way round both.
+// the admin login or staff sign-in's, so anywhere else it's a way round both.
 const authSeam = ["src/lib/auth/**"];
-const authAndAdminSeam = adminSeam.filter((file) => file.startsWith("src/lib/auth/"));
+// The two handles sign-in opens both logins through.
+const authHandles = staffAuthSeam.filter((file) => file.startsWith("src/lib/auth/"));
 
 // Photo storage boundary (D-07): app code touches storage only through
 // uploadImage / deleteImage / getUrl from "@/lib/storage".
@@ -68,6 +79,14 @@ const adminDatabaseBoundary = [
   },
 ];
 
+// Nothing but sign-in reaches the role that can write staff_auth_*.
+const staffAuthDatabaseBoundary = [
+  {
+    regex: "(^|/)db/staff-auth$",
+    message: "Only sign-in opens staff sign-in's login (S-28, S-30).",
+  },
+];
+
 const authDatabaseBoundary = [
   {
     regex: "(^|/)auth/database$",
@@ -100,21 +119,34 @@ const eslintConfig = defineConfig([
     rules: restrictImports(
       storageBoundary,
       adminDatabaseBoundary,
+      staffAuthDatabaseBoundary,
       authDatabaseBoundary,
     ),
   },
   {
     files: adminSeam,
-    ignores: authSeam,
+    ignores: [...authSeam, ...tooling],
+    rules: restrictImports(
+      storageBoundary,
+      staffAuthDatabaseBoundary,
+      authDatabaseBoundary,
+    ),
+  },
+  {
+    files: tooling,
     rules: restrictImports(storageBoundary, authDatabaseBoundary),
   },
   {
     files: authSeam,
-    ignores: adminSeam,
-    rules: restrictImports(storageBoundary, adminDatabaseBoundary),
+    ignores: authHandles,
+    rules: restrictImports(
+      storageBoundary,
+      adminDatabaseBoundary,
+      staffAuthDatabaseBoundary,
+    ),
   },
   {
-    files: authAndAdminSeam,
+    files: authHandles,
     rules: restrictImports(storageBoundary),
   },
   // Override default ignores of eslint-config-next.

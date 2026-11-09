@@ -9,6 +9,8 @@ const validEnv = {
   R2_BUCKET: "photos",
   R2_PUBLIC_BASE_URL: "https://images.example.test",
   DATABASE_URL_ADMIN: "postgres://app_admin:app_admin@localhost:5499/restaurant_dev",
+  DATABASE_URL_STAFF_AUTH:
+    "postgres://app_staff_auth:app_staff_auth@localhost:5499/restaurant_dev",
   AUTH_SECRET: "a-secret-of-at-least-thirty-two-characters",
   GOOGLE_CLIENT_ID: "client-id",
   GOOGLE_CLIENT_SECRET: "client-secret",

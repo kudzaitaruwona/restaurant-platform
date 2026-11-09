@@ -23,8 +23,9 @@ import { statusOf } from "../../../test/integration/http";
 import { devIdentities } from "../tenant/dev-identities";
 
 /**
- * The sign-in rules, through the real endpoints and a real database as
- * app_tenant. Only Resend and Google are fake, at the network boundary.
+ * The sign-in rules, through the real endpoints and a real database, under the
+ * app's own logins: app_staff_auth and app_admin for sign-in, app_tenant for the
+ * tenant context. Only Resend and Google are fake, at the network boundary.
  */
 const request = vi.hoisted(() => ({ cookie: "" }));
 

@@ -40,9 +40,9 @@ import { findPlatformAdminId, findStaffIdentity } from "./identity";
 
 /**
  * Sign-in (S-27, S-30). Two separate Better Auth instances, one per session type
- * (D-07): own cookie, own tables, own URLs, and for the platform admin its own
- * database login (S-28). The only way in is an email that already belongs to an
- * active staff record or a platform admin.
+ * (D-07): own cookie, own tables, own URLs and own database login (S-28). The
+ * only way in is an email that already belongs to an active staff record or a
+ * platform admin.
  */
 export type Audience = "staff" | "admin";
 
