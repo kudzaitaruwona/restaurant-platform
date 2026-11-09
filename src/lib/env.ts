@@ -31,7 +31,7 @@ export const ADMIN_DATABASE_ROLE = "app_admin";
 
 /**
  * The role staff sign-in connects as (S-28, S-30): the only one that can touch
- * the staff_auth_* tables or find who an email belongs to, and nothing else. A
+ * the staff_auth_* tables or look an email up across tenants, and nothing else. A
  * magic link is only a row in staff_auth_verification, so app_tenant mustn't be
  * able to write one. RLS applies to it too, and provisionAppRole holds it to
  * the same rules.

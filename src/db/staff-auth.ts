@@ -7,8 +7,8 @@ let database: Database | undefined;
 /**
  * Staff sign-in's database: its own login and its own pool, on
  * DATABASE_URL_STAFF_AUTH (S-28, S-30). Only this role can touch staff_auth_*,
- * where a magic link is only a row, or find who an email belongs to, so only
- * sign-in may open it: ESLint keeps it to the files listed as staffAuthSeam in
+ * where a magic link is only a row, or look an email up across tenants
+ * (staff_identity_by_email), so only sign-in may open it: ESLint keeps it to the files listed as staffAuthSeam in
  * eslint.config.mjs. Tenant data isn't here.
  */
 export function getStaffAuthDb(): Database {

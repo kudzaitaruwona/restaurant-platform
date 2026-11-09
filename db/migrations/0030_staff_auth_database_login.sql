@@ -42,7 +42,8 @@ TO app_staff_auth;
 -- Who an email belongs to: sign-in asks before letting anyone in, and
 -- getTenantContext() asks on every request, right after reading the session
 -- through this same login. Moving it rather than sharing it keeps one caller per
--- function, and leaves app_tenant no way to map an email to a restaurant.
+-- function, and leaves app_tenant without the lookup across tenants by email;
+-- S-28 says what it can still read.
 REVOKE EXECUTE ON FUNCTION public.staff_identity_by_email(text) FROM app_tenant;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION public.staff_identity_by_email(text) TO app_staff_auth;
