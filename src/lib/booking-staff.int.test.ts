@@ -22,6 +22,25 @@ import { seatWalkIn } from "./walk-in";
  */
 const owner = openOwnerDatabase();
 
+/**
+ * A deadlock on demand, in the transaction after the move's update, with a real
+ * SQLSTATE. Not a trigger on bookings: test files share one database, and that
+ * DDL queues behind any open transaction on the table, and every write behind it.
+ */
+const audit = vi.hoisted(() => ({ deadlocks: false }));
+vi.mock("@/lib/tenant/audit", async (original) => {
+  const actual = await original<typeof import("@/lib/tenant/audit")>();
+  return {
+    ...actual,
+    recordAudit: async (...args: Parameters<typeof actual.recordAudit>) => {
+      if (audit.deadlocks) {
+        await args[0].execute(sql`do $$ begin raise exception 'deadlock detected' using errcode = '40P01'; end $$`);
+      }
+      return actual.recordAudit(...args);
+    },
+  };
+});
+
 beforeAll(() => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
 });
@@ -638,25 +657,14 @@ describe("move table", () => {
 
   it("a deadlock Postgres breaks against this move is the table taken, not a 500", async () => {
     const { restaurantId, tableIds, booking } = await twoTables();
-    const name = `force_deadlock_${booking.id.replaceAll("-", "")}`;
-    // Scoped to this booking's id, so tests running beside this one never see it.
-    await owner.db.execute(sql.raw(`
-      create function ${name}() returns trigger language plpgsql as $f$
-      begin
-        if new.id = '${booking.id}' then
-          raise exception 'deadlock detected' using errcode = '40P01';
-        end if;
-        return new;
-      end $f$`));
-    await owner.db.execute(sql.raw(`create trigger ${name} before update on bookings for each row execute function ${name}()`));
+    audit.deadlocks = true;
     try {
       expect(await moveBooking(actor(restaurantId), booking.id, tableIds[1])).toEqual({ outcome: "taken" });
-      expect((await rowOf(booking.id)).tableId).toBe(tableIds[0]);
-      expect(await auditOf(restaurantId)).toEqual([]);
     } finally {
-      await owner.db.execute(sql.raw(`drop trigger ${name} on bookings`));
-      await owner.db.execute(sql.raw(`drop function ${name}()`));
+      audit.deadlocks = false;
     }
+    expect((await rowOf(booking.id)).tableId).toBe(tableIds[0]);
+    expect(await auditOf(restaurantId)).toEqual([]);
   });
 
   it("a table that seats the party exactly is fine", async () => {
