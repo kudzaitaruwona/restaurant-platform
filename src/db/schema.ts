@@ -720,8 +720,8 @@ export const bookingRateLimit = pgTable(
  *
  * Better Auth runs before any tenant is known, so these can't have a tenant
  * policy. They get the reverse: outsideTenantOnly. Staff sign-in connects as
- * app_tenant. Admin sign-in connects as app_admin, and app_tenant holds no
- * privilege on admin_auth_* at all (S-28).
+ * app_staff_auth and admin sign-in as app_admin, and app_tenant holds no
+ * privilege on staff_auth_* or admin_auth_* at all (S-28).
  *
  * No password column and no OAuth token columns: S-27 stores no passwords, and
  * Google is only asked who someone is (src/lib/auth).

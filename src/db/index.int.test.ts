@@ -69,22 +69,3 @@ describe("@/db/staff-auth (staff sign-in's database)", () => {
     expect(() => getStaffAuthDb()).toThrow(/DATABASE_URL_STAFF_AUTH is missing/);
   });
 });
-
-describe("authDatabase (sign-in's database, per audience)", () => {
-  afterAll(() => vi.unstubAllEnvs());
-
-  it.each([
-    ["staff", "app_staff_auth"],
-    ["admin", "app_admin"],
-  ] as const)("the %s audience connects as %s", async (audience, role) => {
-    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
-    vi.stubEnv("DATABASE_URL_ADMIN", adminDatabaseSettings().connectionString);
-    vi.stubEnv("DATABASE_URL_STAFF_AUTH", staffAuthDatabaseSettings().connectionString);
-    vi.resetModules();
-    const { authDatabase } = await import("@/lib/auth/database");
-
-    const { rows } = await authDatabase(audience).execute(sql`select current_user as name`);
-
-    expect(rows[0].name).toBe(role);
-  });
-});

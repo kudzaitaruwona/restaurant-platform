@@ -2,10 +2,12 @@
 -- (S-28, S-30). Until now Better Auth's staff audience ran as app_tenant, the
 -- login every tenant query uses. A magic link is only a row in
 -- staff_auth_verification, so SQL run as app_tenant could clear
--- app.restaurant_id, plant a working link for any staff member and become an
--- owner of any restaurant. The outside_tenant_only policy can't stop that: the
--- same SQL can clear the setting. app_staff_auth takes all of it away from
--- app_tenant. Only sign-in connects as app_staff_auth (DATABASE_URL_STAFF_AUTH,
+-- app.restaurant_id and plant a working link for any staff member. The
+-- outside_tenant_only policy can't stop that: the same SQL can clear the
+-- setting. This migration takes that forgery away from app_tenant, and with it
+-- the email lookup across tenants, staff_identity_by_email. It leaves
+-- app_tenant's staff writes alone: S-28's "What doesn't hold" says what they
+-- still allow. Only sign-in connects as app_staff_auth (DATABASE_URL_STAFF_AUTH,
 -- src/db/staff-auth.ts).
 --
 -- Like app_tenant and app_admin it starts NOLOGIN with no password, so no secret

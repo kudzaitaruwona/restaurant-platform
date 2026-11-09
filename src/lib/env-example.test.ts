@@ -14,6 +14,11 @@ describe(".env.example", () => {
     expect(missing).toEqual([]);
   });
 
+  it("declares no variable twice, since the last one silently wins", () => {
+    const repeated = exampleKeys.filter((key, i) => exampleKeys.indexOf(key) !== i);
+    expect(repeated).toEqual([]);
+  });
+
   it("lists nothing the env schema doesn't validate, apart from test-only variables", () => {
     const testOnly = [
       "TEST_DATABASE_URL",

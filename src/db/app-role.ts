@@ -3,11 +3,11 @@ import { APP_DATABASE_ROLE } from "../lib/env";
 import { createDatabase, type Database, type DatabaseSettings } from "./client";
 
 /**
- * Lets a role the app connects as, app_tenant or app_admin, log in with the
- * password from its own connection URL. Migrations create these roles without a
- * password so that no secret is committed; this keeps the URL the one place that
- * password is written down. Safe to re-run, which is also how a password is
- * rotated.
+ * Lets a role the app connects as, app_tenant, app_admin or app_staff_auth, log
+ * in with the password from its own connection URL. Migrations create these
+ * roles without a password so that no secret is committed; this keeps the URL
+ * the one place that password is written down. Safe to re-run, which is also how
+ * a password is rotated.
  *
  * Then refuses a role that RLS wouldn't apply to. The migration accepts any
  * existing role of this name, and one created in the Neon Console joins
