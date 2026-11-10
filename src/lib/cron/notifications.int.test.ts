@@ -292,14 +292,15 @@ describe("the notification task", () => {
   it("stops sending when its time budget runs out, and puts the rows it claimed but didn't send back to pending", async () => {
     const rows = await manyQueued(5, "1996-07-01T10:00:00Z");
     const now = new Date("1996-07-01T10:00:00Z");
-    // Meta is slow: every send takes three times the run's whole budget.
-    const slow = recordingSender(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
+    // Meta is slow: every send takes three times the run's whole budget. The numbers are
+    // large so a slow CI runner's claim transaction still finishes inside the budget.
+    const slow = recordingSender(() => new Promise<void>((resolve) => setTimeout(resolve, 3_000)));
     const started = Date.now();
 
-    await sendDueNotifications(system.db, now, slow.choice, { budgetMs: 100 });
+    await sendDueNotifications(system.db, now, slow.choice, { budgetMs: 1_000 });
 
-    // One send past the deadline, then it stops: not five sends' worth.
-    expect(Date.now() - started).toBeLessThan(1_000);
+    // One send past the deadline, then it stops: not five sends' worth (five would take 15 s).
+    expect(Date.now() - started).toBeLessThan(5_000);
     expect(slow.sent.length).toBe(1);
     const after = await Promise.all(rows.map(({ id }) => row(id)));
     expect(after.filter(({ status }) => status === "sending")).toEqual([]);
