@@ -188,6 +188,16 @@ describe("public menu page weight, 30 items with photos", () => {
     expect(bytes).toBeLessThan(BUDGET_BYTES);
   });
 
+  it("a table's page carries the cart, the tracker and the no-payment line", () => {
+    expect(tableBody).toContain('id="tracker"');
+    expect(tableBody).toContain('id="cart"');
+    expect(tableBody).toContain("Pay at the table with your waiter as usual.");
+    expect(tableBody).not.toMatch(/button[^>]*pay|checkout|card number/i);
+    // Each Add button carries the price the menu shows, in the restaurant's currency mode.
+    expect(tableBody).toMatch(/data-price="\$8\.50 · ZiG [\d,]+"/);
+    expect(tableBody).toMatch(/data-price="\$6\.50 · ZiG [\d,]+"/);
+  });
+
   it("a table's page with Book again is still under the budget", () => {
     expect(bookAgainBody).toContain("Book again");
     expect(bookAgainBody).not.toBe(tableBody);

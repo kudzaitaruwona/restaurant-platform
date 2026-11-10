@@ -671,7 +671,18 @@ describe("ordering from a table's page", () => {
     );
     expect(order.status).toBe(201);
     expect(order.headers.get("cache-control")).toContain("no-store");
-    expect(await order.json()).toEqual({ placed: { name: "Stew", quantity: 2 } });
+    expect(await order.json()).toEqual({ placed: { lines: [{ name: "Stew", quantity: 2 }] } });
+
+    // The tracker shows the table's items, fresh every time, and the page is untouched.
+    const tracked = await visit(`/api/t/${restaurant.qrToken}/tracker`);
+    expect(tracked.status).toBe(200);
+    expect(tracked.headers.get("cache-control")).toContain("no-store");
+    expect(cacheStatus(tracked)).toBeNull();
+    const feed = await tracked.json();
+    expect(feed.session).toBe(session);
+    expect(feed.items).toEqual([
+      expect.objectContaining({ quantity: 2, name: "Stew", customer: "Production guest", status: "placed" }),
+    ]);
 
     const after = await visit(page);
     expect(cacheStatus(after)).toBe("HIT");
@@ -701,6 +712,7 @@ describe("ordering from a table's page", () => {
 
   it("is a 404 for an unknown token", async () => {
     expect((await post(`/api/t/no-such-token-${crypto.randomUUID()}/session`)).status).toBe(404);
+    expect((await visit(`/api/t/no-such-token-${crypto.randomUUID()}/tracker`)).status).toBe(404);
   });
 
   it("gives the generic menu no script and no Add button", async () => {

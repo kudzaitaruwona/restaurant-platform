@@ -1,7 +1,14 @@
-import { declaredLength, MAX_BODY_BYTES, readFormWithin } from "@/lib/booking-limits";
+import { declaredLength, readFormWithin } from "@/lib/booking-limits";
 import { parseOrderRequest, placeOrder } from "@/lib/ordering";
 
 const headers = { "cache-control": "no-store" };
+
+/**
+ * Twenty lines with a 200-character note each, as a form: the worst case, a note
+ * of four-byte characters, percent-encodes to about 2.4KB a line, so 48 KiB
+ * holds it with room *(proposed, S-40)*. Booking's 8 KiB is for one short form.
+ */
+const MAX_ORDER_BYTES = 48 * 1024;
 
 const refuse = (error: string, status: number, extra?: Record<string, string>) =>
   Response.json({ error, ...extra }, { status, headers });
@@ -17,8 +24,8 @@ const refuse = (error: string, status: number, extra?: Record<string, string>) =
 export async function POST(request: Request, { params }: RouteContext<"/api/t/[qrToken]/orders">) {
   const length = declaredLength(request.headers);
   if (length === "invalid") return refuse("That request wasn't valid.", 400);
-  if (length !== undefined && length > MAX_BODY_BYTES) return refuse("That request was too large.", 413);
-  const form = await readFormWithin(request);
+  if (length !== undefined && length > MAX_ORDER_BYTES) return refuse("That request was too large.", 413);
+  const form = await readFormWithin(request, MAX_ORDER_BYTES);
   if (form === "too_large") return refuse("That request was too large.", 413);
 
   const parsed = parseOrderRequest(form);
@@ -37,7 +44,7 @@ export async function POST(request: Request, { params }: RouteContext<"/api/t/[q
         { code: "session_changed" },
       );
     case "unavailable":
-      return refuse("Sorry, that item isn't available right now.", 409, { code: "unavailable" });
+      return refuse("Sorry, that item isn't available right now.", 409, { code: "unavailable", item: result.item });
     case "rate_limited":
       return Response.json(
         { error: "That's a lot of orders at once. Wait a few minutes, or ask a member of staff." },
