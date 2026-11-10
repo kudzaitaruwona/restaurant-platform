@@ -183,6 +183,7 @@ async function history(
 }
 
 type PlanNode = {
+  "Node Type": string;
   "Relation Name"?: string;
   "Actual Rows": number;
   "Actual Loops": number;
@@ -191,19 +192,25 @@ type PlanNode = {
   Plans?: PlanNode[];
 };
 const nodesOf = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodesOf)];
-/** The rows a plan's nodes read from a table, kept or filtered out, over every loop. */
+/**
+ * The rows a plan's nodes read from a table, kept or filtered out, over every
+ * loop. A Bitmap Heap Scan reads at least the entries its Bitmap Index Scans
+ * found, so a BitmapAnd that walks an index over the history and keeps a few
+ * rows still counts the history it walked. EXPLAIN gives Actual Rows as a
+ * rounded mean per loop, so a test keeps its loops even.
+ */
 const rowsRead = (plan: PlanNode, table: string) =>
   nodesOf(plan)
     .filter((node) => node["Relation Name"] === table)
-    .reduce(
-      (sum, node) =>
-        sum +
-        node["Actual Loops"] *
-          (node["Actual Rows"] +
-            (node["Rows Removed by Filter"] ?? 0) +
-            (node["Rows Removed by Index Recheck"] ?? 0)),
-      0,
-    );
+    .reduce((sum, node) => {
+      const kept =
+        node["Actual Rows"] + (node["Rows Removed by Filter"] ?? 0) + (node["Rows Removed by Index Recheck"] ?? 0);
+      const indexed = (node.Plans ?? [])
+        .flatMap(nodesOf)
+        .filter((child) => child["Node Type"] === "Bitmap Index Scan")
+        .reduce((entries, child) => entries + child["Actual Loops"] * child["Actual Rows"], 0);
+      return sum + Math.max(node["Actual Loops"] * kept, indexed);
+    }, 0);
 const explain = async (tx: Transaction, query: SQLWrapper) => {
   const { rows } = await tx.execute<{ "QUERY PLAN": [{ Plan: PlanNode }] }>(
     sql`explain (analyze, format json) ${query}`,
@@ -223,6 +230,12 @@ describe("the floor grid, at a restaurant with months of history", () => {
   // it, but not the row counts ANALYZE writes to pg_class (those are updated in
   // place), so later plans see this table as larger than it is; the same
   // holds for kitchen.int.test.ts, which this mirrors.
+  //
+  // tables is the one read here that doesn't grow with history: it holds the
+  // floors of every restaurant, and while it is small (a fresh test database
+  // has a few dozen rows) Postgres rightly seq-scans it, whatever the order the
+  // files ran in. So tables is bounded by its own size, read in the snapshot
+  // the EXPLAIN runs in, and the history tables are held exactly.
   it("reads the live tables, their open sessions and those sessions' orders, and none of the history", async () => {
     const restaurant = await orderingRestaurant(owner.db);
     const neighbour = await orderingRestaurant(owner.db);
@@ -234,18 +247,21 @@ describe("the floor grid, at a restaurant with months of history", () => {
     await order(restaurant, [{ status: "done" }, { status: "delivered" }]);
     const atBar = await order(restaurant, [{ status: "placed" }, { status: "placed" }], { tableId: bar });
 
-    let plans: { tables: PlanNode; counts: PlanNode; sessionIds: string[] } | undefined;
+    let plans: { tables: PlanNode; counts: PlanNode; allTables: number } | undefined;
     await owner.db
       .transaction(async (tx) => {
+        // One snapshot for the count and the EXPLAINs, though other files write tables meanwhile.
+        await tx.execute(sql`set transaction isolation level repeatable read`);
         await history(tx, restaurant, { sessions: 1000, linesPerOrder: 1 });
         // Other restaurants have history too: this one is a tenth of the table.
         await history(tx, neighbour, { sessions: 1000, linesPerOrder: 9 });
         await tx.execute(sql`analyze order_items, orders, table_sessions, tables`);
+        const allTables = await tx.$count(diningTables);
         await tx.execute(sql`set local role app_tenant`);
         await tx.execute(sql`select set_config('app.restaurant_id', ${restaurant.restaurantId}, true)`);
         const sessionIds = [live.sessionId, atBar.sessionId];
         plans = {
-          sessionIds,
+          allTables,
           tables: await explain(tx, floorTables(tx, restaurant)),
           counts: await explain(tx, floorCounts(tx, restaurant, sessionIds)),
         };
@@ -256,7 +272,10 @@ describe("the floor grid, at a restaurant with months of history", () => {
       });
 
     // Two live tables, each with one open session; those have three orders of six lines.
-    expect(readsOf(plans!.tables)).toEqual({ tables: 2, table_sessions: 2, orders: 0, order_items: 0 });
+    const { tables, ...historyReads } = readsOf(plans!.tables);
+    expect(historyReads).toEqual({ table_sessions: 2, orders: 0, order_items: 0 });
+    expect(tables).toBeGreaterThanOrEqual(2);
+    expect(tables).toBeLessThanOrEqual(plans!.allTables);
     // One group per session and status: placed, cooking, done and delivered, and placed at the bar.
     expect(plans!.counts["Actual Rows"]).toBe(5);
     expect(readsOf(plans!.counts)).toEqual({ tables: 0, table_sessions: 0, orders: 3, order_items: 6 });
