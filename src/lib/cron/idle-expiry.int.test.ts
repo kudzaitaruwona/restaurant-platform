@@ -1,6 +1,6 @@
 import { eq, sql, type SQLWrapper } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { auditLog, orderItems, orders, tableSessions } from "@/db/schema";
+import { auditLog, diningTables, orderItems, orders, tableSessions } from "@/db/schema";
 import { placeOrder } from "@/lib/ordering";
 import {
   openOwnerDatabase,
@@ -9,7 +9,7 @@ import {
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { orderingRestaurant } from "../../../test/integration/ordering";
-import { closeIdleSessions, closeSessions, idleSessions } from "./idle-expiry";
+import { closeIdleSessions, closeSessions, closing, idleSessions } from "./idle-expiry";
 
 /**
  * Spec 06's idle expiry, run by the scheduled job (S-35) as app_system: an open
@@ -37,17 +37,33 @@ const minutesAgo = (n: number) => new Date(NOW.getTime() - n * 60_000);
 type Restaurant = Awaited<ReturnType<typeof orderingRestaurant>>;
 type Status = (typeof orderItems.$inferSelect)["status"];
 
-/** An open session on a restaurant of its own, last active `idle` minutes before NOW, with an order of lines in the given statuses. */
+/**
+ * An open session, last active `idle` minutes before NOW, with an order of lines
+ * in the given statuses: on a restaurant of its own, or on a new table of `at`.
+ */
 async function aSession(
   statuses: Status[],
-  { idle, openedFor = idle }: { idle: number; openedFor?: number },
+  { idle, openedFor = idle, at }: { idle: number; openedFor?: number; at?: Restaurant },
 ) {
-  const r = await orderingRestaurant(owner.db);
+  const r = at ?? (await orderingRestaurant(owner.db));
+  const tableId = at
+    ? (
+        await owner.db
+          .insert(diningTables)
+          .values({
+            restaurantId: at.restaurantId,
+            label: `Table ${crypto.randomUUID().slice(0, 8)}`,
+            capacity: 4,
+            qrToken: crypto.randomUUID().replaceAll("-", "").slice(0, 22),
+          })
+          .returning({ id: diningTables.id })
+      )[0].id
+    : r.tableId;
   const [{ id: sessionId }] = await owner.db
     .insert(tableSessions)
     .values({
       restaurantId: r.restaurantId,
-      tableId: r.tableId,
+      tableId,
       openedAt: minutesAgo(openedFor),
       lastActivityAt: minutesAgo(idle),
     })
@@ -298,27 +314,38 @@ describe("idle expiry, across restaurants with months of history", () => {
   // reading anyone's history. It runs as app_system, which bypasses RLS. EXPLAINed
   // in a transaction that is rolled back.
   //
-  // Upper bounds, not a pinned plan (two plans are equally fine: probe each open
-  // session's orders and lines, or read the lines in play and match them to
-  // sessions). The test database is shared and never emptied, so the live rows
-  // every plan may read (the open sessions, their orders and lines, the lines in
-  // play) are counted in the EXPLAIN's own snapshot, and a margin is allowed for
-  // them. The history here is 2,000 sessions, 6,000 orders and 18,000 lines, which
-  // a walk of it would blow through.
+  // The history (2,000 sessions, 6,000 orders and 18,000 lines) is on the same
+  // restaurant as a due session and a blocked one, so the job's check of each
+  // runs against it: a probe of that restaurant's orders or lines, rather than
+  // the session's, would read thousands of rows. Both the batch's SELECT and the
+  // close's UPDATE are EXPLAINed, first on the statistics as they stand (the plan
+  // a cron run actually gets between autovacuum's analyzes), then after an
+  // ANALYZE that sees the history.
+  //
+  // Upper bounds, not a pinned plan. The test database is shared and never
+  // emptied, so the live rows every plan may read (the open sessions, their
+  // orders and lines, the lines in play) are counted in the EXPLAIN's own
+  // snapshot, and a margin is allowed for them.
   it("reads the open sessions and their orders and lines, and none of the closed history", async () => {
     const r = await orderingRestaurant(owner.db);
-    const neighbour = await orderingRestaurant(owner.db);
-    await aSession(["delivered"], { idle: 100 });
-    await aSession(["placed"], { idle: 100 });
+    const due = await aSession(["delivered"], { idle: 100, at: r });
+    const blocked = await aSession(["delivered", "placed"], { idle: 100, at: r });
+    const checked = [
+      { restaurantId: r.restaurantId, id: due.sessionId },
+      { restaurantId: r.restaurantId, id: blocked.sessionId },
+    ];
 
-    let found: { plan: PlanNode; live: Record<string, number> } | undefined;
+    type Found = { stats: string; query: string; plan: PlanNode };
+    const found: Found[] = [];
+    let live: Record<string, number> | undefined;
+    let closed: Record<string, string>[] = [];
     await owner.db
       .transaction(async (tx) => {
-        await tx.execute(sql`set transaction isolation level repeatable read`);
-        await history(tx, r, 1000);
-        await history(tx, neighbour, 1000);
-        await tx.execute(sql`analyze order_items, orders, table_sessions`);
-        const [live] = (
+        // One snapshot for the live counts and every EXPLAIN. Serializable, not
+        // repeatable read: the closure gate refuses a close under repeatable read.
+        await tx.execute(sql`set transaction isolation level serializable`);
+        await history(tx, r, 2000);
+        [live] = (
           await tx.execute<Record<string, number>>(sql`
             select
               (select count(*)::int from table_sessions where status = 'open') as table_sessions,
@@ -329,20 +356,40 @@ describe("idle expiry, across restaurants with months of history", () => {
                  join table_sessions s on s.restaurant_id = o.restaurant_id and s.id = o.session_id
                  where s.status = 'open') + (select count(*)::int from order_items where in_play) as order_items`)
         ).rows;
-        await tx.execute(sql`set local role app_system`);
-        found = { plan: await explain(tx, idleSessions(tx, NOW)), live };
+
+        for (const stats of ["as they stand", "analyzed"]) {
+          if (stats === "analyzed") await tx.execute(sql`analyze order_items, orders, table_sessions`);
+          // The UPDATE runs, so it runs in a savepoint and is undone before the next EXPLAIN.
+          await tx.execute(sql`savepoint explained`);
+          await tx.execute(sql`set local role app_system`);
+          found.push({ stats, query: "batch", plan: await explain(tx, idleSessions(tx, NOW)) });
+          found.push({ stats, query: "close", plan: await explain(tx, closing(tx, checked, NOW).getSQL()) });
+          await tx.execute(sql`reset role`);
+          if (stats === "analyzed") {
+            closed = (
+              await tx.execute<Record<string, string>>(sql`
+                select id, status from table_sessions
+                where restaurant_id = ${r.restaurantId} and status = 'open' and table_id <> ${r.tableId}`)
+            ).rows;
+          }
+          await tx.execute(sql`rollback to savepoint explained`);
+        }
         tx.rollback();
       })
       .catch((error: unknown) => {
-        if (found === undefined) throw error;
+        if (found.length < 4) throw error;
       });
 
-    const { plan, live } = found!;
-    // The delivered session is due; the one with a placed line isn't.
-    expect(plan["Actual Rows"]).toBeGreaterThanOrEqual(1);
+    // The close got the answer right: the delivered session closed, the blocked one stayed open.
+    expect(closed).toEqual([{ id: blocked.sessionId, status: "open" }]);
     const margin = 300;
-    for (const table of ["table_sessions", "orders", "order_items"]) {
-      expect(rowsRead(plan, table), table).toBeLessThanOrEqual(live[table] + margin);
+    for (const { stats, query, plan } of found) {
+      if (query === "batch") expect(plan["Actual Rows"], `${query}, stats ${stats}`).toBeGreaterThanOrEqual(1);
+      for (const table of ["table_sessions", "orders", "order_items"]) {
+        expect(rowsRead(plan, table), `${query} reads ${table}, stats ${stats}`).toBeLessThanOrEqual(
+          live![table] + margin,
+        );
+      }
     }
   });
 });

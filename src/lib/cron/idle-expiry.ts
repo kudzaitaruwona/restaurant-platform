@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, lte, not, sql } from "drizzle-orm";
+import { and, asc, inArray, lte, not, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { orderItems, orders, tableSessions } from "@/db/schema";
 import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
@@ -29,8 +29,9 @@ import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
  * every close under REPEATABLE READ, so the batches run under READ COMMITTED.
  *
  * The job finds open sessions on table_sessions_one_open_per_table, which holds
- * only open ones, so it never reads the closed history, and checks each one's
- * lines through its orders. `now` is a parameter so a test can pick the moment.
+ * only open ones, so it never reads the closed history, and checks each one
+ * against its restaurant's lines in play (see inPlay). `now` is a parameter so a
+ * test can pick the moment.
  */
 
 /** Sessions per transaction, and transactions per run. */
@@ -43,19 +44,36 @@ type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type Due = { restaurantId: string; id: string };
 
 /**
- * Whether one of the session's lines is still in play, read through the
- * session's own orders (orders_restaurant_id_session_id_placed_at_index). The
- * `offset 0` keeps it a per-session probe: without it Postgres may turn NOT
- * EXISTS into an anti-join that hashes the whole orders table, history and all,
- * while that table is small enough for a scan to look cheap (EXPLAIN-tested).
+ * Whether one of the session's lines is still in play: the restaurant's lines in
+ * play (order_items_in_play, which holds only those), each checked against its
+ * own order. Shaped so that no plan reads a restaurant's history:
+ *
+ * - The order is probed by the line's key as well as the session, so every index
+ *   on orders serves it with two columns: (restaurant_id, id), (restaurant_id,
+ *   session_id, placed_at) or the primary key. None reads more than this
+ *   session's orders. A probe of the session's orders by (restaurant_id,
+ *   session_id) alone is not enough: on stale statistics (one or two orders per
+ *   restaurant) Postgres served it from orders_restaurant_id_id_unique on
+ *   restaurant_id only, filtering session_id, and so read the restaurant's whole
+ *   order history once per open session (EXPLAIN-tested).
+ * - Each `offset 0` keeps its subquery a per-row probe. Without the outer one,
+ *   NOT EXISTS may become an anti-join hashing every line in play or the whole
+ *   orders table; without the inner one, the order check may be pulled up into a
+ *   join that probes orders by restaurant again.
+ *
+ * Reads, per open session, the restaurant's lines in play: live rows only.
  */
 const inPlay = sql`exists (
-  select from ${orders}
-  join ${orderItems}
-    on ${orderItems.restaurantId} = ${orders.restaurantId} and ${orderItems.orderId} = ${orders.id}
-  where ${orders.restaurantId} = ${tableSessions.restaurantId}
-    and ${orders.sessionId} = ${tableSessions.id}
+  select from ${orderItems}
+  where ${orderItems.restaurantId} = ${tableSessions.restaurantId}
     and ${orderItems.inPlay}
+    and exists (
+      select from ${orders}
+      where ${orders.restaurantId} = ${orderItems.restaurantId}
+        and ${orders.id} = ${orderItems.orderId}
+        and ${orders.sessionId} = ${tableSessions.id}
+      offset 0
+    )
   offset 0
 )`;
 
@@ -80,14 +98,25 @@ export const idleSessions = (tx: Transaction, now: Date) =>
     .limit(BATCH_SIZE)
     .for("no key update", { of: tableSessions, skipLocked: true });
 
-/** Closes these sessions, each still only if it is due. Returns how many closed. */
-export async function closeSessions(tx: Transaction, rows: readonly Due[], now: Date) {
-  if (rows.length === 0) return 0;
-  const { rowCount } = await tx
+/**
+ * The close of these sessions, each still only if it is due. Exported so a test
+ * can EXPLAIN it. The ids are also listed on their own: when the pairs share a
+ * restaurant, Postgres folds `(restaurant_id, id) in (…)` into `restaurant_id =
+ * … and (id = … or id = …)`, and on stale statistics it served that from
+ * table_sessions_restaurant_id_id_unique on restaurant_id only, reading every
+ * session the restaurant ever had (EXPLAIN-tested). With `id = any(…)` beside it,
+ * every index it can use is keyed on the ids.
+ */
+export const closing = (tx: Transaction, rows: readonly Due[], now: Date) =>
+  tx
     .update(tableSessions)
     .set({ status: "closed", closedAt: now, closeReason: "idle_expiry" })
     .where(
       and(
+        inArray(
+          tableSessions.id,
+          rows.map(({ id }) => id),
+        ),
         sql`(${tableSessions.restaurantId}, ${tableSessions.id}) in (${sql.join(
           rows.map(({ restaurantId, id }) => sql`(${restaurantId}::uuid, ${id}::uuid)`),
           sql`, `,
@@ -95,6 +124,11 @@ export async function closeSessions(tx: Transaction, rows: readonly Due[], now: 
         due(now),
       ),
     );
+
+/** Closes these sessions, each still only if it is due. Returns how many closed. */
+export async function closeSessions(tx: Transaction, rows: readonly Due[], now: Date) {
+  if (rows.length === 0) return 0;
+  const { rowCount } = await closing(tx, rows, now);
   return rowCount ?? 0;
 }
 
