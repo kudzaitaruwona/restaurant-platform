@@ -108,6 +108,16 @@ describe("the protected page", () => {
     expect(await render("a-staff")).toContain('href="/dashboard/bookings"');
   });
 
+  it("links owner and staff alike to the floor (S-26)", async () => {
+    expect(await render("a-owner")).toContain('href="/dashboard/floor"');
+    expect(await render("a-staff")).toContain('href="/dashboard/floor"');
+  });
+
+  it("links owner and staff alike to the kitchen (S-26)", async () => {
+    expect(await render("a-owner")).toContain('href="/dashboard/kitchen"');
+    expect(await render("a-staff")).toContain('href="/dashboard/kitchen"');
+  });
+
   it("refuses no identity with unauthorized(), before any data renders", async () => {
     vi.stubEnv("DEV_AUTH_BYPASS", "");
     const Dashboard = await dashboard();

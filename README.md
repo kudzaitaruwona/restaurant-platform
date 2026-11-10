@@ -15,7 +15,7 @@ Start at **[docs/README.md](docs/README.md)**. It has the spec index, build orde
 | 3 | Tables and QR codes | [03](docs/specs/03-tables-and-qr.md) |
 | 4 | Autonomous bookings | [04](docs/specs/04-bookings.md) |
 | 5 | WhatsApp booking notifications | [05](docs/specs/05-booking-notifications.md) |
-| 6 | QR ordering and kitchen view (blocked on D-01) | [06](docs/specs/06-qr-ordering.md), [07](docs/specs/07-kitchen-view.md) |
+| 6 | QR ordering and kitchen view | [06](docs/specs/06-qr-ordering.md), [07](docs/specs/07-kitchen-view.md) |
 
 The shared schema is in [docs/specs/00-data-model.md](docs/specs/00-data-model.md).
 

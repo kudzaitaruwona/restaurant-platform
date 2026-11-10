@@ -81,16 +81,21 @@ export function ActionForm({
 
 type Refusal = { message: string; bookings: { id: string; summary: string }[] };
 
-/** A refusal says why, and may list the bookings in the way (the archive's 409). */
+/**
+ * A refusal says why, and may list what is in the way: the bookings on a table
+ * being archived (the archive's 409), or the items keeping a table from being
+ * cleared (#74). Either list is `{ id, summary }`.
+ */
 async function refusalFrom(response: Response): Promise<Refusal> {
   const body = await response.json().catch(() => undefined);
+  const list = body?.bookings ?? body?.items;
   return {
     message:
       typeof body?.error === "string"
         ? body.error
         : "That didn't work. Reload the page and try again.",
-    bookings: Array.isArray(body?.bookings)
-      ? body.bookings.filter(
+    bookings: Array.isArray(list)
+      ? list.filter(
           (item: { id?: unknown; summary?: unknown }) =>
             typeof item?.id === "string" && typeof item?.summary === "string",
         )

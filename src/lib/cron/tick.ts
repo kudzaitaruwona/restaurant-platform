@@ -4,13 +4,14 @@ import { completeOverdueSittings, markNoShows } from "./booking-status";
 import { getEnv } from "@/lib/env";
 import { chooseSender } from "@/lib/whatsapp/sender";
 import { pruneCodeLimits } from "./code-limits";
+import { closeIdleSessions } from "./idle-expiry";
 import { sendDueNotifications } from "./notifications";
 import { purgeGuestPhones } from "./phone-purge";
 
 /**
  * One run of the 5-minute scheduled job (S-35): every task specs 04, 05 and 06
- * put on it, in order, on the system login the route hands over. A later task
- * (QR idle expiry) is one more entry here, in the place S-35 gives it. Each must be idempotent and safe to overlap
+ * put on it, in order, on the system login the route hands over, QR idle
+ * expiry last, in the place S-35 gives it. Each must be idempotent and safe to overlap
  * with itself: Vercel can deliver a run twice and doesn't retry a failed one.
  */
 export type TickTask = {
@@ -33,6 +34,8 @@ export const tickTasks: readonly TickTask[] = [
   },
   { name: "phonesPurged", run: purgeGuestPhones },
   { name: "codeLimitsPruned", run: pruneCodeLimits },
+  // Spec 06's QR idle expiry, last, where S-35 puts it.
+  { name: "idleSessionsClosed", run: (db, now) => closeIdleSessions(db, now) },
 ];
 
 export type TickResult = { ok: boolean; tasks: Record<string, number | "failed"> };

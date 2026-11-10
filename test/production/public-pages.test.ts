@@ -653,6 +653,97 @@ describe("regenerating a table's token", () => {
   });
 });
 
+/**
+ * Ordering from a table's page (spec 06, S-32): the page stays cached exactly as
+ * before, and its script's writes go to uncached endpoints of their own.
+ */
+describe("ordering from a table's page", () => {
+  const post = (path: string, body?: URLSearchParams, from = origin) =>
+    visit(path, { method: "POST", headers: { origin: from }, body });
+
+  it("orders over real HTTP while the page stays cached and unchanged", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const page = `/t/${restaurant.qrToken}`;
+    const first = await visit(page);
+    const before = await first.text();
+    expect(cacheStatus(first)).toBe("MISS");
+    expect(before).toContain('class="add"');
+    expect(before.match(/<script/g)).toHaveLength(1);
+    const [, item] = /data-item="([0-9a-f-]+)"/.exec(before) ?? [];
+
+    const scan = await post(`/api/t/${restaurant.qrToken}/session`);
+    expect(scan.status).toBe(200);
+    expect(scan.headers.get("cache-control")).toContain("no-store");
+    const { session } = await scan.json();
+    const order = await post(
+      `/api/t/${restaurant.qrToken}/orders`,
+      new URLSearchParams({ item, quantity: "2", name: "Production guest", session }),
+    );
+    expect(order.status).toBe(201);
+    expect(order.headers.get("cache-control")).toContain("no-store");
+    expect(await order.json()).toEqual({ placed: { lines: [{ name: "Stew", quantity: 2 }] } });
+
+    // The tracker shows the table's items, fresh every time, and the page is untouched.
+    const tracked = await visit(`/api/t/${restaurant.qrToken}/tracker`);
+    expect(tracked.status).toBe(200);
+    expect(tracked.headers.get("cache-control")).toContain("no-store");
+    expect(cacheStatus(tracked)).toBeNull();
+    const feed = await tracked.json();
+    expect(feed.session).toBe(session);
+    expect(feed.items).toEqual([
+      expect.objectContaining({ quantity: 2, name: "Stew", customer: "Production guest", status: "placed" }),
+    ]);
+
+    const after = await visit(page);
+    expect(cacheStatus(after)).toBe("HIT");
+    expect(await after.text()).toBe(before);
+    expect(before).not.toContain(session);
+  });
+
+  it("answers each scan and order fresh: nothing caches the endpoints", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const scans = [
+      await post(`/api/t/${restaurant.qrToken}/session`),
+      await post(`/api/t/${restaurant.qrToken}/session`),
+    ];
+    for (const scan of scans) expect(cacheStatus(scan)).toBeNull();
+    const [a, b] = await Promise.all(scans.map((scan) => scan.json()));
+    expect(a.session).toBe(b.session);
+  });
+
+  it("refuses a scan or an order from another site", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const elsewhere = "https://elsewhere.example";
+    expect((await post(`/api/t/${restaurant.qrToken}/session`, undefined, elsewhere)).status).toBe(403);
+    expect(
+      (await post(`/api/t/${restaurant.qrToken}/orders`, new URLSearchParams(), elsewhere)).status,
+    ).toBe(403);
+    expect((await post(`/api/t/${restaurant.qrToken}/waiter`, undefined, elsewhere)).status).toBe(403);
+  });
+
+  it("answers a waiter call fresh, uncached, with the same session and time for repeat calls", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const first = await post(`/api/t/${restaurant.qrToken}/waiter`);
+    const again = await post(`/api/t/${restaurant.qrToken}/waiter`);
+    expect(first.status).toBe(200);
+    expect(cacheStatus(first)).toBeNull();
+    expect(await again.json()).toEqual(await first.json());
+    expect((await post(`/api/t/no-such-token-${crypto.randomUUID()}/waiter`)).status).toBe(404);
+  });
+
+  it("is a 404 for an unknown token", async () => {
+    expect((await post(`/api/t/no-such-token-${crypto.randomUUID()}/session`)).status).toBe(404);
+    expect((await visit(`/api/t/no-such-token-${crypto.randomUUID()}/tracker`)).status).toBe(404);
+  });
+
+  it("gives the generic menu no script and no Add button", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const body = await (await visit(`/m/${restaurant.menuToken}`)).text();
+    expect(body).not.toContain("<script");
+    expect(body).not.toContain('class="add"');
+  });
+});
+
 describe("Meta's webhook, through the real proxy (spec 05, #48)", () => {
   const WEBHOOK = "/api/webhooks/whatsapp";
   // What Meta sends: no Origin, but test the proxy with one from elsewhere too.

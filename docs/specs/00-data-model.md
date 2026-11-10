@@ -290,9 +290,9 @@ Built in ticket #44 (migration 0034). Like every tenant table it has `UNIQUE (re
 table_sessions
   id, restaurant_id, table_id
   status                enum(open, closed)
-  approved_at           timestamptz null   -- only used if D-01 picks staff approval
+  approved_at           timestamptz null   -- unused in v1: D-01 settled without staff approval (S-36). Kept, not dropped, so approval can be added later without a schema change; nothing writes or reads it
   opened_at, last_activity_at              -- bumped by scans, orders, item status changes, reopen
-  waiter_requested_at   timestamptz null   -- "call a waiter" flag (proposed)
+  waiter_requested_at   timestamptz null   -- "call a waiter" flag (proposed): set by the table page, cleared by staff or by the session closing (trigger)
   closed_at
   close_reason          enum(in_app_payment, staff_clear, idle_expiry,
                              pos_payment, force_close) null
@@ -302,7 +302,7 @@ table_sessions
 
 orders
   id, restaurant_id, session_id
-  customer_name         text not null CHECK (trim(customer_name) <> '')
+  customer_name         text not null CHECK (trim(customer_name) <> '' AND length(customer_name) <= 100)  -- (proposed, S-40) the length
   rate_used             numeric null       -- exchange rate frozen at order time
   CHECK (rate_used > 0)                    -- (proposed) lower bound, so a frozen rate cannot give a negative ZiG price
   CHECK (rate_used < 'Infinity')           -- orders_rate_used_finite: finite only together with the > 0 above
@@ -312,23 +312,32 @@ order_items
   id, restaurant_id, order_id, menu_item_id
   special_id            → specials null    -- for "how many did the special sell"
   name_snapshot         text
-  quantity              int CHECK (> 0)
-  unit_price_usd, unit_price_zig  numeric  -- frozen
+  quantity              int CHECK (between 1 and 20)  -- (proposed, S-40) the upper bound
+  unit_price_usd, unit_price_zig  numeric null  -- frozen; (proposed, S-40) null for a currency that couldn't be worked out when ordered (no rate yet), as the menu showed it
   CHECK (unit_price_usd >= 0 AND unit_price_zig >= 0)  -- (proposed) lower bound, so a frozen price cannot make a negative bill
   CHECK (unit_price_usd < 'Infinity' AND unit_price_zig < 'Infinity')  -- order_items_prices_finite: finite only together with the >= 0 above
   zig_source            enum(fixed, calculated)
-  note                  text null          -- per item: "no onions"
+  CHECK ((unit_price_zig IS NULL) = (zig_source IS NULL))  -- (proposed, S-40) a price that couldn't be worked out (no rate) is null, with no source
+  note                  text null          -- per item: "no onions"; (proposed, S-40) not blank, up to 200 characters
   status                enum(placed, cooking, done, delivered, voided)
   status_changed_at
   void_reason           text null
   voided_by             → staff null
-  CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))
+  CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))  -- order_items_void_recorded; (proposed, #73) the reason also not blank and up to 200 characters
+  change_xid            bigint             -- (proposed, #71) the kitchen board's change stamp: the id of the transaction that last wrote the row, set by a trigger
+  in_play               bool not null      -- (proposed, S-40, migration 0042) GENERATED ALWAYS AS (status NOT IN ('delivered', 'voided')) STORED, what the kitchen board's load reads its line ids on;
+  -- an index on (restaurant_id) WHERE in_play. Not a filter on status: under RLS the enum's comparisons, not leakproof, get no statistics (S-40 in detail).
 ```
 
 ### Enforced in the database
 - **Table lock:** a partial unique index allows only one open session per table.
 - *(Proposed, #38)* **Booking closures:** a closure can't be saved over a confirmed booking whose sitting runs into it, and a confirmed booking can't be made inside a closure, whichever commits first (migration 0026; one advisory lock per restaurant, as the archive guard's is per table).
-- **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path.
-- **Force-close:** one transaction voids the remaining items with a reason, then closes the session.
-- **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.
-- **Orders:** an insert fails unless the session is `open`.
+- **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path. *(Proposed, #74)* Built as `table_sessions_closure_gate` (migration 0045): an AFTER UPDATE OF `status` trigger, SECURITY DEFINER so it answers truly whatever the caller's RLS context or grants (the job's login, 6.8, is held to it too), checking the session's lines on `in_play`. Race-safe with a line going in: the close holds the session's row, and a line's insert takes it FOR SHARE (`order_items_session_open`), so one waits for the other and never both commit. A close under REPEATABLE READ is refused outright, since its snapshot could miss a line committed meanwhile.
+- **Force-close:** one transaction voids the remaining items with a reason, then closes the session. *(Proposed, #74)* It voids through the one void (`voidLines`, src/lib/voids.ts), so the gate sees the voids and passes.
+- **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again. *(Proposed, #76)* Built as `table_sessions_reopen` (migration 0048): a BEFORE UPDATE OF `status` trigger on `closed → open`, SECURITY DEFINER, whoever writes the row. It refuses past the window (`table_sessions_reopen_window`) and when the session is no longer the table's latest by `opened_at` (`table_sessions_reopen_newer_session`): the same rule as "no session has `opened_at > this.closed_at`", without the gap where a scan that waited on the table lock while this session closed is stamped a moment before `closed_at`. It also clears `closed_at`, `close_reason` and `closed_by` and sets `last_activity_at = now()` itself. A reopen under REPEATABLE READ is refused, as a close is. The table lock settles a reopen racing a scan: never two open. The probe is `table_latest_session(restaurant, table)`, a SQL function with its plan pinned to a backward read of the index `table_sessions_table_opened (restaurant_id, table_id, opened_at)` (migration 0047), so it never reads the table's history; the floor's detail asks it the same question.
+- **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0040). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
+- **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0040). *(Proposed, S-40)* The same triggers refuse a change to a line's `order_id` and an order's `session_id`, so money can't move between bills (`order_items_frozen`, `orders_frozen`).
+- *(Proposed, #71)* **Kitchen change stamp:** a trigger sets `order_items.change_xid` to the writing transaction's id on every insert and update, whatever the writer sends (`order_items_change_stamp`, migration 0041). The board's poll asks for stamps at or above the oldest transaction still running at its previous poll, so a line written by a transaction that commits late is never skipped (S-40 in detail).
+- *(Proposed, #73)* **A void is final:** a trigger refuses any change to a voided line's `status`, `void_reason` or `voided_by`, and voiding a `delivered` line, whoever asks (`order_items_void_final`, migration 0043). A voided line comes off the bill and keeps its first reason; a delivered one was eaten.
+- *(Proposed, #77)* **A waiter call ends with its session:** a trigger clears `table_sessions.waiter_requested_at` whenever a session is written with a status other than `open`, on insert and update alike, so no close path has to clear it (`table_sessions_waiter_flag`, migration 0044).
+- *(Proposed, S-40)* **No hard deletes:** `app_tenant` can't delete from `table_sessions`, `orders` or `order_items`. A cancellation is a void.

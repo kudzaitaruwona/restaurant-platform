@@ -35,7 +35,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Tenant isolation
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
-- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}`, `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept. The lookup is a `SECURITY DEFINER` function per token type that returns only the restaurant's id (S-31).
+- **Public routes** (`/m/{menu_token}`, `/t/{qr_token}` and its ordering endpoints `POST /api/t/{qr_token}/session` and `POST /api/t/{qr_token}/orders` (S-40), `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept. The lookup is a `SECURITY DEFINER` function per token type that returns only the restaurant's id (S-31).
 - **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
 - **Admin routes:** a platform admin works across tenants, so three routes take the restaurant ID from the URL, the only exceptions to taking it from the session (S-28). `POST /api/admin/restaurants/[restaurantId]/owner` passes it only to `platform_create_first_owner`, which refuses a restaurant that already has staff. `POST /api/admin/restaurants/[restaurantId]/enter` passes it only to `platform_enter_restaurant`, and from then on the ID comes from the session. `POST /api/admin/restaurants/[restaurantId]/qr-codes-printed` passes it only to `platform_set_qr_codes_printed` (S-33). All three sit behind `getPlatformAdminContext()`.
 - **The admin path has its own database login,** `app_admin` (`DATABASE_URL_ADMIN`), which only the admin seam loads. Only it can run the `platform_*` functions or touch `admin_auth_*`. `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28).
@@ -71,7 +71,13 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
 
 ### Audit log
-Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void and reopen.
+Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void, reject an order (S-36) and reopen.
+- *(proposed, S-40)* every order item status change, kitchen moves and mark delivered (`order_item.status`, from and to)
+- *(proposed, #73)* a void as `order_item.void` per voided item (its order, the status it left and the reason), and a reject as `order.reject` (the reason and the items it voided) besides each item's `order_item.void`. An entered platform admin is recorded as one (S-29); the item's `voided_by` is their shadow staff row.
+- *(proposed, #74)* force-close as `session.force_close` on the session (the reason and the items it voided), besides each item's `order_item.void`. Clear table isn't on the list, so a staff member's isn't audited; an entered platform admin's is, as `session.clear`, like every admin write (S-28).
+- *(proposed, #77)* dismissing a table's "Call a waiter" (`session.waiter_dismiss`, on the session), only when a call was pending; a dismissal with nothing pending writes no entry.
+- *(proposed, #76)* reopen as `session.reopen` on the session (when it had closed and how), for owner and staff alike; a refused reopen writes no entry.
+- *(proposed, #75)* idle expiry isn't on the list and isn't audited: no one acted, and the session's `close_reason = idle_expiry` with `closed_by` null records it.
 
 ## Stack (decided, D-07)
 - Next.js App Router, TypeScript, Tailwind, shadcn/ui, deployed on Vercel

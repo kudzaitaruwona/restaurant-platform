@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { and, eq, inArray, like, or } from "drizzle-orm";
+import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import sharp from "sharp";
@@ -25,24 +25,30 @@ import {
   exchangeRates,
   menuItems,
   onboardingChecklist,
+  orderItems,
+  orders,
   restaurants,
   servicePeriods,
   specials,
   staff,
   staffAuthUser,
+  tableSessions,
 } from "@/db/schema";
 import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
 import { signIn } from "../../../test/integration/auth";
 import {
   aBooking,
+  asTenant,
   bookableRestaurant,
   bookingsOf,
 } from "../../../test/integration/bookings";
 import {
   openOwnerDatabase,
+  openTestDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { installFakeServices } from "../../../test/integration/fake-services";
+import { linesOf, orderingRestaurant } from "../../../test/integration/ordering";
 import { statusOf } from "../../../test/integration/http";
 import {
   devIdentities,
@@ -327,6 +333,171 @@ const postMove = async (bookingId: string, tableId: string, init?: { path?: stri
     }),
     bookingParams(bookingId),
   );
+/**
+ * Kitchen lines the status route is aimed at (#71). Each call plants a placed line
+ * of its own on the target's fixture table, in the open session there or a new
+ * one: a move can be made once, so it can't be run again on the same line.
+ */
+const plantedKitchenItems: { id: string; orderId: string; restaurantId: string }[] = [];
+const plantKitchenItem = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  const sessionId =
+    open?.id ??
+    (
+      await owner.db
+        .insert(tableSessions)
+        .values({ restaurantId: target.restaurantId, tableId: target.tableId })
+        .returning({ id: tableSessions.id })
+    )[0].id;
+  const [{ id: orderId }] = await owner.db
+    .insert(orders)
+    .values({ restaurantId: target.restaurantId, sessionId, customerName: "Harness kitchen" })
+    .returning({ id: orders.id });
+  const [{ id }] = await owner.db
+    .insert(orderItems)
+    .values({
+      restaurantId: target.restaurantId,
+      orderId,
+      menuItemId: target.itemId,
+      nameSnapshot: harnessItem,
+      quantity: 1,
+      unitPriceUsd: "8.50",
+    })
+    .returning({ id: orderItems.id });
+  plantedKitchenItems.push({ id, orderId, restaurantId: target.restaurantId });
+  return id;
+};
+/** The order of a kitchen line planted for the call, for the reject route (#73). */
+const plantKitchenOrder = async (target: Target) => {
+  await plantKitchenItem(target);
+  return plantedKitchenItems.at(-1)!.orderId;
+};
+const postVoid = async (itemId: string, fields: Record<string, string> = { reason: "Harness void" }) =>
+  (await import("@/app/api/order-items/[itemId]/void/route")).POST(
+    request(`/api/order-items/${itemId}/void`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ itemId }) },
+  );
+const postReject = async (orderId: string, fields: Record<string, string> = { reason: "Harness reject" }) =>
+  (await import("@/app/api/orders/[orderId]/reject/route")).POST(
+    request(`/api/orders/${orderId}/reject`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ orderId }) },
+  );
+/**
+ * A table planted in the target's restaurant with an open session, and on it,
+ * when `outstanding`, a placed line, for the close routes (#74): a session closes
+ * once, so each call plants its own, and a fixture table's session is the other
+ * routes' to use.
+ */
+const plantedSessions: { id: string; restaurantId: string }[] = [];
+const plantOpenTable = async (target: Target, outstanding: boolean) => {
+  const tableId = await plantTable(target.restaurantId);
+  const [{ id: sessionId }] = await owner.db
+    .insert(tableSessions)
+    .values({ restaurantId: target.restaurantId, tableId })
+    .returning({ id: tableSessions.id });
+  plantedSessions.push({ id: sessionId, restaurantId: target.restaurantId });
+  if (outstanding) {
+    const [{ id: orderId }] = await owner.db
+      .insert(orders)
+      .values({ restaurantId: target.restaurantId, sessionId, customerName: "Harness close" })
+      .returning({ id: orders.id });
+    const [{ id }] = await owner.db
+      .insert(orderItems)
+      .values({
+        restaurantId: target.restaurantId,
+        orderId,
+        menuItemId: target.itemId,
+        nameSnapshot: harnessItem,
+        quantity: 1,
+        unitPriceUsd: "8.50",
+      })
+      .returning({ id: orderItems.id });
+    plantedKitchenItems.push({ id, orderId, restaurantId: target.restaurantId });
+  }
+  return { tableId, sessionId };
+};
+const postClear = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/clear/route")).POST(
+    request(`/api/floor/${tableId}/clear`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+const postForceClose = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/force-close/route")).POST(
+    request(`/api/floor/${tableId}/force-close`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+/**
+ * A table planted in the target's restaurant with a session closed `closedMinutesAgo`
+ * minutes ago, for the reopen route (#76): a session reopens once, so each call
+ * plants its own.
+ */
+const plantedClosedSessions: { id: string; restaurantId: string }[] = [];
+const plantClosedTable = async (target: Target, closedMinutesAgo = 1) => {
+  const tableId = await plantTable(target.restaurantId);
+  const { rows } = await owner.db.execute<{ id: string }>(sql`
+    insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason, closed_by)
+    values (${target.restaurantId}, ${tableId}, 'closed', now() - interval '1 hour',
+      now() - make_interval(mins => ${closedMinutesAgo}), 'staff_clear', ${target.staffId})
+    returning id`);
+  plantedClosedSessions.push({ id: rows[0].id, restaurantId: target.restaurantId });
+  return { tableId, sessionId: rows[0].id };
+};
+const postReopen = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/reopen/route")).POST(
+    request(`/api/floor/${tableId}/reopen`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+/** Whether the closed sessions planted since `mark` in a restaurant are all still closed. */
+const sessionsStillClosed = async (restaurantId: string, mark: number) => {
+  const ids = plantedClosedSessions
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: tableSessions.status })
+    .from(tableSessions)
+    .where(inArray(tableSessions.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "closed");
+};
+/** Whether the sessions planted since `mark` in a restaurant are all still open. */
+const sessionsStillOpen = async (restaurantId: string, mark: number) => {
+  const ids = plantedSessions
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: tableSessions.status })
+    .from(tableSessions)
+    .where(inArray(tableSessions.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "open");
+};
+/** Whether the kitchen lines planted since `mark` in a restaurant are all still placed. */
+const kitchenItemsAsPlanted = async (restaurantId: string, mark: number) => {
+  const ids = plantedKitchenItems
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: orderItems.status })
+    .from(orderItems)
+    .where(inArray(orderItems.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "placed");
+};
+const postKitchenMove = async (itemId: string, fields: Record<string, string>, query = "") =>
+  (await import("@/app/api/kitchen/items/[itemId]/status/route")).POST(
+    request(`/api/kitchen/items/${itemId}/status${query}`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ itemId }) },
+  );
+const getKitchenChanges = async (query = "", init?: { headers?: Record<string, string> }) =>
+  (await import("@/app/api/kitchen/changes/route")).GET(
+    request(`/api/kitchen/changes${query}`, { headers: init?.headers }),
+  );
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -342,9 +513,70 @@ const photoForm = async () => {
   body.set("photo", new File([new Uint8Array(jpeg)], "dish.jpg", { type: "image/jpeg" }));
   return body;
 };
+/** A pending "Call a waiter" on the target's fixture table, in its open session or one opened for it. */
+const plantWaiterCall = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  if (open) {
+    await owner.db
+      .update(tableSessions)
+      .set({ waiterRequestedAt: new Date() })
+      .where(eq(tableSessions.id, open.id));
+  } else {
+    await owner.db
+      .insert(tableSessions)
+      .values({ restaurantId: target.restaurantId, tableId: target.tableId, waiterRequestedAt: new Date() });
+  }
+};
+
 const itemParams = ({ itemId }: Target) => ({ params: Promise.resolve({ itemId }) });
 const request = (path: string, init?: ConstructorParameters<typeof NextRequest>[1]) =>
   new NextRequest(new URL(path, "http://localhost:3000"), init);
+
+/**
+ * A done line in the target's restaurant, on its fixture table (in the open
+ * session, or one opened for it), for the deliver route: a line can be delivered
+ * once, so each call plants its own.
+ */
+const plantDoneItem = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  const sessionId =
+    open?.id ??
+    (
+      await owner.db
+        .insert(tableSessions)
+        .values({ restaurantId: target.restaurantId, tableId: target.tableId })
+        .returning({ id: tableSessions.id })
+    )[0].id;
+  const [{ id: orderId }] = await owner.db
+    .insert(orders)
+    // An hour old, so these don't count toward the session's order rate limit.
+    .values({
+      restaurantId: target.restaurantId,
+      sessionId,
+      customerName: "Harness diner",
+      placedAt: new Date(Date.now() - 3_600_000),
+    })
+    .returning({ id: orders.id });
+  const [{ id }] = await owner.db
+    .insert(orderItems)
+    .values({
+      restaurantId: target.restaurantId,
+      orderId,
+      menuItemId: target.itemId,
+      nameSnapshot: "Harness dish",
+      quantity: 1,
+      unitPriceUsd: "1",
+      status: "done",
+    })
+    .returning({ id: orderItems.id });
+  return id;
+};
 
 const routes: TenantRoute[] = [
   {
@@ -659,6 +891,41 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  {
+    name: "POST /api/order-items/[itemId]/deliver",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantDoneItem(target)
+        : target.tableId;
+      return (await import("@/app/api/order-items/[itemId]/deliver/route")).POST(
+        request(`/api/order-items/${itemId}/deliver`, { method: "POST" }),
+        { params: Promise.resolve({ itemId }) },
+      );
+    },
+  },
+  {
+    // Each call plants a pending call on a fixture table first, so there is one to dismiss and audit.
+    name: "POST /api/floor/[tableId]/dismiss-waiter",
+    ownerOnly: false,
+    call: async (target) => {
+      if ([fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)) {
+        await plantWaiterCall(target);
+      }
+      return (await import("@/app/api/floor/[tableId]/dismiss-waiter/route")).POST(
+        request(`/api/floor/${target.tableId}/dismiss-waiter`, { method: "POST" }),
+        { params: Promise.resolve({ tableId: target.tableId }) },
+      );
+    },
+  },
+  {
+    name: "PAGE /dashboard/floor/[tableId]",
+    ownerOnly: false,
+    call: async (target) => {
+      const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+      return new Response(renderToStaticMarkup(await TableDetailScreen({ tableId: target.tableId })));
+    },
+  },
   bookingAction("seat", "confirmed"),
   bookingAction("finish", "seated"),
   bookingAction("no-show", "confirmed"),
@@ -701,6 +968,76 @@ const routes: TenantRoute[] = [
           body: form({ tableId, party: "2" }),
         }),
       );
+    },
+  },
+  {
+    // A kitchen move (#71), owners and staff alike (S-26). Each call moves a line
+    // planted for it; a made-up id is aimed at as it is.
+    name: "POST /api/kitchen/items/[itemId]/status",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenItem(target)
+        : target.tableId;
+      return postKitchenMove(itemId, { from: "placed", to: "cooking" });
+    },
+  },
+  {
+    // Void (#73), from the kitchen card's menu and the floor's detail, owners and
+    // staff alike (S-26). Each call voids a line planted for it.
+    name: "POST /api/order-items/[itemId]/void",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenItem(target)
+        : target.tableId;
+      return postVoid(itemId);
+    },
+  },
+  {
+    // Clear table (#74), owners and staff alike (S-26). Each call clears a table
+    // planted with an empty open session; a made-up id is aimed at as it is.
+    name: "POST /api/floor/[tableId]/clear",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantOpenTable(target, false)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postClear(tableId, { session: sessionId });
+    },
+  },
+  {
+    // Force-close (#74). Each call force-closes a table planted with a placed line.
+    name: "POST /api/floor/[tableId]/force-close",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantOpenTable(target, true)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postForceClose(tableId, { session: sessionId, reason: "Harness force-close" });
+    },
+  },
+  {
+    // Reopen (#76), owners and staff alike (S-26). Each call reopens a session
+    // planted closed a minute ago on a table of its own.
+    name: "POST /api/floor/[tableId]/reopen",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantClosedTable(target)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postReopen(tableId, { session: sessionId });
+    },
+  },
+  {
+    // Reject (#73, S-36). Each call rejects an order planted for it.
+    name: "POST /api/orders/[orderId]/reject",
+    ownerOnly: false,
+    call: async (target) => {
+      const orderId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenOrder(target)
+        : target.tableId;
+      return postReject(orderId);
     },
   },
 ];
@@ -938,6 +1275,81 @@ const guestConfirm = "POST /api/r/[slug]/book";
 
 /** The other: a guest's cancel, by their manage token and nothing else. */
 const guestCancel = "POST /b/[manageToken]";
+
+/**
+ * A table page's writes (spec 06): a scan and an order, by the table's QR token
+ * and nothing else. Tested in "the table page's ordering" below.
+ */
+const tableScan = "POST /api/t/[qrToken]/session";
+const tableOrder = "POST /api/t/[qrToken]/orders";
+const tableTracker = "GET /api/t/[qrToken]/tracker";
+const tableWaiter = "POST /api/t/[qrToken]/waiter";
+
+const callWaiter = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/waiter/route")).POST(
+    request(`/api/t/${qrToken}/waiter${init?.query ?? ""}`, { method: "POST", headers: init?.headers }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+const getTracker = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/tracker/route")).GET(
+    request(`/api/t/${qrToken}/tracker${init?.query ?? ""}`, { headers: init?.headers }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+/**
+ * The kitchen board's poll (#71): no id, owners and staff alike, so neither
+ * `routes` nor the owner-only `sessionRoutes`. Tested in "the kitchen" below.
+ */
+const kitchenChanges = "GET /api/kitchen/changes";
+
+const postScan = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: URLSearchParams },
+) =>
+  (await import("@/app/api/t/[qrToken]/session/route")).POST(
+    request(`/api/t/${qrToken}/session${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body,
+    }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+const postOrder = async (
+  qrToken: string,
+  fields: Record<string, string>,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/orders/route")).POST(
+    request(`/api/t/${qrToken}/orders${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: new URLSearchParams(fields),
+    }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+/**
+ * Puts the fixture restaurants' orders an hour further back, so the tests that
+ * order at a fixture table (the tracker's, the kitchen's and the floor's) don't
+ * spend each other's order rate limit: 10 per session in any 5 minutes, and
+ * they all share the fixture table's open session.
+ */
+const resetFixtureOrderRate = () =>
+  owner.db
+    .update(orders)
+    .set({ placedAt: sql`${orders.placedAt} - interval '1 hour'` })
+    .where(inArray(orders.restaurantId, [fixtures.a.restaurantId, fixtures.b.restaurantId]));
+
+const scannedSession = async (qrToken: string) =>
+  (await (await postScan(qrToken)).json()).session as string;
 
 const postCancel = async (
   manageToken: string,
@@ -1205,6 +1617,21 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  // Sessions and orders on the harness's own tables, and on the tables it
+  // planted (the close routes open sessions there), before those and the staff
+  // who closed them go.
+  const harnessTables = [fixtures.a.tableId, fixtures.b.tableId, ...planted.map(({ id }) => id)];
+  const harnessSessions = owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(inArray(tableSessions.tableId, harnessTables));
+  const harnessOrders = owner.db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(inArray(orders.sessionId, harnessSessions));
+  await owner.db.delete(orderItems).where(inArray(orderItems.orderId, harnessOrders));
+  await owner.db.delete(orders).where(inArray(orders.sessionId, harnessSessions));
+  await owner.db.delete(tableSessions).where(inArray(tableSessions.tableId, harnessTables));
   await owner.db
     .delete(bookings)
     .where(inArray(bookings.manageToken, [fixtureManageToken("a"), fixtureManageToken("b")]));
@@ -1532,6 +1959,9 @@ describe("cross-tenant access", () => {
       const bookingMark = plantedBookings.length;
       const closureMark = plantedClosures.length;
       const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
+      const kitchenMark = plantedKitchenItems.length;
+      const sessionMark = plantedSessions.length;
+      const closedSessionMark = plantedClosedSessions.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1550,6 +1980,9 @@ describe("cross-tenant access", () => {
       expect(await bookingsAsPlanted(fixtures.b.restaurantId, bookingMark)).toBe(true);
       expect(await closuresUnremoved(fixtures.b.restaurantId, closureMark)).toBe(true);
       expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
+      expect(await kitchenItemsAsPlanted(fixtures.b.restaurantId, kitchenMark)).toBe(true);
+      expect(await sessionsStillOpen(fixtures.b.restaurantId, sessionMark)).toBe(true);
+      expect(await sessionsStillClosed(fixtures.b.restaurantId, closedSessionMark)).toBe(true);
     },
   );
 
@@ -2411,15 +2844,17 @@ describe("public routes", () => {
 });
 
 describe("the example routes", () => {
+  const byName = (name: string) => routes.find((route) => route.name === name)!;
+
   it("an owner can rename a colleague", async () => {
     session.identity = aOwner.key;
-    await routes[1].call(fixtures.a);
+    await byName("POST /api/staff/[staffId]").call(fixtures.a);
     expect(await displayName(fixtures.a.staffId)).toBe("Renamed by the harness");
   });
 
   it("any staff member can read a colleague", async () => {
     session.identity = aStaff.key;
-    const response = await routes[0].call(fixtures.a);
+    const response = await byName("GET /api/staff/[staffId]").call(fixtures.a);
     expect(await response.json()).toEqual({
       id: fixtures.a.staffId,
       displayName: fixtureName,
@@ -2568,7 +3003,7 @@ describe("the platform admin on tenant routes", () => {
 });
 
 describe("a platform admin inside restaurant A", () => {
-  const writes = routes.filter((route) => !route.name.startsWith("GET "));
+  const writes = routes.filter((route) => !/^(GET|PAGE) /.test(route.name));
 
   const inside = async () => {
     session.identity = devPlatformAdmin.key;
@@ -3146,6 +3581,602 @@ describe("the guest's confirm: the new refusals stay inside the slug's restauran
   });
 });
 
+describe("the table page's ordering", () => {
+  beforeEach(resetFixtureOrderRate);
+
+  const anOrder = (itemId: string, session: string, extra: Record<string, string> = {}) => ({
+    item: itemId,
+    quantity: "1",
+    name: "Harness customer",
+    session,
+    ...extra,
+  });
+
+  it("needs no session to scan or to order", async () => {
+    session.identity = "";
+    const { qrToken, itemId, restaurantId } = await orderingRestaurant(owner.db);
+
+    const scan = await postScan(qrToken);
+    expect(scan.status).toBe(200);
+    const { session: joined } = await scan.json();
+    expect((await postOrder(qrToken, anOrder(itemId, joined))).status).toBe(201);
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is a 404 for an unknown token, and for a NUL in one, whoever is signed in", async () => {
+    session.identity = aOwner.key;
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => postScan(token))).toBe(404);
+      expect(
+        await statusOf(() =>
+          postOrder(token, anOrder(fixtures.a.itemId, crypto.randomUUID())),
+        ),
+      ).toBe(404);
+    }
+  });
+
+  it("a restaurant or table id in the query, headers or body can't stand in for the token", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId, tableId, itemId } = await orderingRestaurant(owner.db);
+    const named = {
+      query: `?restaurantId=${restaurantId}&tableId=${tableId}`,
+      headers: { "x-restaurant-id": restaurantId },
+    };
+
+    expect(
+      await statusOf(() =>
+        postScan("no-such-token", {
+          ...named,
+          body: new URLSearchParams({ restaurantId, restaurant_id: restaurantId, tableId }),
+        }),
+      ),
+    ).toBe(404);
+    expect(
+      await statusOf(() =>
+        postOrder(
+          "no-such-token",
+          anOrder(itemId, crypto.randomUUID(), { restaurantId, restaurant_id: restaurantId, tableId }),
+          named,
+        ),
+      ),
+    ).toBe(404);
+    const sessions = await owner.db.select().from(tableSessions).where(eq(tableSessions.tableId, tableId));
+    expect(sessions).toEqual([]);
+    expect(await linesOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("the token decides the tenant, not the query, the headers, the body or a session", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.a.restaurantId;
+    const joined = await scannedSession(fixtureTableToken("b"));
+
+    const response = await postOrder(
+      fixtureTableToken("b"),
+      anOrder(fixtures.b.itemId, joined, { restaurantId: id, restaurant_id: id, tableId: fixtures.a.tableId }),
+      { query: `?restaurantId=${id}`, headers: { "x-restaurant-id": id } },
+    );
+
+    expect(response.status).toBe(201);
+    const [b] = await owner.db
+      .select({ restaurantId: tableSessions.restaurantId, tableId: tableSessions.tableId })
+      .from(tableSessions)
+      .where(eq(tableSessions.id, joined));
+    expect(b).toEqual({ restaurantId: fixtures.b.restaurantId, tableId: fixtures.b.tableId });
+    const ordered = await linesOf(owner.db, fixtures.a.restaurantId);
+    expect(ordered.filter(({ order }) => order.customerName === "Harness customer")).toEqual([]);
+  });
+
+  it("a token only reaches its own restaurant: another restaurant's item or session is refused", async () => {
+    session.identity = "";
+    const mine = await orderingRestaurant(owner.db);
+    const theirs = await orderingRestaurant(owner.db);
+    const myJoin = await scannedSession(mine.qrToken);
+    const theirJoin = await scannedSession(theirs.qrToken);
+
+    expect((await postOrder(mine.qrToken, anOrder(theirs.itemId, myJoin))).status).toBe(409);
+    expect((await postOrder(mine.qrToken, anOrder(mine.itemId, theirJoin))).status).toBe(409);
+    expect(await linesOf(owner.db, mine.restaurantId)).toEqual([]);
+    expect(await linesOf(owner.db, theirs.restaurantId)).toEqual([]);
+  });
+
+  it("restaurant A's context can't see restaurant B's sessions, orders or items", async () => {
+    session.identity = "";
+    const b = await orderingRestaurant(owner.db);
+    const joined = await scannedSession(b.qrToken);
+    await postOrder(b.qrToken, anOrder(b.itemId, joined));
+
+    const app = openTestDatabase();
+    const seenFromA = await asTenant(app.db, fixtures.a.restaurantId, async (tx) => ({
+      sessions: await tx.select().from(tableSessions).where(eq(tableSessions.restaurantId, b.restaurantId)),
+      orders: await tx.select().from(orders).where(eq(orders.restaurantId, b.restaurantId)),
+      items: await tx.select().from(orderItems).where(eq(orderItems.restaurantId, b.restaurantId)),
+    })).finally(() => app.pool.end());
+
+    expect(seenFromA).toEqual({ sessions: [], orders: [], items: [] });
+    expect(await linesOf(owner.db, b.restaurantId)).toHaveLength(1);
+  });
+
+  it("the tracker needs no session, and is a 404 for an unknown token, and for a NUL in one", async () => {
+    session.identity = "";
+    const { qrToken, itemId } = await orderingRestaurant(owner.db);
+    const joined = await scannedSession(qrToken);
+    await postOrder(qrToken, anOrder(itemId, joined, { name: "Tracked guest" }));
+
+    const tracked = await getTracker(qrToken);
+    expect(tracked.status).toBe(200);
+    expect(JSON.stringify(await tracked.json())).toContain("Tracked guest");
+    session.identity = aOwner.key;
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => getTracker(token))).toBe(404);
+    }
+  });
+
+  it("the tracker's token decides the tenant, not the query or the headers: restaurant A's guests never show on B's table", async () => {
+    session.identity = aOwner.key;
+    const forA = await scannedSession(fixtureTableToken("a"));
+    const forB = await scannedSession(fixtureTableToken("b"));
+    await postOrder(fixtureTableToken("a"), anOrder(fixtures.a.itemId, forA, { name: "Tracker A guest" }));
+    await postOrder(fixtureTableToken("b"), anOrder(fixtures.b.itemId, forB, { name: "Tracker B guest" }));
+    const a = fixtures.a;
+
+    const seenOnB = JSON.stringify(
+      await (
+        await getTracker(fixtureTableToken("b"), {
+          query: `?restaurantId=${a.restaurantId}&tableId=${a.tableId}&session=${forA}`,
+          headers: { "x-restaurant-id": a.restaurantId },
+        })
+      ).json(),
+    );
+
+    expect(seenOnB).toContain("Tracker B guest");
+    expect(seenOnB).not.toContain("Tracker A guest");
+    expect(seenOnB).not.toContain(forA);
+    const seenOnA = JSON.stringify(await (await getTracker(fixtureTableToken("a"))).json());
+    expect(seenOnA).toContain("Tracker A guest");
+    expect(seenOnA).not.toContain("Tracker B guest");
+  });
+
+  it("calling a waiter needs no session, flags only the token's own table, whatever the query or headers name, and is a 404 for an unknown token", async () => {
+    session.identity = "";
+    const forA = await scannedSession(fixtureTableToken("a"));
+    const forB = await scannedSession(fixtureTableToken("b"));
+    const flagOf = async (id: string) =>
+      (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0].waiterRequestedAt;
+    // The fixture tables may carry a call another test planted.
+    await owner.db.update(tableSessions).set({ waiterRequestedAt: null }).where(eq(tableSessions.id, forB));
+    expect(await flagOf(forB)).toBeNull();
+
+    const response = await callWaiter(fixtureTableToken("a"), {
+      query: `?restaurantId=${fixtures.b.restaurantId}&tableId=${fixtures.b.tableId}&session=${forB}`,
+      headers: { "x-restaurant-id": fixtures.b.restaurantId },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await flagOf(forA)).toBeInstanceOf(Date);
+    expect(await flagOf(forB)).toBeNull();
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => callWaiter(token))).toBe(404);
+    }
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the kitchen lists restaurant A's orders and never B's",
+    async (_key, who) => {
+      session.identity = "";
+      const forA = await scannedSession(fixtureTableToken("a"));
+      const forB = await scannedSession(fixtureTableToken("b"));
+      await postOrder(fixtureTableToken("a"), anOrder(fixtures.a.itemId, forA, { name: "Kitchen A guest" }));
+      await postOrder(fixtureTableToken("b"), anOrder(fixtures.b.itemId, forB, { name: "Kitchen B guest" }));
+
+      session.identity = who.key;
+      const { KitchenScreen } = await import("@/app/dashboard/kitchen/kitchen-screen");
+      const html = renderToStaticMarkup(await KitchenScreen());
+
+      expect(html).toContain("Kitchen A guest");
+      expect(html).not.toContain("Kitchen B guest");
+    },
+  );
+
+  it("the kitchen is a 401 with no session", async () => {
+    session.identity = "";
+    const { KitchenScreen } = await import("@/app/dashboard/kitchen/kitchen-screen");
+    expect(await statusOf(() => KitchenScreen())).toBe(401);
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the kitchen's poll has restaurant A's new lines and never B's, whatever id the request names",
+    async (_key, who) => {
+      session.identity = who.key;
+      const start = await getKitchenChanges();
+      expect(start.status).toBe(200);
+      expect(start.headers.get("cache-control")).toBe("no-store");
+      const { cursor } = await start.json();
+      const mine = await plantKitchenItem(fixtures.a);
+      const theirs = await plantKitchenItem(fixtures.b);
+
+      const response = await getKitchenChanges(
+        `?since=${cursor}&restaurantId=${fixtures.b.restaurantId}&restaurant_id=${fixtures.b.restaurantId}`,
+        { headers: { "x-restaurant-id": fixtures.b.restaurantId } },
+      );
+
+      const ids = ((await response.json()).items as { id: string }[]).map((item) => item.id);
+      expect(ids).toContain(mine);
+      expect(ids).not.toContain(theirs);
+    },
+  );
+
+  it("the kitchen's poll is a 401 with no session, and refuses a cursor that isn't one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => getKitchenChanges())).toBe(401);
+    session.identity = aStaff.key;
+    expect(await statusOf(() => getKitchenChanges("?since=abc"))).toBe(400);
+  });
+
+  it("a kitchen move that skips a status or is stale is a 409 with the line's status, and a bad form is a 400", async () => {
+    session.identity = aStaff.key;
+    const itemId = await plantKitchenItem(fixtures.a);
+
+    const skipped = await postKitchenMove(itemId, { from: "placed", to: "done" });
+    expect(skipped.status).toBe(409);
+    expect((await skipped.json()).status).toBe("placed");
+    expect((await postKitchenMove(itemId, { from: "placed", to: "cooking" })).status).toBe(200);
+    const stale = await postKitchenMove(itemId, { from: "placed", to: "cooking" });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).status).toBe("cooking");
+    expect((await postKitchenMove(itemId, { from: "cooking", to: "burnt" })).status).toBe(400);
+    expect(await statusOf(() => postKitchenMove("not-an-id", { from: "placed", to: "cooking" }))).toBe(404);
+  });
+});
+
+describe("the floor view", () => {
+  beforeEach(resetFixtureOrderRate);
+
+  const anOrder = (itemId: string, joined: string, name: string) => ({
+    item: itemId,
+    quantity: "1",
+    name,
+    session: joined,
+  });
+  /** A line ordered at a fixture restaurant's table, set to `status` as the owner role. */
+  const orderedAt = async (who: "a" | "b", name: string, status: "placed" | "done") => {
+    session.identity = "";
+    const token = fixtureTableToken(who);
+    const joined = await scannedSession(token);
+    await postOrder(token, anOrder(fixtures[who].itemId, joined, name));
+    const [{ line }] = (await linesOf(owner.db, fixtures[who].restaurantId)).filter(
+      ({ order }) => order.customerName === name,
+    );
+    await owner.db.update(orderItems).set({ status }).where(eq(orderItems.id, line.id));
+    return line.id;
+  };
+  const deliver = async (itemId: string) =>
+    (await import("@/app/api/order-items/[itemId]/deliver/route")).POST(
+      request(`/api/order-items/${itemId}/deliver`, { method: "POST" }),
+      { params: Promise.resolve({ itemId }) },
+    );
+  const statusOfLine = async (id: string) =>
+    (await owner.db.select().from(orderItems).where(eq(orderItems.id, id)))[0].status;
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the grid and a table's detail show restaurant A's orders and never B's",
+    async (_key, who) => {
+      await orderedAt("a", "Floor A guest", "placed");
+      await orderedAt("b", "Floor B guest", "placed");
+
+      session.identity = who.key;
+      const { FloorScreen } = await import("@/app/dashboard/floor/floor-screen");
+      const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+      const grid = renderToStaticMarkup(await FloorScreen());
+      const detail = renderToStaticMarkup(await TableDetailScreen({ tableId: fixtures.a.tableId }));
+
+      expect(grid).toContain(`/dashboard/floor/${fixtures.a.tableId}`);
+      expect(grid).not.toContain(fixtures.b.tableId);
+      expect(detail).toContain("Floor A guest");
+      expect(detail).not.toContain("Floor B guest");
+      expect(await statusOf(() => TableDetailScreen({ tableId: fixtures.b.tableId }))).toBe(404);
+    },
+  );
+
+  it("the grid and the detail are a 401 with no session", async () => {
+    session.identity = "";
+    const { FloorScreen } = await import("@/app/dashboard/floor/floor-screen");
+    const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+    expect(await statusOf(() => FloorScreen())).toBe(401);
+    expect(await statusOf(() => TableDetailScreen({ tableId: fixtures.a.tableId }))).toBe(401);
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: an owner or staff marks a done item of restaurant A delivered, and B's is a 404 left alone",
+    async (_key, who) => {
+      const mine = await orderedAt("a", `Deliver A ${who.key}`, "done");
+      const theirs = await orderedAt("b", `Deliver B ${who.key}`, "done");
+
+      session.identity = who.key;
+      expect((await deliver(mine)).status).toBeLessThan(400);
+      expect(await statusOfLine(mine)).toBe("delivered");
+
+      expect(await statusOf(() => deliver(theirs))).toBe(404);
+      expect(await statusOfLine(theirs)).toBe("done");
+    },
+  );
+
+  it("refuses an item that isn't done with a 409, and a malformed or unknown id with a 404", async () => {
+    const placed = await orderedAt("a", "Not done yet", "placed");
+    session.identity = aStaff.key;
+
+    const refused = await deliver(placed);
+
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/still placed/);
+    expect(await statusOfLine(placed)).toBe("placed");
+    for (const id of ["not-a-uuid", "'; drop table order_items; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => deliver(id))).toBe(404);
+    }
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: voids an item and rejects an order of restaurant A, recorded with who and why; B's are a 404 left alone",
+    async (_key, who) => {
+      const item = await orderedAt("a", `Void A ${who.key}`, "placed");
+      const rejected = await orderedAt("a", `Reject A ${who.key}`, "done");
+      const theirs = await orderedAt("b", `Void B ${who.key}`, "placed");
+      const orderOf = async (id: string) =>
+        (await owner.db.select().from(orderItems).where(eq(orderItems.id, id)))[0].orderId;
+
+      session.identity = who.key;
+      expect((await postVoid(item, { reason: "Nobody at the table" })).status).toBeLessThan(400);
+      expect((await postReject(await orderOf(rejected), { reason: "Photographed code" })).status).toBeLessThan(400);
+
+      const [voided] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+      expect(voided).toMatchObject({ status: "voided", voidReason: "Nobody at the table", voidedBy: who.staffId });
+      const [onRejected] = await owner.db.select().from(orderItems).where(eq(orderItems.id, rejected));
+      expect(onRejected).toMatchObject({ status: "voided", voidReason: "Photographed code", voidedBy: who.staffId });
+
+      const theirOrder = await orderOf(theirs);
+      expect(await statusOf(() => postVoid(theirs))).toBe(404);
+      expect(await statusOf(() => postReject(theirOrder))).toBe(404);
+      expect(await statusOfLine(theirs)).toBe("placed");
+    },
+  );
+
+  it("refuses a blank or over-long reason with a 400 for both, and changes nothing", async () => {
+    const item = await orderedAt("a", "Blank reason", "placed");
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+    session.identity = aStaff.key;
+
+    const forms: Record<string, string>[] = [{}, { reason: "" }, { reason: "   " }, { reason: "x".repeat(201) }];
+    for (const fields of forms) {
+      const voided = await postVoid(item, fields);
+      expect(voided.status).toBe(400);
+      expect((await voided.json()).error).toMatch(/reason/i);
+      expect((await postReject(orderId, fields)).status).toBe(400);
+    }
+    expect(await statusOfLine(item)).toBe("placed");
+  });
+
+  it("refuses voiding a delivered or voided item, and rejecting an order with nothing left, with a 409", async () => {
+    const delivered = await orderedAt("a", "Already eaten", "done");
+    session.identity = aStaff.key;
+    await deliver(delivered);
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, delivered));
+
+    const refused = await postVoid(delivered);
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/delivered/);
+    expect((await postReject(orderId)).status).toBe(409);
+    expect(await statusOfLine(delivered)).toBe("delivered");
+
+    const once = await orderedAt("a", "Voided once", "placed");
+    session.identity = aStaff.key;
+    expect((await postVoid(once, { reason: "First" })).status).toBeLessThan(400);
+    const again = await postVoid(once, { reason: "Second" });
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/already voided/);
+    const [row] = await owner.db.select().from(orderItems).where(eq(orderItems.id, once));
+    expect(row.voidReason).toBe("First");
+  });
+
+  it("voiding and rejecting are a 404 for a malformed or unknown id", async () => {
+    session.identity = aStaff.key;
+    for (const id of ["not-a-uuid", "'; drop table order_items; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postVoid(id))).toBe(404);
+      expect(await statusOf(() => postReject(id))).toBe(404);
+    }
+  });
+
+  it("voiding and rejecting are a 401 with no session, and change nothing", async () => {
+    const item = await orderedAt("a", "Unauthenticated void", "placed");
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+    session.identity = "";
+
+    expect(await statusOf(() => postVoid(item))).toBe(401);
+    expect(await statusOf(() => postReject(orderId))).toBe(401);
+    expect(await statusOfLine(item)).toBe("placed");
+  });
+
+  it("marking delivered is a 401 with no session, and changes nothing", async () => {
+    const done = await orderedAt("a", "Unauthenticated", "done");
+    session.identity = "";
+
+    expect(await statusOf(() => deliver(done))).toBe(401);
+    expect(await statusOfLine(done)).toBe("done");
+  });
+
+  const sessionRow = async (id: string) =>
+    (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0];
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: clears and force-closes restaurant A's tables, recorded with who and why; B's are a 404 left open",
+    async (_key, who) => {
+      const cleared = await plantOpenTable(fixtures.a, false);
+      const forced = await plantOpenTable(fixtures.a, true);
+      const forcedLine = plantedKitchenItems.at(-1)!.id;
+      const theirs = await plantOpenTable(fixtures.b, true);
+
+      session.identity = who.key;
+      expect((await postClear(cleared.tableId, { session: cleared.sessionId })).status).toBeLessThan(400);
+      expect(
+        (await postForceClose(forced.tableId, { session: forced.sessionId, reason: "Walked out" })).status,
+      ).toBeLessThan(400);
+
+      expect(await sessionRow(cleared.sessionId)).toMatchObject({
+        status: "closed",
+        closeReason: "staff_clear",
+        closedBy: who.staffId,
+      });
+      expect(await sessionRow(forced.sessionId)).toMatchObject({
+        status: "closed",
+        closeReason: "force_close",
+        closedBy: who.staffId,
+      });
+      const [line] = await owner.db.select().from(orderItems).where(eq(orderItems.id, forcedLine));
+      expect(line).toMatchObject({ status: "voided", voidReason: "Walked out", voidedBy: who.staffId });
+      const [entry] = await owner.db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.entityId, forced.sessionId), eq(auditLog.action, "session.force_close")));
+      expect(entry).toMatchObject({ actorType: "staff", actorId: who.staffId, details: { reason: "Walked out" } });
+
+      expect(await statusOf(() => postClear(theirs.tableId, { session: theirs.sessionId }))).toBe(404);
+      expect(
+        await statusOf(() => postForceClose(theirs.tableId, { session: theirs.sessionId, reason: "Not mine" })),
+      ).toBe(404);
+      expect((await sessionRow(theirs.sessionId)).status).toBe("open");
+    },
+  );
+
+  it("clear table is a 409 listing the items in the way and pointing to force-close, and closes nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, true);
+    session.identity = aStaff.key;
+
+    const refused = await postClear(tableId, { session: sessionId });
+
+    expect(refused.status).toBe(409);
+    const body = await refused.json();
+    expect(body.error).toMatch(/force-close/);
+    expect(body.items).toEqual([
+      { id: plantedKitchenItems.at(-1)!.id, summary: `1 × ${harnessItem} for Harness close: placed` },
+    ]);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+
+  it("a close for a session the page no longer shows is a 409, and one without a session a 400", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, false);
+    session.identity = aStaff.key;
+
+    const stale = await postClear(tableId, { session: crypto.randomUUID() });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error).toMatch(/changed/);
+    expect((await postForceClose(tableId, { session: crypto.randomUUID(), reason: "Stale" })).status).toBe(409);
+    expect((await postClear(tableId, {})).status).toBe(400);
+    expect((await postForceClose(tableId, { session: "not-a-uuid", reason: "Stale" })).status).toBe(400);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+
+  it("refuses a blank or over-long force-close reason with a 400, and changes nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, true);
+    const line = plantedKitchenItems.at(-1)!.id;
+    session.identity = aStaff.key;
+
+    for (const reason of [undefined, "", "   ", "x".repeat(201)]) {
+      const fields: Record<string, string> = { session: sessionId };
+      if (reason !== undefined) fields.reason = reason;
+      const refused = await postForceClose(tableId, fields);
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).error).toMatch(/reason/i);
+    }
+    expect((await sessionRow(sessionId)).status).toBe("open");
+    expect(await statusOfLine(line)).toBe("placed");
+  });
+
+  it("clearing and force-closing are a 404 for a malformed or unknown table", async () => {
+    session.identity = aStaff.key;
+    for (const id of ["not-a-uuid", "'; drop table table_sessions; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postClear(id, { session: crypto.randomUUID() }))).toBe(404);
+      expect(
+        await statusOf(() => postForceClose(id, { session: crypto.randomUUID(), reason: "Unknown" })),
+      ).toBe(404);
+    }
+  });
+
+  it("clearing and force-closing are a 401 with no session, and close nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, false);
+    session.identity = "";
+
+    expect(await statusOf(() => postClear(tableId, { session: sessionId }))).toBe(401);
+    expect(await statusOf(() => postForceClose(tableId, { session: sessionId, reason: "No one" }))).toBe(401);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+});
+
+describe("reopening a table's session (#76)", () => {
+  const sessionRow = async (id: string) =>
+    (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0];
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: reopens restaurant A's session closed a minute ago, audited with who; B's is a 404 left closed",
+    async (_key, who) => {
+      const mine = await plantClosedTable(fixtures.a);
+      const theirs = await plantClosedTable(fixtures.b);
+
+      session.identity = who.key;
+      expect((await postReopen(mine.tableId, { session: mine.sessionId })).status).toBeLessThan(400);
+
+      expect(await sessionRow(mine.sessionId)).toMatchObject({ status: "open", closedAt: null, closedBy: null });
+      const [entry] = await owner.db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.entityId, mine.sessionId), eq(auditLog.action, "session.reopen")));
+      expect(entry).toMatchObject({
+        actorType: "staff",
+        actorId: who.staffId,
+        entityType: "table_session",
+        details: { closeReason: "staff_clear" },
+      });
+
+      expect(await statusOf(() => postReopen(theirs.tableId, { session: theirs.sessionId }))).toBe(404);
+      expect(await statusOf(() => postReopen(mine.tableId, { session: theirs.sessionId }))).toBe(409);
+      expect((await sessionRow(theirs.sessionId)).status).toBe("closed");
+    },
+  );
+
+  it("is a 409 that says why once the 15 minutes have passed or a new party has opened the table", async () => {
+    session.identity = aStaff.key;
+    const late = await plantClosedTable(fixtures.a, 16);
+    const refused = await postReopen(late.tableId, { session: late.sessionId });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/15 minutes/);
+    expect((await sessionRow(late.sessionId)).status).toBe("closed");
+
+    const taken = await plantClosedTable(fixtures.a, 5);
+    await owner.db.insert(tableSessions).values({ restaurantId: fixtures.a.restaurantId, tableId: taken.tableId });
+    const superseded = await postReopen(taken.tableId, { session: taken.sessionId });
+    expect(superseded.status).toBe(409);
+    expect((await superseded.json()).error).toMatch(/new party/);
+    expect((await sessionRow(taken.sessionId)).status).toBe("closed");
+
+    const twice = await plantClosedTable(fixtures.a);
+    expect((await postReopen(twice.tableId, { session: twice.sessionId })).status).toBeLessThan(400);
+    const again = await postReopen(twice.tableId, { session: twice.sessionId });
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/changed/);
+  });
+
+  it("is a 400 without a session, a 404 for a malformed or unknown table, and a 401 signed out, changing nothing", async () => {
+    const { tableId, sessionId } = await plantClosedTable(fixtures.a);
+    session.identity = aStaff.key;
+    expect((await postReopen(tableId, {})).status).toBe(400);
+    expect((await postReopen(tableId, { session: "not-a-uuid" })).status).toBe(400);
+    for (const id of ["not-a-uuid", "'; drop table table_sessions; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postReopen(id, { session: sessionId }))).toBe(404);
+    }
+
+    session.identity = "";
+    expect(await statusOf(() => postReopen(tableId, { session: sessionId }))).toBe(401);
+    expect((await sessionRow(sessionId)).status).toBe("closed");
+  });
+});
+
 describe("the guest's cancel", () => {
   const MINUTE = 60_000;
   /** A booking far enough ahead to cancel, on a restaurant of its own. */
@@ -3391,6 +4422,11 @@ describe("harness coverage", () => {
       ...publicRoutes.map((route) => route.name),
       guestConfirm,
       guestCancel,
+      tableScan,
+      tableOrder,
+      kitchenChanges,
+      tableTracker,
+      tableWaiter,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
@@ -3398,9 +4434,10 @@ describe("harness coverage", () => {
 
   it("no page takes an id but a public one and no Server Function exists that the harness doesn't know about", () => {
     // The only pages with params so far are public, in `publicRoutes`, and take a
-    // slug. The first to take an id needs a way in: add a TenantRoute that calls it.
+    // slug. The first to take an id needs a way in: add a TenantRoute that calls it (the floor's detail page is one).
     const pagesWithIds = pagesWithParams.filter(
-      (file) => !publicRoutes.some((route) => route.name === `PAGE ${routePath(file)}`),
+      (file) =>
+        ![...publicRoutes, ...routes].some((route) => route.name === `PAGE ${routePath(file)}`),
     );
     const serverFunctions = appFiles.filter(
       (file) =>

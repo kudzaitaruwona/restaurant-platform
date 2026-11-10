@@ -281,6 +281,69 @@
       "when": 1794326164830,
       "tag": "0039_quiet_tempest",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794328901741,
+      "tag": "0040_table_sessions_and_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794328902352,
+      "tag": "0041_kitchen_change_stamp",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794328902944,
+      "tag": "0042_order_items_in_play",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794332096840,
+      "tag": "0043_order_items_void_final",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794338569994,
+      "tag": "0044_waiter_flag_ends_with_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794339541508,
+      "tag": "0045_session_closure_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794341267120,
+      "tag": "0046_idle_expiry_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794343293955,
+      "tag": "0047_table_sessions_table_opened",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794343294636,
+      "tag": "0048_session_reopen",
+      "breakpoints": true
     }
   ]
 }

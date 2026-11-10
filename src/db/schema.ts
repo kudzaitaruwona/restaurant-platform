@@ -114,6 +114,30 @@ export const notificationStatus = pgEnum("notification_status", [
 // special_only is a bundle (spec 02): it shows only while one of its specials is on.
 export const menuVisibility = pgEnum("menu_visibility", ["regular", "special_only"]);
 
+// Spec 00, 6: table sessions and orders (phase 6, spec 06).
+export const tableSessionStatus = pgEnum("table_session_status", ["open", "closed"]);
+
+export const tableSessionCloseReason = pgEnum("table_session_close_reason", [
+  "in_app_payment",
+  "staff_clear",
+  "idle_expiry",
+  "pos_payment",
+  "force_close",
+]);
+
+export const paidCurrency = pgEnum("paid_currency", ["usd", "zig"]);
+
+/** Whether a frozen ZiG price was the item's own or worked out from the rate (S-10). */
+export const zigSource = pgEnum("zig_source", ["fixed", "calculated"]);
+
+export const orderItemStatus = pgEnum("order_item_status", [
+  "placed",
+  "cooking",
+  "done",
+  "delivered",
+  "voided",
+]);
+
 export const restaurants = pgTable(
   "restaurants",
   {
@@ -830,6 +854,233 @@ export const notificationSends = pgView("notification_sends", {
   /** Who cancelled, for booking_cancelled's wording; null unless the booking is cancelled. */
   cancelledBy: bookingCancelledBy("cancelled_by"),
 }).existing();
+
+/**
+ * A party at a table (spec 00, 6; spec 06). The first scan of a table with no
+ * open session opens one and later scans join it: `table_sessions_one_open_per_table`
+ * is the table lock, so two phones scanning at once can't open two. Nobody
+ * approves a session (S-36), so `approved_at` is never written or read in v1; it
+ * stays so approval can be added later without a schema change.
+ *
+ * Postgres rules that live only in the migrations, because Drizzle can't
+ * model triggers: a closed session never carries a waiter call
+ * (table_sessions_waiter_flag), an order or a line can only be written while its session is
+ * open (orders_session_open, order_items_session_open), and a line's prices and
+ * an order's rate can't change once written (order_items_frozen,
+ * orders_frozen), nor can a line move to another order or an order to another
+ * session (proposed, S-40), so money can't shift between bills. app_tenant can't delete from any of the three
+ * (proposed): nothing customer-facing is hard-deleted, and a void is a status.
+ */
+export const tableSessions = pgTable(
+  "table_sessions",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    tableId: uuid("table_id").notNull(),
+    status: tableSessionStatus().notNull().default("open"),
+    // Unused in v1 (S-36): nothing writes or reads it.
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    openedAt: timestamp("opened_at", { withTimezone: true }).notNull().defaultNow(),
+    // Bumped by scans, orders, item status changes and reopen (spec 06).
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // "Call a waiter" (proposed, #77): when the table's open session started
+    // calling, null when it isn't. Set by the customer's page, cleared by staff or
+    // by the session closing (trigger table_sessions_waiter_flag, 0044).
+    waiterRequestedAt: timestamp("waiter_requested_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    closeReason: tableSessionCloseReason("close_reason"),
+    // Null when the close was automatic.
+    closedBy: uuid("closed_by"),
+    paidCurrency: paidCurrency("paid_currency"),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "table_sessions_table_fk",
+      columns: [table.restaurantId, table.tableId],
+      foreignColumns: [diningTables.restaurantId, diningTables.id],
+    }),
+    foreignKey({
+      name: "table_sessions_closed_by_fk",
+      columns: [table.restaurantId, table.closedBy],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    // The table lock (spec 00, 6). Opening a session is an insert that, on
+    // conflict here, joins the open one instead (src/lib/ordering.ts).
+    uniqueIndex("table_sessions_one_open_per_table")
+      .on(table.tableId)
+      .where(sql`${table.status} = 'open'`),
+    // (Proposed, #76) A table's sessions by when they opened: the reopen rule's
+    // "has a session opened on this table since" (trigger table_sessions_reopen)
+    // and the table detail's latest session, each a probe at the newest end, so
+    // neither reads the table's history.
+    index("table_sessions_table_opened").on(table.restaurantId, table.tableId, table.openedAt),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * One "Place order" (spec 06). The customer gives only a name. `rate_used` is the
+ * restaurant's exchange rate when it was placed, frozen like the lines' prices,
+ * and null while the restaurant has no rate.
+ */
+export const orders = pgTable(
+  "orders",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    customerName: text("customer_name").notNull(),
+    rateUsed: numeric("rate_used"),
+    placedAt: timestamp("placed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "orders_session_fk",
+      columns: [table.restaurantId, table.sessionId],
+      foreignColumns: [tableSessions.restaurantId, tableSessions.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    // A session's orders, and the order rate limit's count of its recent ones.
+    index().on(table.restaurantId, table.sessionId, table.placedAt),
+    // Up to 100 characters (proposed), like a booking's guest_name.
+    check(
+      "orders_customer_name",
+      sql`trim(${table.customerName}) <> '' and length(${table.customerName}) <= 100`,
+    ),
+    // (proposed) A frozen rate can't give a negative ZiG price.
+    check("orders_rate_used_positive", sql`${table.rateUsed} > 0`),
+    // Finite only together with the > 0 above: NaN sorts above Infinity.
+    check("orders_rate_used_finite", sql`${table.rateUsed} < 'Infinity'`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * One line of an order, with its prices frozen when it was placed (spec 06):
+ * changing the menu, the rate or a special later changes nothing here. A price
+ * that couldn't be worked out then (no rate yet) is null, as the menu showed it,
+ * and a null ZiG price has no source. `special_id` is the special live at the
+ * time, for "how many did the special sell".
+ */
+export const orderItems = pgTable(
+  "order_items",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    orderId: uuid("order_id").notNull(),
+    menuItemId: uuid("menu_item_id").notNull(),
+    specialId: uuid("special_id"),
+    nameSnapshot: text("name_snapshot").notNull(),
+    quantity: integer().notNull(),
+    unitPriceUsd: numeric("unit_price_usd"),
+    unitPriceZig: numeric("unit_price_zig"),
+    zigSource: zigSource("zig_source"),
+    note: text(),
+    status: orderItemStatus().notNull().default("placed"),
+    statusChangedAt: timestamp("status_changed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    voidReason: text("void_reason"),
+    voidedBy: uuid("voided_by"),
+    // The kitchen board's change stamp (#71, proposed): the id of the transaction
+    // that last wrote the row, set by the order_items_change_stamp trigger
+    // whatever the writer says. A poll returns rows stamped at or after the
+    // oldest transaction still running when the previous poll read, so a write
+    // that commits late is never skipped. See src/lib/kitchen.ts.
+    changeXid: bigint("change_xid", { mode: "number" })
+      .notNull()
+      .default(sql`(pg_current_xact_id()::text::bigint)`),
+    // Whether the line is still on the kitchen board: not delivered or voided
+    // (proposed, S-40). Postgres computes it; nothing in the app writes it. The
+    // board's first load finds its lines on this, not on status: under RLS the
+    // planner can't use statistics through the enum's comparisons (not
+    // leakproof), so a status filter is estimated as most of the restaurant's
+    // lines, and read that way. A boolean's are leakproof, so its estimate is
+    // the share of lines in play. See getBoard in src/lib/kitchen.ts.
+    inPlay: boolean("in_play")
+      .notNull()
+      .generatedAlwaysAs(sql`status not in ('delivered', 'voided')`),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      name: "order_items_order_fk",
+      columns: [table.restaurantId, table.orderId],
+      foreignColumns: [orders.restaurantId, orders.id],
+    }),
+    foreignKey({
+      name: "order_items_menu_item_fk",
+      columns: [table.restaurantId, table.menuItemId],
+      foreignColumns: [menuItems.restaurantId, menuItems.id],
+    }),
+    foreignKey({
+      name: "order_items_special_fk",
+      columns: [table.restaurantId, table.specialId],
+      foreignColumns: [specials.restaurantId, specials.id],
+    }),
+    foreignKey({
+      name: "order_items_voided_by_fk",
+      columns: [table.restaurantId, table.voidedBy],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    index().on(table.restaurantId, table.orderId),
+    // The kitchen board's load (spec 07): only lines still in play (placed,
+    // cooking, done), so a load doesn't read the restaurant's whole history
+    // (lines are never deleted). On in_play, the column the board filters on.
+    index("order_items_in_play")
+      .on(table.restaurantId)
+      .where(sql`${table.inPlay}`),
+    // The board's poll (#71): what changed since a stamp, delivered and voided
+    // lines included, so the board can drop them.
+    index("order_items_changes").on(table.restaurantId, table.changeXid),
+    // 1 to 20 (proposed): the spec says only "> 0".
+    check("order_items_quantity", sql`${table.quantity} between 1 and 20`),
+    // Up to 200 characters (proposed), like a booking's note; blank is stored as null.
+    check(
+      "order_items_note",
+      sql`${table.note} is null or (trim(${table.note}) <> '' and length(${table.note}) <= 200)`,
+    ),
+    // (proposed) A frozen price can't make a negative bill.
+    check(
+      "order_items_prices_not_negative",
+      sql`${table.unitPriceUsd} >= 0 and ${table.unitPriceZig} >= 0`,
+    ),
+    // Finite only together with the lower bound above: NaN sorts above Infinity.
+    check(
+      "order_items_prices_finite",
+      sql`${table.unitPriceUsd} < 'Infinity' and ${table.unitPriceZig} < 'Infinity'`,
+    ),
+    // A ZiG price says whether it was fixed or calculated, and no price has no source.
+    check(
+      "order_items_zig_source",
+      sql`(${table.unitPriceZig} is null) = (${table.zigSource} is null)`,
+    ),
+    // A void says who and why (spec 00); the reason is non-blank and up to 200
+    // characters (proposed, #73), like a note. Once voided, a line stays voided
+    // with its first reason, and a delivered line can't be voided: the trigger
+    // order_items_void_final (migration order_items_void_final) holds both.
+    check(
+      "order_items_void_recorded",
+      sql`${table.status} <> 'voided' or (${table.voidReason} is not null and trim(${table.voidReason}) <> '' and length(${table.voidReason}) <= 200 and ${table.voidedBy} is not null)`,
+    ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
 
 /**
  * How many booking submissions one network address has made lately (spec 04,

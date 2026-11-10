@@ -12,6 +12,7 @@ import {
   servicePeriods,
   specials,
   staff,
+  tableSessions,
 } from "@/db/schema";
 import { BUILD_SAMPLE_TOKEN } from "@/lib/public-menu";
 import { mintQrToken } from "@/lib/qr-token";
@@ -33,9 +34,11 @@ vi.mock("@/lib/storage", () => ({
 }));
 
 /**
- * A table's QR code, against a real Postgres as app_tenant. Until ordering
- * arrives it shows the same menu as the generic code (spec 03). `use cache` is
- * inert here: test/production/public-pages.test.ts runs the real cache.
+ * A table's QR code, against a real Postgres as app_tenant. It shows the same
+ * menu as the generic code (spec 03), plus what ordering adds (spec 06): an Add
+ * button on each item that can be ordered, the order form, and the one script
+ * that drives them. `use cache` is inert here: test/production/public-pages.test.ts
+ * runs the real cache.
  */
 const owner = openOwnerDatabase();
 const created: string[] = [];
@@ -105,11 +108,17 @@ afterAll(async () => {
   await owner.db.delete(staff).where(inArray(staff.restaurantId, created));
   await owner.db.delete(menuItems).where(inArray(menuItems.restaurantId, created));
   await owner.db.delete(categories).where(inArray(categories.restaurantId, created));
+  await owner.db.delete(tableSessions).where(inArray(tableSessions.restaurantId, created));
   await owner.db.delete(diningTables).where(inArray(diningTables.restaurantId, created));
   await owner.db.delete(restaurants).where(inArray(restaurants.id, created));
   await owner.pool.end();
   vi.unstubAllEnvs();
 });
+
+/** Each Add button, the order form, its styles and its script: all ordering adds. */
+const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden>Add<\/button>/g;
+const orderBlock = /\n<style>[^<]*<\/style>\n<section id="tracker"[\s\S]*<\/script>\n/;
+const withoutOrdering = (body: string) => body.replace(addButton, "").replace(orderBlock, "");
 
 const genericPage = (menuToken: string) =>
   menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {
@@ -117,7 +126,7 @@ const genericPage = (menuToken: string) =>
   });
 
 describe("/t/{qr_token}", () => {
-  it("renders the same menu as the restaurant's /m/{menu_token}, with booking off", async () => {
+  it("renders the same menu as the restaurant's /m/{menu_token}, plus ordering, with booking off", async () => {
     const { menuToken, qrToken } = await newRestaurant("Mama's Kitchen", "Beef stew");
 
     const table = await scan(qrToken);
@@ -129,7 +138,71 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain("Mama&#39;s Kitchen");
     expect(body).toContain("Beef stew");
     expect(body).not.toContain("Book again");
-    expect(body).toBe(await generic.text());
+    expect(body).not.toBe(await generic.clone().text());
+    expect(withoutOrdering(body)).toBe(await generic.text());
+  });
+
+  it("offers Add on each item that can be ordered, hidden until the script has joined the session", async () => {
+    const { id, qrToken, categoryId } = await newRestaurant("Ordering", "Beef stew");
+    const [stew] = await owner.db.select().from(menuItems).where(eq(menuItems.categoryId, categoryId));
+    const [soldOut] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId: id, categoryId, name: "Oxtail", priceUsd: "14", available: false })
+      .returning({ id: menuItems.id });
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toContain(
+      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>Add</button>`,
+    );
+    expect(body).not.toContain(soldOut.id);
+    expect(body.match(addButton)).toHaveLength(1);
+  });
+
+  it("has a cart, a name and a tracker, which work only with its script", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toMatch(/<form id="order"[^>]* hidden>/);
+    expect(body).toContain('id="cart"');
+    expect(body).toContain('id="tracker"');
+    expect(body).toContain('maxLength = 200');
+    expect(body).toContain("Pay at the table with your waiter as usual.");
+    expect(body).toContain('name="name" maxlength="100" required');
+    expect(body).toContain("Place order");
+    // One script, and it talks only to the ordering endpoints, never to the page.
+    expect(body.match(/<script/g)).toHaveLength(1);
+    expect(body).toContain('"/api/t/"');
+  });
+
+  it("has a Call a waiter button, hidden until the script has joined the session", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toMatch(/<button type="button" id="call-waiter"[^>]* hidden>Call a waiter<\/button>/);
+  });
+
+  it("escapes an item's name in the Add button", async () => {
+    const { qrToken } = await newRestaurant("Ordering", `Stew "<script>alert(1)</script>"`);
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toContain('data-name="Stew &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;"');
+    expect(body.match(/<script/g)).toHaveLength(1);
+  });
+
+  it("is the same page whoever scans it: nothing about a session is written into it", async () => {
+    const { qrToken } = await newRestaurant("Cached", "Stew");
+    const before = await (await scan(qrToken)).text();
+
+    const { POST: joinSession } = await import("@/app/api/t/[qrToken]/session/route");
+    await joinSession(new Request("http://localhost/x", { method: "POST" }), {
+      params: Promise.resolve({ qrToken }),
+    });
+
+    expect(await (await scan(qrToken)).text()).toBe(before);
   });
 
   it("adds only a Book again link to the restaurant's booking page while online booking is on", async () => {
@@ -141,8 +214,8 @@ describe("/t/{qr_token}", () => {
     const generic = await (await genericPage(menuToken)).text();
 
     expect(body).toContain(bookAgainLine(slug));
-    // The difference is that link and nothing else.
-    expect(body.replace(bookAgainLine(slug), "")).toBe(generic);
+    // The difference is that link and ordering, nothing else.
+    expect(withoutOrdering(body.replace(bookAgainLine(slug), ""))).toBe(generic);
   });
 
   it("links Book again to its own restaurant's booking page, not another's", async () => {
@@ -210,7 +283,7 @@ describe("/t/{qr_token}", () => {
       params: Promise.resolve({ menuToken }),
     });
 
-    expect(body).toBe(await generic.text());
+    expect(withoutOrdering(body)).toBe(await generic.text());
     expect(body).toContain("Wi-Fi: Guest-Net");
     expect(body).not.toContain("kept-off-the-page");
     expect(body).toContain('<nav aria-label="Menu sections"><a href="#specials">Specials</a>');
@@ -228,7 +301,7 @@ describe("/t/{qr_token}", () => {
     const withLink = await (await scan(qrToken)).text();
     expect(withLink).toContain(line);
     expect(withLink.replace(line, "")).toBe(body);
-    expect(await (await genericPage(menuToken)).text()).toBe(body);
+    expect(await (await genericPage(menuToken)).text()).toBe(withoutOrdering(body));
   });
 
   it("shows its own restaurant's menu and nobody else's", async () => {
@@ -244,20 +317,27 @@ describe("/t/{qr_token}", () => {
     expect(await (await scan(theirs.qrToken)).text()).toContain("Their stew");
   });
 
-  it("puts no label, id or Wi-Fi password on the page", async () => {
+  it("puts no label, restaurant, category or table id, or Wi-Fi password on the page", async () => {
     const { id, categoryId, qrToken } = await newRestaurant("Private", "Stew");
+    const [{ id: tableId }] = await owner.db
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(eq(diningTables.qrToken, qrToken));
 
     const body = await (await scan(qrToken)).text();
 
     expect(body).not.toContain("Table Seven");
     expect(body).not.toContain(id);
     expect(body).not.toContain(categoryId);
+    expect(body).not.toContain(tableId);
     expect(body).not.toContain("kept-off-the-page");
   });
 
-  it("has no JavaScript, like the menu it shows", async () => {
+  it("has no JavaScript but ordering's one script: no handlers in the markup, no javascript: links", async () => {
     const { qrToken } = await newRestaurant("No scripts", "Stew");
-    expect(await (await scan(qrToken)).text()).not.toMatch(/<script|\son\w+=|javascript:/i);
+    const body = await (await scan(qrToken)).text();
+    const markup = body.replace(/<script>[\s\S]*<\/script>/, "");
+    expect(markup).not.toMatch(/<script|\son\w+=|javascript:/i);
   });
 
   it("says the code is out of date for a token that was never a table's, as a real 404", async () => {
