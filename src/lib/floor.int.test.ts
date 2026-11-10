@@ -194,9 +194,10 @@ type PlanNode = {
 const nodesOf = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodesOf)];
 /**
  * The rows a plan's nodes read from a table, kept or filtered out, over every
- * loop. A Bitmap Heap Scan reads at least the entries its Bitmap Index Scans
- * found, so a BitmapAnd that walks an index over the history and keeps a few
- * rows still counts the history it walked. EXPLAIN gives Actual Rows as a
+ * loop. A Bitmap Index Scan's Actual Rows is the index entries it walked. A
+ * Bitmap Heap Scan above a BitmapAnd shows only the rows that survive, so
+ * count the larger of the two: an index walked over the history is a read of
+ * the history even when it keeps a few rows. EXPLAIN gives Actual Rows as a
  * rounded mean per loop, so a test keeps its loops even.
  */
 const rowsRead = (plan: PlanNode, table: string) =>
