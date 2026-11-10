@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { diningTables, orderItems, orders, tableSessions } from "@/db/schema";
 import type { TenantContext } from "@/lib/tenant";
@@ -149,7 +149,8 @@ describe("the kitchen screen", () => {
     });
     await owner.db
       .update(orders)
-      .set({ placedAt: new Date(Date.now() - 20 * 60_000) })
+      // On the database's clock, which the board ages against.
+      .set({ placedAt: sql`now() - interval '20 minutes 30 seconds'` })
       .where(eq(orders.id, orderId));
 
     const html = await render();
