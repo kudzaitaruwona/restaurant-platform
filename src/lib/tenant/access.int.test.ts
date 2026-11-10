@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { and, eq, inArray, like, or } from "drizzle-orm";
+import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import sharp from "sharp";
@@ -1129,6 +1129,18 @@ const postOrder = async (
     }),
     { params: Promise.resolve({ qrToken }) },
   );
+
+/**
+ * Puts the fixture restaurants' orders an hour further back, so the tests that
+ * order at a fixture table (the tracker's, the kitchen's and the floor's) don't
+ * spend each other's order rate limit: 10 per session in any 5 minutes, and
+ * they all share the fixture table's open session.
+ */
+const resetFixtureOrderRate = () =>
+  owner.db
+    .update(orders)
+    .set({ placedAt: sql`${orders.placedAt} - interval '1 hour'` })
+    .where(inArray(orders.restaurantId, [fixtures.a.restaurantId, fixtures.b.restaurantId]));
 
 const scannedSession = async (qrToken: string) =>
   (await (await postScan(qrToken)).json()).session as string;
@@ -3353,6 +3365,8 @@ describe("the guest's confirm: the new refusals stay inside the slug's restauran
 });
 
 describe("the table page's ordering", () => {
+  beforeEach(resetFixtureOrderRate);
+
   const anOrder = (itemId: string, session: string, extra: Record<string, string> = {}) => ({
     item: itemId,
     quantity: "1",
@@ -3575,6 +3589,8 @@ describe("the table page's ordering", () => {
 });
 
 describe("the floor view", () => {
+  beforeEach(resetFixtureOrderRate);
+
   const anOrder = (itemId: string, joined: string, name: string) => ({
     item: itemId,
     quantity: "1",
