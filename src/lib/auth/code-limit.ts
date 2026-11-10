@@ -1,6 +1,7 @@
 import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { adminAuthCodeLimit, staffAuthCodeLimit } from "@/db/schema";
+import { CODE_WINDOW } from "./code-window";
 import { authDatabase } from "./database";
 import type { Audience } from "./index";
 
@@ -11,7 +12,7 @@ import type { Audience } from "./index";
  * all back. Kept in Postgres: memory would be per-instance on Vercel.
  */
 export const CODE_ATTEMPTS_PER_WINDOW = 20;
-const WINDOW = "24 hours";
+const WINDOW = CODE_WINDOW;
 
 /** How the sign-in form tells this apart from the per-IP limiter's 429. */
 export const SIGN_IN_CODES_PAUSED = "sign_in_codes_paused";

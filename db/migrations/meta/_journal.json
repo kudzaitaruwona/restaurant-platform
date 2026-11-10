@@ -218,6 +218,27 @@
       "when": 1794207370125,
       "tag": "0030_staff_auth_database_login",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794303963184,
+      "tag": "0031_system_job",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794305533138,
+      "tag": "0032_booking_phone_purge",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794316993712,
+      "tag": "0033_booking_phone_set",
+      "breakpoints": true
     }
   ]
 }

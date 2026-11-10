@@ -149,6 +149,62 @@ export { withTenant, staff };`,
     expect(await restrictedImports(code, "src/lib/auth/identity.ts")).toEqual([]);
   }, 30_000);
 
+  // The system login (spec 01, S-35) bypasses RLS for every tenant, so only the
+  // scheduled job's route opens it, and the Meta webhook's once that exists.
+  const systemImports = [
+    `import { getSystemDb } from "@/db/system";\nexport { getSystemDb };`,
+    `import { getSystemDb } from "../../db/system";\nexport { getSystemDb };`,
+  ];
+
+  it.each(
+    [
+      "src/app/api/bookings/route.ts",
+      "src/app/api/cron/other/route.ts",
+      "src/app/dashboard/page.tsx",
+      "src/lib/cron/tick.ts",
+      "src/lib/cron/booking-status.ts",
+      "src/lib/booking-day.ts",
+      "src/lib/storage/index.ts",
+      "src/lib/tenant/index.ts",
+      "src/lib/tenant/platform-admin.ts",
+      "src/lib/auth/database.ts",
+      "src/lib/auth/identity.ts",
+      "src/lib/auth/code-limit.ts",
+    ].flatMap((filePath) => systemImports.map((code) => [filePath, code])),
+  )("the system login is out of reach of %s: %s", async (filePath, code) => {
+    expect(await restrictedImports(code, filePath)).not.toEqual([]);
+  }, 30_000);
+
+  it("the scheduled job's route may open it", async () => {
+    expect(await restrictedImports(systemImports[0], "src/app/api/cron/tick/route.ts")).toEqual([]);
+  }, 30_000);
+
+  it.each([
+    `import { getDb } from "@/db";\nexport { getDb };`,
+    `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+    staffAuthImports[0],
+    authDatabaseImports[0],
+    `import { S3Client } from "@aws-sdk/client-s3";\nexport { S3Client };`,
+  ])("the scheduled job's route keeps every other boundary: %s", async (code) => {
+    expect(await restrictedImports(code, "src/app/api/cron/tick/route.ts")).not.toEqual([]);
+  }, 30_000);
+
+  it("the job's tasks take the database they are handed, and open no login of their own", async () => {
+    for (const code of [
+      `import { getDb } from "@/db";\nexport { getDb };`,
+      `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+      staffAuthImports[0],
+    ]) {
+      expect(await restrictedImports(code, "src/lib/cron/booking-status.ts")).not.toEqual([]);
+    }
+    expect(
+      await restrictedImports(
+        `import type { Database } from "@/db/client";\nexport type { Database };`,
+        "src/lib/cron/booking-status.ts",
+      ),
+    ).toEqual([]);
+  }, 30_000);
+
   it("adding this boundary keeps the storage one: both apply to app code", async () => {
     const messages = await restrictedImports(
       `import { getDb } from "@/db";

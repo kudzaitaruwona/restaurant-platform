@@ -84,14 +84,16 @@ jobs:
           - 5498:80
     env:
       # `app` is a superuser that owns the tables: migrations and fixtures only,
-      # because RLS skips it. Global setup creates app_tenant, app_admin and
-      # app_staff_auth by migration and gives them these passwords. The tenant
-      # isolation tests connect as app_tenant, the admin path's as app_admin and
-      # staff sign-in's as app_staff_auth.
+      # because RLS skips it. Global setup creates app_tenant, app_admin,
+      # app_staff_auth and app_system by migration and gives them these
+      # passwords. The tenant isolation tests connect as app_tenant, the admin
+      # path's as app_admin, staff sign-in's as app_staff_auth and the
+      # scheduled job's as app_system.
       TEST_DATABASE_URL: postgres://app:app@localhost:5499/restaurant_test
       TEST_DATABASE_URL_APP: postgres://app_tenant:app_tenant@localhost:5499/restaurant_test
       TEST_DATABASE_URL_ADMIN: postgres://app_admin:app_admin@localhost:5499/restaurant_test
       TEST_DATABASE_URL_STAFF_AUTH: postgres://app_staff_auth:app_staff_auth@localhost:5499/restaurant_test
+      TEST_DATABASE_URL_SYSTEM: postgres://app_system:app_system@localhost:5499/restaurant_test
       NEON_WS_PROXY: localhost:5498/v1
       # Stand-ins so code paths that read the validated env can load. No real
       # credentials exist in CI; nothing here reaches R2.

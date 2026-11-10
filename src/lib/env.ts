@@ -7,10 +7,14 @@ import { z } from "zod";
  * URL, photo storage). Required in production: sign-in, with its own login, and
  * the admin login, which development can do without (it has the dev bypass,
  * and prints emails to the console).
- * Optional: variables owned by later tickets (WhatsApp, Turnstile, the
- * scheduled job) and the migration/system database URLs, which only scripts and
- * specific routes load. A later ticket that starts depending on one of them
- * makes it required here.
+ * Optional: variables owned by later tickets (WhatsApp, Turnstile) and the
+ * migration/system database URLs, which only scripts and specific routes load.
+ * A later ticket that starts depending on one of them makes it required here.
+ * One deliberate exception: DATABASE_URL_SYSTEM and CRON_SECRET belong to the
+ * scheduled job (S-35) and stay optional, because the production check below
+ * also runs on preview deployments, where a missing value would stop the whole
+ * site booting. The job's route fails closed on its own: no secret, or no
+ * login, and it refuses the call.
  *
  * An empty value (`KEY=` in a .env file) counts as unset.
  */
@@ -37,6 +41,14 @@ export const ADMIN_DATABASE_ROLE = "app_admin";
  * the same rules.
  */
 export const STAFF_AUTH_DATABASE_ROLE = "app_staff_auth";
+
+/**
+ * The role the scheduled job connects as (spec 01, S-28, S-35). Unlike the
+ * others it has BYPASSRLS, because the job works across every tenant, so it is
+ * granted only the columns the job touches, and provisionSystemRole holds it to
+ * that: no superuser, no table of its own.
+ */
+export const SYSTEM_DATABASE_ROLE = "app_system";
 
 const blankToUndefined = (value: unknown) => (value === "" ? undefined : value);
 
@@ -94,12 +106,19 @@ const staffAuthDatabaseUrl = connectsAs(
   "the role only staff sign-in uses",
 );
 
+// Any other role here would either see nothing (RLS) or far too much.
+const systemDatabaseUrl = connectsAs(
+  SYSTEM_DATABASE_ROLE,
+  "the role only the scheduled job and the Meta webhook use",
+);
+
 const configShape = {
   // Postgres (Neon) through the WebSocket Pool driver (D-07). The app's role;
   // DATABASE_URL_UNPOOLED is the role that owns the tables, for migrations.
   DATABASE_URL: required(appDatabaseUrl),
   DATABASE_URL_UNPOOLED: optional(postgresUrl()),
-  DATABASE_URL_SYSTEM: optional(postgresUrl()),
+  // The scheduled job's role (S-35), with BYPASSRLS. Only its route opens it.
+  DATABASE_URL_SYSTEM: optional(systemDatabaseUrl),
   // The admin path's role (S-28). Only src/db/admin.ts opens it.
   DATABASE_URL_ADMIN: optional(adminDatabaseUrl),
   // Staff sign-in's role (S-28, S-30). Only src/db/staff-auth.ts opens it.

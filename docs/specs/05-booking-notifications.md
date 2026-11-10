@@ -54,7 +54,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 - **Crash recovery is at-least-once:** a row stuck in `sending` for more than 10 minutes returns to `pending`. If the crash happened after Meta accepted the message, the guest gets it twice. That's accepted, because a rare duplicate is better than a lost reminder.
 - Retry: up to 3 attempts with backoff, then `failed`.
 - **Before sending, re-check the booking's status for that message kind.** `booking_confirmed` and `booking_reminder` require `status = confirmed`. `booking_cancelled` requires `status = cancelled`. On a mismatch, mark the row `cancelled` without sending. A reminder for a cancelled booking is worse than no reminder.
-- The same job runs the booking auto-status rules from spec 04 and the phone retention purge *(proposed, D-06)*.
+- The same job runs the booking auto-status rules from spec 04 and the phone retention purge *(proposed, D-06; built as the `phonesPurged` task, which runs after the status rules and needs nothing from the outbox: a booking 30 days past has nothing left to send)*.
 - This job and the Meta webhook work across all tenants, so they use the privileged database role described in spec 01.
 
 **Hosting — Decided (S-35):** the job runs every 5 minutes on Vercel Cron, on the Pro plan, calling `GET /api/cron/tick`, which is protected by `CRON_SECRET` sent as a bearer token. Vercel Cron doesn't retry and can deliver a run twice, so every task the job runs is idempotent and safe to overlap with itself. See S-35 in `docs/decisions.md`.

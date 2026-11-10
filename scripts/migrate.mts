@@ -2,11 +2,12 @@
  * `npm run db:migrate`: applies pending migrations from db/migrations to
  * DATABASE_URL_UNPOOLED (the direct, non-pooled connection, as the role that
  * owns the tables), through the same Neon WebSocket driver the app uses. Then
- * lets the app, admin and staff sign-in roles log in with the passwords in
- * DATABASE_URL, DATABASE_URL_ADMIN and DATABASE_URL_STAFF_AUTH.
+ * lets the app, admin, staff sign-in and scheduled job roles log in with the
+ * passwords in DATABASE_URL, DATABASE_URL_ADMIN, DATABASE_URL_STAFF_AUTH and
+ * DATABASE_URL_SYSTEM.
  */
 import nextEnv from "@next/env";
-import { provisionAppRole } from "../src/db/app-role";
+import { provisionAppRole, provisionSystemRole } from "../src/db/app-role";
 import { runMigrations } from "../src/db/migrate";
 import { ADMIN_DATABASE_ROLE, STAFF_AUTH_DATABASE_ROLE } from "../src/lib/env";
 
@@ -16,14 +17,16 @@ const connectionString = process.env.DATABASE_URL_UNPOOLED;
 const appConnectionString = process.env.DATABASE_URL;
 const adminConnectionString = process.env.DATABASE_URL_ADMIN;
 const staffAuthConnectionString = process.env.DATABASE_URL_STAFF_AUTH;
+const systemConnectionString = process.env.DATABASE_URL_SYSTEM;
 if (
   !connectionString ||
   !appConnectionString ||
   !adminConnectionString ||
-  !staffAuthConnectionString
+  !staffAuthConnectionString ||
+  !systemConnectionString
 ) {
   console.error(
-    "DATABASE_URL_UNPOOLED (direct URL, owner role), DATABASE_URL (the app role), DATABASE_URL_ADMIN (the admin role) and DATABASE_URL_STAFF_AUTH (staff sign-in's role) are all needed. See .env.example.",
+    "DATABASE_URL_UNPOOLED (direct URL, owner role), DATABASE_URL (the app role), DATABASE_URL_ADMIN (the admin role), DATABASE_URL_STAFF_AUTH (staff sign-in's role) and DATABASE_URL_SYSTEM (the scheduled job's role) are all needed. See .env.example.",
   );
   process.exit(1);
 }
@@ -42,4 +45,5 @@ await provisionAppRole(
   staffAuthConnectionString,
   STAFF_AUTH_DATABASE_ROLE,
 );
+await provisionSystemRole(settings, systemConnectionString);
 console.log("Migrations applied.");

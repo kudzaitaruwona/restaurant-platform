@@ -611,6 +611,12 @@ export const bookings = pgTable(
     guestName: text("guest_name").notNull(),
     // E.164. Null for a walk-in, and once the retention job has been (D-06).
     guestPhone: text("guest_phone"),
+    // Whether guest_phone holds a number, so the scheduled job's purge (D-06)
+    // can find the rows to null without being able to read the number itself
+    // (migration 0033). Postgres computes it; nothing in the app writes it.
+    guestPhoneSet: boolean("guest_phone_set")
+      .notNull()
+      .generatedAlwaysAs(sql`guest_phone is not null`),
     whatsappOptIn: boolean("whatsapp_opt_in").notNull(),
     partySize: integer("party_size").notNull(),
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
@@ -640,6 +646,21 @@ export const bookings = pgTable(
     unique().on(table.restaurantId, table.id),
     // The day list reads one restaurant's day.
     index().on(table.restaurantId, table.startsAt),
+    // The scheduled job's status rules (spec 04, S-35) look across every
+    // restaurant for these. Partial, so they hold only bookings still in play,
+    // not every booking ever made.
+    index("bookings_confirmed_ends_at_index")
+      .on(table.endsAt)
+      .where(sql`${table.status} = 'confirmed'`),
+    index("bookings_seated_hold_ends_at_index")
+      .on(table.holdEndsAt)
+      .where(sql`${table.status} = 'seated'`),
+    // The job's phone purge (D-06) looks across every restaurant for old bookings
+    // that still hold a number. Partial, so it holds only bookings still holding
+    // a number. On guest_phone_set, the column the job may read.
+    index("bookings_phone_set_starts_at_index")
+      .on(table.startsAt)
+      .where(sql`${table.guestPhoneSet}`),
     check("bookings_guest_name", sql`trim(${table.guestName}) <> '' and length(${table.guestName}) <= 100`),
     check("bookings_guest_phone_e164", sql`${table.guestPhone} ~ '^[+][1-9][0-9]{7,14}$'`),
     check("bookings_party_size_positive", sql`${table.partySize} > 0`),

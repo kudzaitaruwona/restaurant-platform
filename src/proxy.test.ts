@@ -29,6 +29,12 @@ describe("the matcher", () => {
     expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false);
   });
 
+  it("covers the scheduled job's route like any other API route, not as a public page (S-35)", () => {
+    expect(unstable_doesMiddlewareMatch({ config, url: "/api/cron/tick" })).toBe(true);
+    const response = proxy(request("/api/cron/tick", { headers: { authorization: "Bearer x" } }));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+  });
+
   it("covers the public menu page, for its cache (S-32)", () => {
     expect(unstable_doesMiddlewareMatch({ config, url: "/m/a-menu-token" })).toBe(true);
   });

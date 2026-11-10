@@ -37,6 +37,16 @@ const staffAuthSeam = [
   "src/lib/auth/identity.ts",
 ];
 
+// The system login (spec 01, S-28, S-35): BYPASSRLS across every tenant, so only
+// the scheduled job's route opens it, besides the tooling. The Meta webhook's
+// route joins this list when it is built.
+const systemSeam = ["src/app/api/cron/tick/route.ts"];
+
+// The scheduled job's tasks run outside any tenant, on the system login the
+// job's route hands them. They may name the database's type and the tables;
+// they open no login of their own.
+const cronTasks = ["src/lib/cron/**"];
+
 // Sign-in's own files, the only ones that may use authDatabase(): it hands back
 // the admin login or staff sign-in's, so anywhere else it's a way round both.
 const authSeam = ["src/lib/auth/**"];
@@ -87,6 +97,31 @@ const staffAuthDatabaseBoundary = [
   },
 ];
 
+// Nothing but the job's route reaches the role that bypasses RLS.
+const systemDatabaseBoundary = [
+  {
+    regex: "(^|/)db/system$",
+    message: "Only the scheduled job's route opens the system login (S-35).",
+  },
+];
+
+// The job's route: the database boundary bar the system login.
+const systemSeamDatabaseBoundary = [
+  {
+    regex: "(^|/)db(/(?!schema$|system$).*)?$",
+    message: "The job's route opens the system login and no other.",
+  },
+  databaseBoundary[1],
+];
+
+const cronTasksDatabaseBoundary = [
+  {
+    regex: "(^|/)db(/(?!schema$|client$).*)?$",
+    message: "The job's tasks use the database the job's route hands them.",
+  },
+  databaseBoundary[1],
+];
+
 const authDatabaseBoundary = [
   {
     regex: "(^|/)auth/database$",
@@ -106,8 +141,29 @@ const eslintConfig = defineConfig([
   // the blocks below say exactly which boundaries apply to which files.
   {
     files: appCode,
-    ignores: [...storageModule, ...databaseSeam],
+    ignores: [...storageModule, ...databaseSeam, ...systemSeam, ...cronTasks],
     rules: restrictImports(storageBoundary, databaseBoundary, authDatabaseBoundary),
+  },
+  {
+    files: cronTasks,
+    rules: restrictImports(
+      storageBoundary,
+      cronTasksDatabaseBoundary,
+      adminDatabaseBoundary,
+      staffAuthDatabaseBoundary,
+      systemDatabaseBoundary,
+      authDatabaseBoundary,
+    ),
+  },
+  {
+    files: systemSeam,
+    rules: restrictImports(
+      storageBoundary,
+      systemSeamDatabaseBoundary,
+      adminDatabaseBoundary,
+      staffAuthDatabaseBoundary,
+      authDatabaseBoundary,
+    ),
   },
   {
     files: storageModule,
@@ -120,6 +176,7 @@ const eslintConfig = defineConfig([
       storageBoundary,
       adminDatabaseBoundary,
       staffAuthDatabaseBoundary,
+      systemDatabaseBoundary,
       authDatabaseBoundary,
     ),
   },
@@ -129,6 +186,7 @@ const eslintConfig = defineConfig([
     rules: restrictImports(
       storageBoundary,
       staffAuthDatabaseBoundary,
+      systemDatabaseBoundary,
       authDatabaseBoundary,
     ),
   },
@@ -143,11 +201,12 @@ const eslintConfig = defineConfig([
       storageBoundary,
       adminDatabaseBoundary,
       staffAuthDatabaseBoundary,
+      systemDatabaseBoundary,
     ),
   },
   {
     files: authHandles,
-    rules: restrictImports(storageBoundary),
+    rules: restrictImports(storageBoundary, systemDatabaseBoundary),
   },
   // Override default ignores of eslint-config-next.
   globalIgnores([
