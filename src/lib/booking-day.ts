@@ -3,7 +3,7 @@ import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { notFound } from "next/navigation";
 import { z } from "zod";
-import { bookings, diningTables, restaurants, servicePeriods } from "@/db/schema";
+import { bookings, diningTables, notifications, restaurants, servicePeriods } from "@/db/schema";
 import {
   addDays,
   dateLabel,
@@ -14,6 +14,7 @@ import {
 } from "@/lib/booking-engine";
 import { chooseDay, type DayRow, groupByPeriod } from "@/lib/booking-day-view";
 import { finishedTimes } from "@/lib/booking-finish";
+import { queueBookingCancelled } from "@/lib/notifications";
 import { recordAdminAction, recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -71,6 +72,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         status: bookings.status,
         note: bookings.guestNote,
         phone: bookings.guestPhone,
+        confirmationStatus: notifications.status,
       })
       .from(bookings)
       .innerJoin(
@@ -78,6 +80,16 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         and(
           eq(diningTables.restaurantId, bookings.restaurantId),
           eq(diningTables.id, bookings.tableId),
+        ),
+      )
+      // The booking's WhatsApp confirmation, if one was queued (spec 05): at most
+      // one, by UNIQUE (booking_id, kind).
+      .leftJoin(
+        notifications,
+        and(
+          eq(notifications.restaurantId, bookings.restaurantId),
+          eq(notifications.bookingId, bookings.id),
+          eq(notifications.kind, "booking_confirmed"),
         ),
       )
       .where(
@@ -90,10 +102,12 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       .orderBy(asc(bookings.startsAt), asc(diningTables.label));
 
     const lateBefore = now.getTime() - LATE_AFTER_MINUTES * MINUTE;
-    const dayRows: DayRow[] = rows.map(({ startsAt, ...row }) => ({
+    const dayRows: DayRow[] = rows.map(({ startsAt, confirmationStatus, ...row }) => ({
       ...row,
       time: localTime(startsAt, timezone),
       late: row.status === "confirmed" && startsAt.getTime() <= lateBefore,
+      // Staff should call a guest still to arrive; once seated, they are here.
+      confirmationFailed: row.status === "confirmed" && confirmationStatus === "failed",
     }));
 
     return {
@@ -128,6 +142,9 @@ export async function bookingIdFrom(params: Promise<{ bookingId: string }>) {
   return parsed.data;
 }
 
+/** The booking a transition changed, with what a follow-on write may need (never shown to anyone). */
+type ChangedBooking = { id: string; guestPhone: string | null; whatsappOptIn: boolean };
+
 /**
  * Moves a booking out of `from`, in the one statement: `WHERE status = from` is
  * what makes two staff tapping at once, or a tap racing a guest's cancel, one
@@ -142,7 +159,7 @@ async function transition(
   bookingId: string,
   from: BookingStatus,
   set: PgUpdateSetSource<typeof bookings>,
-  after: (tx: TenantTransaction) => Promise<void>,
+  after: (tx: TenantTransaction, changed: ChangedBooking) => Promise<void>,
 ): Promise<ActionOutcome> {
   try {
     return await withTenant(actor, async (tx) => {
@@ -151,14 +168,18 @@ async function transition(
         .update(bookings)
         .set(set)
         .where(and(where, eq(bookings.status, from)))
-        .returning({ id: bookings.id });
+        .returning({
+          id: bookings.id,
+          guestPhone: bookings.guestPhone,
+          whatsappOptIn: bookings.whatsappOptIn,
+        });
       if (changed.length === 0) {
         const [current] = await tx.select({ status: bookings.status }).from(bookings).where(where);
         return current
           ? { outcome: "wrong_status", status: current.status }
           : { outcome: "not_found" };
       }
-      await after(tx);
+      await after(tx, changed[0]);
       return { outcome: "done" };
     });
   } catch (error) {
@@ -194,8 +215,9 @@ export const markNoShow = (actor: Actor, bookingId: string) =>
 
 /**
  * Cancel *(proposed)* applies to a confirmed booking only: a seated party is at the
- * table (Finish ends that), and the rest are over. Queues a cancellation message
- * once spec 05 lands.
+ * table (Finish ends that), and the rest are over. Queues the guest's cancellation
+ * message in the same transaction (spec 05), whoever the actor, so closures, which
+ * make staff cancel each booking in the way, send it too.
  */
 export const cancelBooking = (actor: Actor, bookingId: string) =>
   transition(
@@ -203,13 +225,15 @@ export const cancelBooking = (actor: Actor, bookingId: string) =>
     bookingId,
     "confirmed",
     { status: "cancelled", cancelledBy: "staff", cancelledAt: sql`now()` },
-    (tx) =>
-      recordAudit(tx, actor, {
+    async (tx, booking) => {
+      await recordAudit(tx, actor, {
         action: "booking.cancel",
         entityType: "booking",
         entityId: bookingId,
         details: { cancelledBy: "staff" },
-      }),
+      });
+      await queueBookingCancelled(tx, { restaurantId: actor.restaurantId, ...booking }, new Date());
+    },
   );
 
 /**

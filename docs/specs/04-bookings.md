@@ -57,7 +57,7 @@ Confirm re-checks everything, so it can refuse a time the list just showed. Ever
 - Cancel is one status-guarded `UPDATE` (`status = 'confirmed'` and `now() <= starts_at - guest_cancel_cutoff_minutes`), so a guest cancel can't overwrite a staff Seat or No-show that lands first. The cutoff is inclusive: exactly `guest_cancel_cutoff_minutes` before the start still cancels. It sets `cancelled_by = guest` and `cancelled_at`, which frees the table.
 - Cancelling twice is safe and says "This booking was already cancelled." A `seated`, `completed` or `no_show` booking shows that state and has no cancel, and so does one staff cancelled. A confirmed booking past the cutoff shows "Too late to cancel online — please call." and the restaurant's number.
 - The guest sees the restaurant, their name, the date and time on the restaurant's clock, the party size, their note and the state. Never the table, their phone, or anyone else's booking.
-- A guest's cancel isn't audited: spec 01's audit list covers staff's cancellations, and the row records `cancelled_by = guest` and when. The cancellation WhatsApp message is queued once spec 05 lands (5.3).
+- A guest's cancel isn't audited: spec 01's audit list covers staff's cancellations, and the row records `cancelled_by = guest` and when. The cancellation WhatsApp message is queued in the same transaction (spec 05, S-37).
 
 ## The availability engine
 

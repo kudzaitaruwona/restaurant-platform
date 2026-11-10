@@ -76,7 +76,18 @@ function keepSessionCookiesAlive(request: NextRequest, response: NextResponse) {
  */
 const isManagePage = (request: NextRequest) => request.nextUrl.pathname.startsWith("/b/");
 
+/**
+ * Meta's webhook (spec 05, #48) is a server-to-server POST. It reads no cookie
+ * and proves itself with Meta's signature over the body, so the cross-site
+ * check, which guards cookies, has nothing to guard there, and its session work
+ * nothing to do. Matched exactly: every other path keeps both.
+ */
+const WHATSAPP_WEBHOOK = "/api/webhooks/whatsapp";
+const isWhatsAppWebhook = (request: NextRequest) => request.nextUrl.pathname === WHATSAPP_WEBHOOK;
+
 export function proxy(request: NextRequest) {
+  if (isWhatsAppWebhook(request)) return NextResponse.next();
+
   if (isManagePage(request)) {
     return isCrossSiteWrite(request) ? new NextResponse(null, { status: 403 }) : NextResponse.next();
   }

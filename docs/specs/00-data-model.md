@@ -280,6 +280,10 @@ notifications
   UNIQUE (booking_id, kind)                 -- never send the same message twice
 ```
 
+Built in ticket #44 (migration 0034). Like every tenant table it has `UNIQUE (restaurant_id, id)`, a composite foreign key to `bookings` and the tenant policy. `channel` defaults to `whatsapp` and `status` to `pending`. `scheduled_for` is when a row becomes due: the confirmation at the moment of confirming, the reminder at `starts_at − 3h` (#45), the cancellation at once (#46). *(Proposed, S-37)* A partial index on `scheduled_for` where `status = 'pending'` serves the job. *(Proposed, S-37)* Checks: `attempts >= 0`, a `sending` row has `claimed_at`, and `last_error` is at most 500 characters. *(Proposed, S-37)* The row is written by `app_tenant` in the booking's transaction, in app code rather than a trigger. *(Proposed, S-37, #45, migration 0036)* The one exception is a trigger, `bookings_cancel_pending_reminder` (SECURITY DEFINER, AFTER UPDATE OF `status`, writing `notifications`): when a booking is cancelled it cancels only that booking's pending `booking_reminder`, keyed by (`restaurant_id`, `booking_id`). *(Proposed, S-37)* The job (`app_system`) may read only the columns that pick and claim a due row, and write only `status`, `claimed_at`, `attempts`, `last_error` and `provider_message_id`. *(Proposed, S-37, #47, migration 0035)* For retries and crash recovery it also reads `claimed_at` and writes `scheduled_for` (a retry's backoff). *(Proposed, S-37, #48)* Meta's delivery-status webhook, on the same login, finds a row by `provider_message_id`, so `app_system` may also read that column, and a partial index on it where it is not null serves the lookup. *(Proposed, S-37)* A partial index on `claimed_at` where `status = 'sending'` serves crash recovery, which runs every 5 minutes.
+
+`notification_sends` *(proposed, S-37)* is a view joining a notification to its booking and restaurant (the guest's name, number, opt-in, party size, start, manage token and who cancelled it (#46, migration 0037), and the restaurant's name, contact phone and timezone), showing only rows in `sending`. It is how the job reads what it sends without a grant on those columns for every booking. Only `app_system` may read it.
+
 ## 6. Table sessions and orders (phase 6; see spec 06)
 
 ```sql
@@ -321,7 +325,7 @@ order_items
   voided_by             → staff null
   CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))
   change_xid            bigint             -- (proposed, #71) the kitchen board's change stamp: the id of the transaction that last wrote the row, set by a trigger
-  in_play               bool not null      -- (proposed, S-40, migration 0036) GENERATED ALWAYS AS (status NOT IN ('delivered', 'voided')) STORED, what the kitchen board's load reads its line ids on;
+  in_play               bool not null      -- (proposed, S-40, migration 0042) GENERATED ALWAYS AS (status NOT IN ('delivered', 'voided')) STORED, what the kitchen board's load reads its line ids on;
   -- an index on (restaurant_id) WHERE in_play. Not a filter on status: under RLS the enum's comparisons, not leakproof, get no statistics (S-40 in detail).
 ```
 
@@ -331,7 +335,7 @@ order_items
 - **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path.
 - **Force-close:** one transaction voids the remaining items with a reason, then closes the session.
 - **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.
-- **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0034). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
-- **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0034). *(Proposed, S-40)* The same triggers refuse a change to a line's `order_id` and an order's `session_id`, so money can't move between bills (`order_items_frozen`, `orders_frozen`).
-- *(Proposed, #71)* **Kitchen change stamp:** a trigger sets `order_items.change_xid` to the writing transaction's id on every insert and update, whatever the writer sends (`order_items_change_stamp`, migration 0035). The board's poll asks for stamps at or above the oldest transaction still running at its previous poll, so a line written by a transaction that commits late is never skipped (S-40 in detail).
+- **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0040). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
+- **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0040). *(Proposed, S-40)* The same triggers refuse a change to a line's `order_id` and an order's `session_id`, so money can't move between bills (`order_items_frozen`, `orders_frozen`).
+- *(Proposed, #71)* **Kitchen change stamp:** a trigger sets `order_items.change_xid` to the writing transaction's id on every insert and update, whatever the writer sends (`order_items_change_stamp`, migration 0041). The board's poll asks for stamps at or above the oldest transaction still running at its previous poll, so a line written by a transaction that commits late is never skipped (S-40 in detail).
 - *(Proposed, S-40)* **No hard deletes:** `app_tenant` can't delete from `table_sessions`, `orders` or `order_items`. A cancellation is a void.

@@ -228,6 +228,47 @@ describe("cross-site writes (S-30)", () => {
   });
 });
 
+describe("Meta's webhook (spec 05, #48)", () => {
+  const WEBHOOK = "/api/webhooks/whatsapp";
+
+  it("is covered by the matcher like any other API route", () => {
+    expect(unstable_doesMiddlewareMatch({ config, url: WEBHOOK })).toBe(true);
+  });
+
+  it("takes Meta's POST, which has no Origin", () => {
+    expect(proxy(request(WEBHOOK, { method: "POST" })).status).toBe(200);
+  });
+
+  // Its own check is Meta's signature; it reads no cookie, so there is nothing
+  // for a cross-site post to ride on.
+  it.each(["https://graph.facebook.com", "null", "https://evil.example.test"])(
+    "takes a POST whatever its Origin (%s): the signature decides",
+    (origin) => {
+      expect(proxy(request(WEBHOOK, { method: "POST", headers: { origin } })).status).toBe(200);
+    },
+  );
+
+  it("does no session work, even for a caller with a staff cookie", () => {
+    const response = proxy(
+      request(WEBHOOK, { method: "POST", headers: { cookie: "staff.session_token=token" } }),
+    );
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+
+  it.each([
+    "/api/webhooks/whatsapp/extra",
+    "/api/webhooks/other",
+    "/api/webhooks",
+    "/api/webhooks/whatsappx",
+    "/api/staff/webhooks/whatsapp",
+  ])("leaves the cross-site check on %s, which isn't the webhook", (path) => {
+    const response = proxy(
+      request(path, { method: "POST", headers: { origin: "https://evil.example.test" } }),
+    );
+    expect(response.status).toBe(403);
+  });
+});
+
 describe("the session cookie (30 days idle, spec 01)", () => {
   const withCookie = (path: string, name: string) =>
     proxy(request(path, { headers: { cookie: `${name}=token.signature%3D` } }));

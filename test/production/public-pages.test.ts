@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { type ChildProcess, spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import {
   bookings,
   diningTables,
   menuItems,
+  notifications,
   restaurants,
   servicePeriods,
   staff,
@@ -17,6 +19,7 @@ import { addDays, localToday } from "../../src/lib/booking-engine";
 import { aBooking, bookableRestaurant, bookingsOf } from "../integration/bookings";
 import {
   openOwnerDatabase,
+  systemDatabaseSettings,
   testDatabaseSettings,
 } from "../integration/database";
 
@@ -52,6 +55,9 @@ const publicPages = [
 ];
 
 const refusedMethods = ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "PROPFIND"];
+
+const WEBHOOK_APP_SECRET = "a-stand-in-app-secret";
+const WEBHOOK_VERIFY_TOKEN = "a-stand-in-verify-token";
 
 const owner = openOwnerDatabase();
 let server: ChildProcess;
@@ -96,6 +102,10 @@ beforeAll(async () => {
         AUTH_SECRET: "a-stand-in-of-at-least-32-characters",
         // Blank, so the sign-in link goes to the console for us to read.
         RESEND_API_KEY: "",
+        // Meta's webhook, with stand-ins for its keys.
+        DATABASE_URL_SYSTEM: systemDatabaseSettings().connectionString,
+        WHATSAPP_APP_SECRET: WEBHOOK_APP_SECRET,
+        WHATSAPP_WEBHOOK_VERIFY_TOKEN: WEBHOOK_VERIFY_TOKEN,
       },
     },
   );
@@ -720,5 +730,63 @@ describe("ordering from a table's page", () => {
     const body = await (await visit(`/m/${restaurant.menuToken}`)).text();
     expect(body).not.toContain("<script");
     expect(body).not.toContain('class="add"');
+  });
+});
+
+describe("Meta's webhook, through the real proxy (spec 05, #48)", () => {
+  const WEBHOOK = "/api/webhooks/whatsapp";
+  // What Meta sends: no Origin, but test the proxy with one from elsewhere too.
+  const metaPost = (body: string, signature?: string, headers: Record<string, string> = {}) =>
+    visit(WEBHOOK, {
+      method: "POST",
+      body,
+      headers: {
+        "content-type": "application/json",
+        ...(signature ? { "x-hub-signature-256": signature } : {}),
+        ...headers,
+      },
+    });
+  const sign = (body: string) => `sha256=${createHmac("sha256", WEBHOOK_APP_SECRET).update(body).digest("hex")}`;
+
+  it("answers Meta's handshake", async () => {
+    const params = new URLSearchParams({ "hub.mode": "subscribe", "hub.verify_token": WEBHOOK_VERIFY_TOKEN, "hub.challenge": "8675309" });
+    const response = await visit(`${WEBHOOK}?${params}`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("8675309");
+  });
+
+  it("takes a signed status from another origin, past the cross-site check, and writes it", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const row = aBooking(restaurantId, tableIds[0], "2032-03-01T17:00:00Z", "2032-03-01T19:00:00Z");
+    const [{ id: bookingId }] = await owner.db.insert(bookings).values(row).returning({ id: bookings.id });
+    const providerMessageId = `wamid.${crypto.randomUUID()}`;
+    const [{ id }] = await owner.db
+      .insert(notifications)
+      .values({ restaurantId, bookingId, kind: "booking_confirmed", scheduledFor: new Date(), status: "sent", attempts: 1, claimedAt: new Date(), providerMessageId })
+      .returning({ id: notifications.id });
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [{ id: "WABA", changes: [{ field: "messages", value: { statuses: [{ id: providerMessageId, status: "failed", errors: [{ code: 131026, title: "Message undeliverable" }] }] } }] }],
+    });
+
+    const response = await metaPost(body, sign(body), { origin: "https://graph.facebook.com" });
+
+    expect(response.status).toBe(200);
+    const [after] = await owner.db.select().from(notifications).where(eq(notifications.id, id));
+    expect(after).toMatchObject({ status: "failed", lastError: "Meta 131026: Message undeliverable" });
+  });
+
+  it("rejects an unsigned status in the route, not the proxy", async () => {
+    expect((await metaPost("{}")).status).toBe(401);
+    expect((await metaPost("{}", sign("{ }"))).status).toBe(401);
+  });
+
+  it("leaves the cross-site check on every other API path", async () => {
+    const response = await visit("/api/webhooks/other", {
+      method: "POST",
+      body: "{}",
+      headers: { origin: "https://graph.facebook.com" },
+    });
+    expect(response.status).toBe(403);
   });
 });

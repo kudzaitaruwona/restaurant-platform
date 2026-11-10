@@ -96,6 +96,26 @@ describe("parseEnv", () => {
     expect(error.message).not.toContain("secret");
   });
 
+  it("doesn't need WhatsApp's keys outside production, or in it: without them messages are held (spec 05)", () => {
+    const env = parseEnv({ ...valid, ...auth, NODE_ENV: "production" });
+    expect(env.WHATSAPP_PHONE_NUMBER_ID).toBeUndefined();
+    expect(env.WHATSAPP_ACCESS_TOKEN).toBeUndefined();
+  });
+
+  it("accepts WhatsApp keys of Meta's shape", () => {
+    const env = parseEnv({ ...valid, WHATSAPP_PHONE_NUMBER_ID: "106540352242922", WHATSAPP_ACCESS_TOKEN: "EAAGm0PX4ZCpsBAx" });
+    expect(env.WHATSAPP_PHONE_NUMBER_ID).toBe("106540352242922");
+  });
+
+  it.each([
+    ["WHATSAPP_PHONE_NUMBER_ID", "+263 77 123 4567", /WHATSAPP_PHONE_NUMBER_ID must be Meta's numeric phone number ID/],
+    ["WHATSAPP_ACCESS_TOKEN", "Bearer EAAGm0PX4ZCpsBAx", /WHATSAPP_ACCESS_TOKEN must be the token alone/],
+  ])("refuses a malformed %s when set, without echoing it", (key, value, message) => {
+    const error = errorFrom({ ...valid, [key]: value });
+    expect(error.message).toMatch(message);
+    expect(error.message).not.toContain(value);
+  });
+
   it("accepts a system login that connects as app_system", () => {
     const url = "postgres://app_system:pw@localhost:5499/restaurant_dev";
     expect(parseEnv({ ...valid, DATABASE_URL_SYSTEM: url }).DATABASE_URL_SYSTEM).toBe(url);

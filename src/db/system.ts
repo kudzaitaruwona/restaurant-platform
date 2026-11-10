@@ -7,8 +7,8 @@ let database: Database | undefined;
 /**
  * The scheduled job's database: its own login and its own pool, on
  * DATABASE_URL_SYSTEM (spec 01, S-28, S-35). It has BYPASSRLS, because the job
- * works across every tenant, so only the job's route may open it, and the Meta
- * webhook's once that exists: ESLint keeps it to the files listed as systemSeam
+ * works across every tenant, so only the job's route and the Meta webhook's
+ * (src/app/api/webhooks/whatsapp) may open it: ESLint keeps it to the files listed as systemSeam
  * in eslint.config.mjs. What it can touch is limited column by column in
  * Postgres (migration 0031). Whatever acts on one booking still names its
  * restaurant_id.

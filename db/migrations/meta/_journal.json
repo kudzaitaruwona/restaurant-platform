@@ -243,22 +243,64 @@
     {
       "idx": 34,
       "version": "7",
-      "when": 1794321537133,
-      "tag": "0034_table_sessions_and_orders",
+      "when": 1794320608155,
+      "tag": "0034_notification_outbox",
       "breakpoints": true
     },
     {
       "idx": 35,
       "version": "7",
-      "when": 1794324304829,
-      "tag": "0035_kitchen_change_stamp",
+      "when": 1794323196307,
+      "tag": "0035_notification_retries",
       "breakpoints": true
     },
     {
       "idx": 36,
       "version": "7",
-      "when": 1794327936054,
-      "tag": "0036_order_items_in_play",
+      "when": 1794324368953,
+      "tag": "0036_booking_reminder_cancel",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794324425645,
+      "tag": "0037_notification_sends_cancelled_by",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794324459096,
+      "tag": "0038_delivery_status_webhook",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794326164830,
+      "tag": "0039_quiet_tempest",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794328901741,
+      "tag": "0040_table_sessions_and_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794328902352,
+      "tag": "0041_kitchen_change_stamp",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794328902944,
+      "tag": "0042_order_items_in_play",
       "breakpoints": true
     }
   ]

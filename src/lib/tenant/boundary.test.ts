@@ -150,7 +150,7 @@ export { withTenant, staff };`,
   }, 30_000);
 
   // The system login (spec 01, S-35) bypasses RLS for every tenant, so only the
-  // scheduled job's route opens it, and the Meta webhook's once that exists.
+  // scheduled job's route and the Meta webhook's (#48) open it.
   const systemImports = [
     `import { getSystemDb } from "@/db/system";\nexport { getSystemDb };`,
     `import { getSystemDb } from "../../db/system";\nexport { getSystemDb };`,
@@ -164,6 +164,9 @@ export { withTenant, staff };`,
       "src/lib/cron/tick.ts",
       "src/lib/cron/booking-status.ts",
       "src/lib/booking-day.ts",
+      "src/lib/whatsapp/delivery-status.ts",
+      "src/lib/whatsapp/sender.ts",
+      "src/app/api/webhooks/other/route.ts",
       "src/lib/storage/index.ts",
       "src/lib/tenant/index.ts",
       "src/lib/tenant/platform-admin.ts",
@@ -177,6 +180,29 @@ export { withTenant, staff };`,
 
   it("the scheduled job's route may open it", async () => {
     expect(await restrictedImports(systemImports[0], "src/app/api/cron/tick/route.ts")).toEqual([]);
+  }, 30_000);
+
+  it("the Meta webhook's route may open it, and nothing else but the system login", async () => {
+    const webhook = "src/app/api/webhooks/whatsapp/route.ts";
+    expect(await restrictedImports(systemImports[0], webhook)).toEqual([]);
+    for (const code of [
+      `import { getDb } from "@/db";\nexport { getDb };`,
+      `import { getAdminDb } from "@/db/admin";\nexport { getAdminDb };`,
+      staffAuthImports[0],
+      authDatabaseImports[0],
+    ]) {
+      expect(await restrictedImports(code, webhook)).not.toEqual([]);
+    }
+  }, 30_000);
+
+  it("the webhook's status write takes the database it is handed, and opens no login of its own", async () => {
+    const file = "src/lib/whatsapp/delivery-status.ts";
+    for (const code of [`import { getDb } from "@/db";\nexport { getDb };`, staffAuthImports[0]]) {
+      expect(await restrictedImports(code, file)).not.toEqual([]);
+    }
+    expect(
+      await restrictedImports(`import type { Database } from "@/db/client";\nexport type { Database };`, file),
+    ).toEqual([]);
   }, 30_000);
 
   it.each([

@@ -28,6 +28,7 @@ import {
   readRules,
   toE164,
 } from "@/lib/bookings";
+import { queueBookingConfirmed } from "@/lib/notifications";
 import { mintQrToken } from "@/lib/qr-token";
 import { recordAdminAction, recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -204,6 +205,11 @@ export async function addStaffBooking(
         entityType: "booking",
         entityId: booked.id,
       });
+      await queueBookingConfirmed(
+        tx,
+        { restaurantId: actor.restaurantId, id: booked.id, guestPhone: request.phone, whatsappOptIn: request.whatsappOptIn, startsAt: slot.startsAt },
+        now,
+      );
       const label = await labelOf(tx, actor.restaurantId, booked.tableId);
       return { outcome: "added", id: booked.id, date, time, table: label };
     });

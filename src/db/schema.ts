@@ -11,6 +11,7 @@ import {
   pgEnum,
   pgPolicy,
   pgTable,
+  pgView,
   text,
   time,
   timestamp,
@@ -89,6 +90,26 @@ export const bookingStatus = pgEnum("booking_status", [
 export const bookingSource = pgEnum("booking_source", ["online", "staff"]);
 
 export const bookingCancelledBy = pgEnum("booking_cancelled_by", ["guest", "staff"]);
+
+// The outbox (spec 05, spec 00 section 5). Every kind and status the spec uses
+// is here from the start, so later slices add behaviour, not columns.
+export const notificationKind = pgEnum("notification_kind", [
+  "booking_confirmed",
+  "booking_reminder",
+  "booking_cancelled",
+]);
+
+export const notificationChannel = pgEnum("notification_channel", ["whatsapp"]);
+
+export const notificationStatus = pgEnum("notification_status", [
+  "pending",
+  "sending",
+  "sent",
+  "delivered",
+  "read",
+  "failed",
+  "cancelled",
+]);
 
 // special_only is a bundle (spec 02): it shows only while one of its specials is on.
 export const menuVisibility = pgEnum("menu_visibility", ["regular", "special_only"]);
@@ -742,13 +763,106 @@ export const closures = pgTable(
 );
 
 /**
+ * The notification outbox (spec 05, spec 00 section 5): one row per message a
+ * booking is owed, written in the same transaction as the booking change that
+ * owes it (src/lib/notifications.ts), and sent by the scheduled job
+ * (src/lib/cron/notifications.ts).
+ *
+ * `UNIQUE (booking_id, kind)` stops a duplicate row; a duplicate send is stopped
+ * by the job's claim (pending -> sending, FOR UPDATE SKIP LOCKED). The job runs
+ * as app_system, which reads a guest's details only through
+ * `notification_sends`, and only for a row it has claimed (migration 0034).
+ */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    bookingId: uuid("booking_id").notNull(),
+    kind: notificationKind().notNull(),
+    channel: notificationChannel().notNull().default("whatsapp"),
+    // When it becomes due: the confirmation at once, a reminder later.
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    status: notificationStatus().notNull().default("pending"),
+    // Set when a job run claims the row (pending -> sending).
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    // Meta's message id, once Meta has accepted the message.
+    providerMessageId: text("provider_message_id"),
+    attempts: integer().notNull().default(0),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId],
+      foreignColumns: [restaurants.id],
+    }),
+    foreignKey({
+      columns: [table.restaurantId, table.bookingId],
+      foreignColumns: [bookings.restaurantId, bookings.id],
+    }),
+    unique().on(table.restaurantId, table.id),
+    unique("notifications_booking_id_kind_unique").on(table.bookingId, table.kind),
+    // The job looks across every restaurant for pending rows that are due.
+    // Partial, so it holds only rows still waiting to be sent.
+    index("notifications_pending_scheduled_for_index")
+      .on(table.scheduledFor)
+      .where(sql`${table.status} = 'pending'`),
+    // The Meta webhook finds a message by its id, across every restaurant (#48).
+    index("notifications_provider_message_id_index")
+      .on(table.providerMessageId)
+      .where(sql`${table.providerMessageId} is not null`),
+    // Crash recovery looks across every restaurant for rows stuck in sending, every run.
+    // Partial, so it holds only the rows in flight (almost always none).
+    index("notifications_sending_claimed_at_index")
+      .on(table.claimedAt)
+      .where(sql`${table.status} = 'sending'`),
+    check("notifications_attempts_non_negative", sql`${table.attempts} >= 0`),
+    check(
+      "notifications_sending_claimed",
+      sql`${table.status} <> 'sending' or ${table.claimedAt} is not null`,
+    ),
+    check("notifications_last_error_length", sql`length(${table.lastError}) <= 500`),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * What the scheduled job needs to send one claimed notification, and the only
+ * way app_system reads a guest's name, number or manage link (migration 0034,
+ * where it is defined: Drizzle doesn't generate views). Rows appear only while
+ * the notification is `sending`, so the job can't read the guests of bookings it
+ * isn't sending to. app_tenant can't read it at all: it runs as its owner, so
+ * RLS wouldn't apply.
+ */
+export const notificationSends = pgView("notification_sends", {
+  restaurantId: uuid("restaurant_id").notNull(),
+  id: uuid().notNull(),
+  kind: notificationKind().notNull(),
+  bookingStatus: bookingStatus("booking_status").notNull(),
+  guestName: text("guest_name").notNull(),
+  guestPhone: text("guest_phone"),
+  whatsappOptIn: boolean("whatsapp_opt_in").notNull(),
+  partySize: integer("party_size").notNull(),
+  startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+  manageToken: text("manage_token").notNull(),
+  restaurantName: text("restaurant_name").notNull(),
+  restaurantPhone: text("restaurant_phone"),
+  timezone: text().notNull(),
+  /** Who cancelled, for booking_cancelled's wording; null unless the booking is cancelled. */
+  cancelledBy: bookingCancelledBy("cancelled_by"),
+}).existing();
+
+/**
  * A party at a table (spec 00, 6; spec 06). The first scan of a table with no
  * open session opens one and later scans join it: `table_sessions_one_open_per_table`
  * is the table lock, so two phones scanning at once can't open two. Nobody
  * approves a session (S-36), so `approved_at` is never written or read in v1; it
  * stays so approval can be added later without a schema change.
  *
- * Postgres rules that live only in the migration (0034), because Drizzle can't
+ * Postgres rules that live only in the migration (0040), because Drizzle can't
  * model triggers: an order or a line can only be written while its session is
  * open (orders_session_open, order_items_session_open), and a line's prices and
  * an order's rate can't change once written (order_items_frozen,
