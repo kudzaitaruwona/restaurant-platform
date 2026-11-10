@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ActionForm } from "@/app/dashboard/action-form";
 import { localTime } from "@/lib/booking-engine";
 import { type ItemCounts, getFloor } from "@/lib/floor";
 import { getTenantContext } from "@/lib/tenant";
@@ -19,7 +20,7 @@ export const openFor = (opened: Date, now: Date) => {
 /**
  * The floor (spec 06, at /dashboard/floor per D-10), for anyone on the team
  * (S-26): every live table, free or open, how long it has been open and its
- * item counts. Server-rendered, so React escapes every label. It stays current
+ * item counts, and a call to a waiter (proposed) with its dismiss. Server-rendered, so React escapes every label. It stays current
  * by reloading: no polling yet. `now` is for tests.
  */
 export async function FloorScreen({ now }: { now?: Date } = {}) {
@@ -69,6 +70,16 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                   </span>
                 )}
               </Link>
+              {table.waiterRequestedAt && (
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500 bg-amber-100 p-2 text-amber-950">
+                  <strong>Calling a waiter since {localTime(table.waiterRequestedAt, timezone)}</strong>
+                  <ActionForm action={`/api/floor/${table.id}/dismiss-waiter`}>
+                    <button type="submit" className="rounded-md border border-amber-950 px-3 py-1 font-medium">
+                      Dismiss
+                    </button>
+                  </ActionForm>
+                </div>
+              )}
             </li>
           ))}
         </ul>

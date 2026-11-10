@@ -302,6 +302,13 @@
       "when": 1794328902944,
       "tag": "0042_order_items_in_play",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794331974658,
+      "tag": "0043_waiter_flag_ends_with_session",
+      "breakpoints": true
     }
   ]
 }

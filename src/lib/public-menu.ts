@@ -89,7 +89,8 @@ const orderStyles = trusted(`[hidden]{display:none!important}
 .bar{position:fixed;inset:auto 1rem 1rem;max-width:38rem;margin:0 auto;border:0;background:CanvasText;color:Canvas;font-weight:600}
 .order-status{position:fixed;inset:auto 1rem 4.5rem;max-width:38rem;margin:0 auto;padding:.75rem 1rem;border-radius:.375rem;background:CanvasText;color:Canvas}
 .order-status:empty{display:none}
-.tracker{max-width:40rem;margin:0 auto;padding:0 1rem 6rem}
+.tracker{max-width:40rem;margin:0 auto;padding:0 1rem 1rem}
+.waiter{max-width:40rem;margin:0 auto;padding:0 1rem 6rem}
 .tracker h2{margin:0}
 .tracker li{flex-wrap:wrap;gap:.25rem .75rem}
 .tracker .who{flex:1 1 100%}
@@ -107,7 +108,9 @@ const orderStyles = trusted(`[hidden]{display:none!important}
  * only while the page is showing, one poll at a time, each given up after 4
  * seconds, so a slow line can't pile them up or land an older answer over a newer
  * one: a tick during a poll is skipped, and a poll asked for after an order runs
- * once the one in flight is done. A session the table has left behind (staff
+ * once the one in flight is done. "Call a waiter" *(proposed, #77)* posts to its own
+ * endpoint, one call at a time, and says on the page that it went through; the
+ * page keeps nothing of it, since the floor view owns when a call ends. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
  * next Add or Place order joins the table's fresh one.
  */
@@ -120,6 +123,7 @@ export const ORDER_SCRIPT = `(() => {
   const bar = $("cart-open");
   const list = $("cart");
   const tracker = $("tracker");
+  const waiter = $("call-waiter");
   const feedList = $("tracker-list");
   const feedState = $("tracker-state");
   const say = (text) => { status.textContent = text; };
@@ -214,6 +218,7 @@ export const ORDER_SCRIPT = `(() => {
 
   join().then(() => {
     for (const button of document.querySelectorAll("button[data-item]")) button.hidden = false;
+    waiter.hidden = false;
     poll();
     setInterval(() => { if (!document.hidden) poll(); }, 5000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
@@ -229,6 +234,27 @@ export const ORDER_SCRIPT = `(() => {
     say("");
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
+  });
+  waiter.addEventListener("click", async () => {
+    if (waiter.disabled) return;
+    waiter.disabled = true;
+    try {
+      const response = await fetch(api("/waiter"), { method: "POST" });
+      if (!response.ok) throw new Error(String(response.status));
+      const next = (await response.json()).session;
+      if (next !== session) {
+        fields.name.value = "";
+        session = next;
+        ended = false;
+        last = "";
+        poll(true);
+      }
+      say("A waiter has been called and is on the way.");
+    } catch {
+      say("That didn't go through. Check your connection and try again.");
+    } finally {
+      waiter.disabled = false;
+    }
   });
   bar.addEventListener("click", () => { form.hidden = false; say(""); });
   $("order-cancel").addEventListener("click", () => { form.hidden = true; });
@@ -283,6 +309,7 @@ const orderBlock = html`
 <ul id="tracker-list"></ul>
 <p>Pay at the table with your waiter as usual.</p>
 </section>
+<p class="waiter"><button type="button" id="call-waiter" class="add" hidden>Call a waiter</button></p>
 <form id="order" class="order" hidden>
 <h2>Your order</h2>
 <ul id="cart"></ul>

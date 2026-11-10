@@ -407,6 +407,24 @@ const photoForm = async () => {
   body.set("photo", new File([new Uint8Array(jpeg)], "dish.jpg", { type: "image/jpeg" }));
   return body;
 };
+/** A pending "Call a waiter" on the target's fixture table, in its open session or one opened for it. */
+const plantWaiterCall = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  if (open) {
+    await owner.db
+      .update(tableSessions)
+      .set({ waiterRequestedAt: new Date() })
+      .where(eq(tableSessions.id, open.id));
+  } else {
+    await owner.db
+      .insert(tableSessions)
+      .values({ restaurantId: target.restaurantId, tableId: target.tableId, waiterRequestedAt: new Date() });
+  }
+};
+
 const itemParams = ({ itemId }: Target) => ({ params: Promise.resolve({ itemId }) });
 const request = (path: string, init?: ConstructorParameters<typeof NextRequest>[1]) =>
   new NextRequest(new URL(path, "http://localhost:3000"), init);
@@ -781,6 +799,20 @@ const routes: TenantRoute[] = [
     },
   },
   {
+    // Each call plants a pending call on a fixture table first, so there is one to dismiss and audit.
+    name: "POST /api/floor/[tableId]/dismiss-waiter",
+    ownerOnly: false,
+    call: async (target) => {
+      if ([fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)) {
+        await plantWaiterCall(target);
+      }
+      return (await import("@/app/api/floor/[tableId]/dismiss-waiter/route")).POST(
+        request(`/api/floor/${target.tableId}/dismiss-waiter`, { method: "POST" }),
+        { params: Promise.resolve({ tableId: target.tableId }) },
+      );
+    },
+  },
+  {
     name: "PAGE /dashboard/floor/[tableId]",
     ownerOnly: false,
     call: async (target) => {
@@ -1087,6 +1119,16 @@ const guestCancel = "POST /b/[manageToken]";
 const tableScan = "POST /api/t/[qrToken]/session";
 const tableOrder = "POST /api/t/[qrToken]/orders";
 const tableTracker = "GET /api/t/[qrToken]/tracker";
+const tableWaiter = "POST /api/t/[qrToken]/waiter";
+
+const callWaiter = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/waiter/route")).POST(
+    request(`/api/t/${qrToken}/waiter${init?.query ?? ""}`, { method: "POST", headers: init?.headers }),
+    { params: Promise.resolve({ qrToken }) },
+  );
 
 const getTracker = async (
   qrToken: string,
@@ -3524,6 +3566,29 @@ describe("the table page's ordering", () => {
     expect(seenOnA).not.toContain("Tracker B guest");
   });
 
+  it("calling a waiter needs no session, flags only the token's own table, whatever the query or headers name, and is a 404 for an unknown token", async () => {
+    session.identity = "";
+    const forA = await scannedSession(fixtureTableToken("a"));
+    const forB = await scannedSession(fixtureTableToken("b"));
+    const flagOf = async (id: string) =>
+      (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0].waiterRequestedAt;
+    // The fixture tables may carry a call another test planted.
+    await owner.db.update(tableSessions).set({ waiterRequestedAt: null }).where(eq(tableSessions.id, forB));
+    expect(await flagOf(forB)).toBeNull();
+
+    const response = await callWaiter(fixtureTableToken("a"), {
+      query: `?restaurantId=${fixtures.b.restaurantId}&tableId=${fixtures.b.tableId}&session=${forB}`,
+      headers: { "x-restaurant-id": fixtures.b.restaurantId },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await flagOf(forA)).toBeInstanceOf(Date);
+    expect(await flagOf(forB)).toBeNull();
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => callWaiter(token))).toBe(404);
+    }
+  });
+
   it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
     "%s: the kitchen lists restaurant A's orders and never B's",
     async (_key, who) => {
@@ -3937,6 +4002,7 @@ describe("harness coverage", () => {
       tableOrder,
       kitchenChanges,
       tableTracker,
+      tableWaiter,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());

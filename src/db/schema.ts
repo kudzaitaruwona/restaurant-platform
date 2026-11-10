@@ -862,8 +862,9 @@ export const notificationSends = pgView("notification_sends", {
  * approves a session (S-36), so `approved_at` is never written or read in v1; it
  * stays so approval can be added later without a schema change.
  *
- * Postgres rules that live only in the migration (0040), because Drizzle can't
- * model triggers: an order or a line can only be written while its session is
+ * Postgres rules that live only in the migrations, because Drizzle can't
+ * model triggers: a closed session never carries a waiter call
+ * (table_sessions_waiter_flag), an order or a line can only be written while its session is
  * open (orders_session_open, order_items_session_open), and a line's prices and
  * an order's rate can't change once written (order_items_frozen,
  * orders_frozen), nor can a line move to another order or an order to another
@@ -884,7 +885,9 @@ export const tableSessions = pgTable(
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
-    // "Call a waiter" (proposed): the flag, not built yet.
+    // "Call a waiter" (proposed, #77): when the table's open session started
+    // calling, null when it isn't. Set by the customer's page, cleared by staff or
+    // by the session closing (trigger table_sessions_waiter_flag, 0043).
     waiterRequestedAt: timestamp("waiter_requested_at", { withTimezone: true }),
     closedAt: timestamp("closed_at", { withTimezone: true }),
     closeReason: tableSessionCloseReason("close_reason"),

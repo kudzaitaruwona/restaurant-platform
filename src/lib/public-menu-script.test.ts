@@ -72,6 +72,7 @@ async function loadPage(
     feed,
     sessionId,
     orderReply: undefined as Reply | undefined,
+    waiterReply: undefined as Reply | undefined,
     requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
     /** While true, a tracker poll waits for its answer until `answer()` is called. */
     holdPolls: false,
@@ -94,6 +95,7 @@ async function loadPage(
     tracker: Object.assign(new FakeElement(), { hidden: true }),
     "tracker-state": new FakeElement(),
     "tracker-list": new FakeElement(),
+    "call-waiter": Object.assign(new FakeElement(), { hidden: true }),
   };
   const document = Object.assign(new FakeElement(), {
     hidden: false,
@@ -123,6 +125,13 @@ async function loadPage(
     state.requests.push({ path, method: init.method ?? "GET", body: init.body, signal: init.signal });
     if (path === "/session") {
       return { ok: true, status: 200, json: async () => ({ session: state.sessionId }) };
+    }
+    if (path === "/waiter") {
+      const reply = state.waiterReply ?? {
+        status: 200,
+        json: { session: state.sessionId, requestedAt: "2026-01-01T10:00:00.000Z" },
+      };
+      return { ok: reply.status < 400, status: reply.status, json: async () => reply.json };
     }
     if (path === "/tracker") {
       // The feed as it is when the poll was asked, not when it answers.
@@ -175,6 +184,7 @@ async function loadPage(
     form,
     status: elements["order-status"],
     open: elements["cart-open"],
+    waiter: elements["call-waiter"],
     cart: elements.cart,
     tracker: elements.tracker,
     trackerState: elements["tracker-state"],
@@ -617,5 +627,78 @@ describe("the order tracker", () => {
     await page.answer();
 
     expect(page.trackerList.textContent).toContain("Tariro");
+  });
+});
+
+describe("Call a waiter", () => {
+  const waiterCalls = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/waiter");
+
+  it("shows the link only once the table's session is joined, like the Add buttons", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    expect(page.waiter.hidden).toBe(false);
+  });
+
+  it("posts to the table's waiter endpoint, with no body, and confirms on the page", async () => {
+    const page = await loadPage(new Map(), "session-1");
+
+    await page.waiter.dispatch("click");
+    await settle();
+
+    expect(waiterCalls(page)).toEqual([expect.objectContaining({ method: "POST", body: undefined })]);
+    expect(page.status.textContent).toMatch(/waiter/i);
+    expect(page.status.textContent).toMatch(/on (their|the) way|coming/i);
+  });
+
+  it("says so when it didn't go through, and can be tried again", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.waiterReply = { status: 404, json: { error: "This code is out of date." } };
+
+    await page.waiter.dispatch("click");
+    await settle();
+    expect(page.status.textContent).toMatch(/didn't go through/i);
+
+    page.state.waiterReply = undefined;
+    await page.waiter.dispatch("click");
+    await settle();
+    expect(page.status.textContent).toMatch(/on (their|the) way|coming/i);
+  });
+
+  it("is one call at a time: a second tap while the first is in flight sends nothing", async () => {
+    const page = await loadPage(new Map(), "session-1");
+
+    const first = page.waiter.dispatch("click");
+    const second = page.waiter.dispatch("click");
+    await Promise.all([first, second]);
+    await settle();
+
+    expect(waiterCalls(page)).toHaveLength(1);
+    expect(page.waiter.disabled).toBe(false);
+  });
+
+  it("joins the fresh session the call opened when the table's last one had ended", async () => {
+    const phone = new Map<string, string>();
+    const page = await loadPage(phone, "session-1");
+    await page.orderOne("Tariro");
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.waiterReply = { status: 200, json: { session: "session-2", requestedAt: "x" } };
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: "session-2", items: [] };
+
+    await page.waiter.dispatch("click");
+    await settle();
+
+    expect(page.name.value).toBe("");
+    await page.orderOne("Rudo");
+    const orders = page.state.requests.filter((request) => request.path === "/orders");
+    expect(orders.at(-1)?.body?.get("session")).toBe("session-2");
+  });
+
+  it("puts the confirmation on the page as text, never markup", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.waiter.dispatch("click");
+    await settle();
+    expect(page.status.children).toEqual([]);
   });
 });

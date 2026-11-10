@@ -1,9 +1,10 @@
 import "server-only";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
 import { moveItem } from "@/lib/kitchen";
+import { recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
 /**
@@ -40,6 +41,7 @@ export const floorTables = (tx: TenantTransaction, ctx: Tenant) =>
       capacity: diningTables.capacity,
       sessionId: tableSessions.id,
       openedAt: tableSessions.openedAt,
+      waiterRequestedAt: tableSessions.waiterRequestedAt,
     })
     .from(diningTables)
     .leftJoin(
@@ -93,7 +95,7 @@ export function getFloor(ctx: Tenant) {
 
     return {
       timezone,
-      tables: tables.map(({ sessionId, openedAt, ...table }) => {
+      tables: tables.map(({ sessionId, openedAt, waiterRequestedAt, ...table }) => {
         const counts = noCounts();
         for (const row of grouped) {
           if (row.sessionId === sessionId) counts[row.status as keyof ItemCounts] = row.lines;
@@ -102,6 +104,8 @@ export function getFloor(ctx: Tenant) {
           ...table,
           status: sessionId ? ("open" as const) : ("free" as const),
           openedAt: openedAt ?? null,
+          /** Since when the open session has been calling a waiter (spec 06, proposed), if it is. */
+          waiterRequestedAt: waiterRequestedAt ?? null,
           counts,
         };
       }),
@@ -133,7 +137,11 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
     if (!table) return null;
 
     const [session] = await tx
-      .select({ id: tableSessions.id, openedAt: tableSessions.openedAt })
+      .select({
+        id: tableSessions.id,
+        openedAt: tableSessions.openedAt,
+        waiterRequestedAt: tableSessions.waiterRequestedAt,
+      })
       .from(tableSessions)
       .where(
         and(
@@ -189,6 +197,53 @@ export type DeliverOutcome =
   | { outcome: "not_found" }
   /** Someone else got there first, or the line was never done. */
   | { outcome: "wrong_status"; status: ItemStatus };
+
+export type DismissOutcome =
+  | { outcome: "done" }
+  /** No call was pending, or someone else dismissed it first. */
+  | { outcome: "nothing_pending" }
+  | { outcome: "not_found" };
+
+/**
+ * Staff answer a table's "Call a waiter" (spec 06, proposed: the spec doesn't say
+ * how a call ends). Clears the flag on the table's open session, and audits who
+ * did it, only when it was pending, so two staff dismissing at once leave one
+ * entry. Not activity: only the customer's call keeps a session alive.
+ */
+export function dismissWaiter(actor: Actor, tableId: string): Promise<DismissOutcome> {
+  return withTenant(actor, async (tx) => {
+    const [table] = await tx
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(
+        and(
+          eq(diningTables.restaurantId, actor.restaurantId),
+          eq(diningTables.id, tableId),
+          isNull(diningTables.archivedAt),
+        ),
+      );
+    if (!table) return { outcome: "not_found" };
+    const [cleared] = await tx
+      .update(tableSessions)
+      .set({ waiterRequestedAt: null })
+      .where(
+        and(
+          eq(tableSessions.restaurantId, actor.restaurantId),
+          eq(tableSessions.tableId, table.id),
+          eq(tableSessions.status, "open"),
+          isNotNull(tableSessions.waiterRequestedAt),
+        ),
+      )
+      .returning({ id: tableSessions.id });
+    if (!cleared) return { outcome: "nothing_pending" };
+    await recordAudit(tx, actor, {
+      action: "table_session.waiter_dismiss",
+      entityType: "table_session",
+      entityId: cleared.id,
+    });
+    return { outcome: "done" };
+  });
+}
 
 /** The id in an order item route. A malformed one is a 404, like an unknown one. */
 export async function orderItemIdFrom(params: Promise<{ itemId: string }>) {
