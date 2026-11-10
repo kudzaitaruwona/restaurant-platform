@@ -656,8 +656,8 @@ export const bookings = pgTable(
       .on(table.holdEndsAt)
       .where(sql`${table.status} = 'seated'`),
     // The job's phone purge (D-06) looks across every restaurant for old bookings
-    // that still hold a number. Partial, so it holds only those, and shrinks as
-    // the purge runs. On guest_phone_set, the column the job may read.
+    // that still hold a number. Partial, so it holds only bookings still holding
+    // a number. On guest_phone_set, the column the job may read.
     index("bookings_phone_set_starts_at_index")
       .on(table.startsAt)
       .where(sql`${table.guestPhoneSet}`),

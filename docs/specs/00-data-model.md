@@ -252,7 +252,7 @@ bookings
   -- (proposed) Partial indexes for the scheduled job (S-35), which looks across every restaurant and so can't use the
   -- day list's: ends_at WHERE status = 'confirmed' and hold_ends_at WHERE status = 'seated' (migration 0031) for spec 04's
   -- automatic status changes, and starts_at WHERE guest_phone_set (migration 0033, replacing 0032's starts_at WHERE
-  -- guest_phone IS NOT NULL) for D-06's phone purge. Each holds only the rows still due, so it shrinks as the job runs.
+  -- guest_phone IS NOT NULL) for D-06's phone purge. Each holds only rows the job might still change (confirmed, seated, or still holding a number).
   -- (proposed) bookings_system_phone_null_only (migration 0033): BEFORE INSERT OR UPDATE OF guest_phone, refuses a non-null
   -- guest_phone written while current_user is app_system, which may only null it (D-06, S-28).
   -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
