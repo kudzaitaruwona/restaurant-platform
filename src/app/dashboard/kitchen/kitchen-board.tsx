@@ -4,12 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   ageOf,
   applyChanges,
+  arrivals,
   type BoardItem,
   boardColumns,
   type BoardStatus,
   type ItemStatus,
   nextStatus,
   previousStatus,
+  sendMove,
 } from "@/lib/kitchen-board";
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
 
@@ -37,21 +39,7 @@ const ageStyles = {
 } as const;
 
 const LONG_PRESS_MS = 500;
-const FLASH_MS = 4_000;
 const TICK_MS = 15_000;
-
-/** Two short beeps, made on the spot: no sound file to fetch. */
-function beep(audio: AudioContext) {
-  for (const start of [0, 0.25]) {
-    const tone = audio.createOscillator();
-    const gain = audio.createGain();
-    tone.frequency.value = 880;
-    gain.gain.value = 0.2;
-    tone.connect(gain).connect(audio.destination);
-    tone.start(audio.currentTime + start);
-    tone.stop(audio.currentTime + start + 0.15);
-  }
-}
 
 /**
  * The kitchen board (spec 07): three columns, one card per item, an order's
@@ -76,7 +64,9 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [message, setMessage] = useState<string>();
   const [soundOn, setSoundOn] = useState(false);
-  const audio = useRef<AudioContext | null>(null);
+  const [alert] = useState(() =>
+    arrivals({ makeAudio: () => new AudioContext(), onFlash: setFlashing }),
+  );
   const poller = useRef<ReturnType<typeof startPolling> | null>(null);
 
   /** Applies changed items, and flashes and sounds for the ones new to the board. */
@@ -84,17 +74,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     const { board: next, arrived } = applyChanges(current.current, items);
     current.current = next;
     setBoard(next);
-    arrive(arrived);
-  }
-
-  function arrive(ids: string[]) {
-    if (ids.length === 0) return;
-    setFlashing((was) => new Set([...was, ...ids]));
-    setTimeout(
-      () => setFlashing((was) => new Set([...was].filter((id) => !ids.includes(id)))),
-      FLASH_MS,
-    );
-    if (audio.current) beep(audio.current);
+    alert.arrive(arrived);
   }
   const updateRef = useRef(update);
   useEffect(() => {
@@ -121,34 +101,20 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
   }, [initial.cursor, initial.now]);
 
   function enableSound() {
-    audio.current ??= new AudioContext();
-    void audio.current.resume();
+    alert.enableSound();
     setSoundOn(true);
   }
 
   async function move(item: BoardItem, to: ItemStatus) {
     setMenuFor(undefined);
-    setMessage(undefined);
     setPending((was) => new Set(was).add(item.id));
     try {
-      const body = new FormData();
-      body.set("from", item.status);
-      body.set("to", to);
-      const response = await fetch(`/api/kitchen/items/${item.id}/status`, { method: "POST", body });
-      const answer = (await response.json().catch(() => ({}))) as {
-        item?: BoardItem;
-        status?: ItemStatus;
-        error?: string;
-      };
-      if (response.ok && answer.item) {
-        update([answer.item]);
-      } else {
-        setMessage(answer.error ?? "That didn't work. Try again.");
-        if (answer.status) update([{ ...item, status: answer.status }]);
-        poller.current?.refresh();
-      }
-    } catch {
-      setMessage("That didn't reach the server. Try again.");
+      await sendMove(item, to, {
+        fetch: (url, init) => fetch(url, init),
+        apply: update,
+        say: setMessage,
+        poller: poller.current,
+      });
     } finally {
       setPending((was) => {
         const next = new Set(was);

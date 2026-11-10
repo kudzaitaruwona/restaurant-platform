@@ -120,3 +120,88 @@ export function boardColumns(board: ReadonlyMap<string, BoardItem>) {
     return { status, groups };
   });
 }
+
+/** How long a new card flashes. */
+export const FLASH_MS = 4_000;
+
+/** Two short beeps, made on the spot: no sound file to fetch. */
+function beep(audio: AudioContext) {
+  for (const start of [0, 0.25]) {
+    const tone = audio.createOscillator();
+    const gain = audio.createGain();
+    tone.frequency.value = 880;
+    gain.gain.value = 0.2;
+    tone.connect(gain).connect(audio.destination);
+    tone.start(audio.currentTime + start);
+    tone.stop(audio.currentTime + start + 0.15);
+  }
+}
+
+/**
+ * What the board does when new items arrive (spec 07): they flash for 4
+ * seconds, and two beeps play once a tap has enabled sound (browsers won't play
+ * audio before one). `onFlash` gets the ids flashing now.
+ */
+export function arrivals(options: {
+  makeAudio: () => AudioContext;
+  onFlash: (ids: ReadonlySet<string>) => void;
+}) {
+  let audio: AudioContext | undefined;
+  let flashing: ReadonlySet<string> = new Set();
+  const show = (next: ReadonlySet<string>) => {
+    flashing = next;
+    options.onFlash(next);
+  };
+  return {
+    /** The tap on "Tap to enable sound". */
+    enableSound() {
+      audio ??= options.makeAudio();
+      void audio.resume();
+    },
+    arrive(ids: string[]) {
+      if (ids.length === 0) return;
+      show(new Set([...flashing, ...ids]));
+      setTimeout(() => show(new Set([...flashing].filter((id) => !ids.includes(id)))), FLASH_MS);
+      if (audio) beep(audio);
+    },
+  };
+}
+
+/**
+ * One move from the board (spec 07): posts the status the card showed and the
+ * one wanted. A move that worked is applied. A refused one (409: skipped, or
+ * another tablet moved it first) shows the item where it really is, says so, and
+ * refreshes the board.
+ */
+export async function sendMove(
+  item: BoardItem,
+  to: ItemStatus,
+  deps: {
+    fetch: (url: string, init: { method: string; body: FormData }) => Promise<Response>;
+    apply: (items: BoardItem[]) => void;
+    say: (message: string | undefined) => void;
+    poller: { refresh: () => void } | null;
+  },
+) {
+  deps.say(undefined);
+  try {
+    const body = new FormData();
+    body.set("from", item.status);
+    body.set("to", to);
+    const response = await deps.fetch(`/api/kitchen/items/${item.id}/status`, { method: "POST", body });
+    const answer = (await response.json().catch(() => ({}))) as {
+      item?: BoardItem;
+      status?: ItemStatus;
+      error?: string;
+    };
+    if (response.ok && answer.item) {
+      deps.apply([answer.item]);
+    } else {
+      deps.say(answer.error ?? "That didn't work. Try again.");
+      if (answer.status) deps.apply([{ ...item, status: answer.status }]);
+      deps.poller?.refresh();
+    }
+  } catch {
+    deps.say("That didn't reach the server. Try again.");
+  }
+}

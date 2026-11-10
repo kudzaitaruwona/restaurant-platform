@@ -321,6 +321,8 @@ order_items
   voided_by             → staff null
   CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))
   change_xid            bigint             -- (proposed, #71) the kitchen board's change stamp: the id of the transaction that last wrote the row, set by a trigger
+  in_play               bool not null      -- (proposed, S-40, migration 0036) GENERATED ALWAYS AS (status NOT IN ('delivered', 'voided')) STORED, what the kitchen board's load reads its line ids on;
+  -- an index on (restaurant_id) WHERE in_play. Not a filter on status: under RLS the enum's comparisons, not leakproof, get no statistics (S-40 in detail).
 ```
 
 ### Enforced in the database

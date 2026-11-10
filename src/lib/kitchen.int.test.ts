@@ -1,9 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQLWrapper } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, orderItems, orders, tableSessions } from "@/db/schema";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { orderingRestaurant } from "../../test/integration/ordering";
-import { getBoard, getChanges, moveItem } from "./kitchen";
+import { boardLineIds, boardLinesOf, getBoard, getChanges, moveItem } from "./kitchen";
 
 /**
  * The kitchen board's reads and moves (spec 07) against Postgres, as app_tenant.
@@ -94,6 +94,108 @@ describe("the board", () => {
     });
     expect(board.cursor).toMatch(/^\d+$/);
     expect(Math.abs(Date.parse(board.now) - Date.now())).toBeLessThan(60_000);
+  });
+});
+
+/**
+ * `sessions` closed sessions of history, each of 3 orders of `linesPerOrder`
+ * delivered lines, written in three statements. Triggers are off for it
+ * (session_replication_role): the open-session rule would otherwise need each
+ * session opened and closed in turn, and every row here is written already
+ * closed, as months of service would have left it.
+ */
+async function history(
+  tx: Parameters<Parameters<typeof owner.db.transaction>[0]>[0],
+  restaurant: Restaurant,
+  { sessions, linesPerOrder }: { sessions: number; linesPerOrder: number },
+) {
+  await tx.execute(sql`set local session_replication_role = replica`);
+  await tx.execute(sql`
+    with s as (
+      insert into table_sessions (restaurant_id, table_id, status, closed_at, close_reason)
+      select ${restaurant.restaurantId}, ${restaurant.tableId}, 'closed', now(), 'idle_expiry'
+      from generate_series(1, ${sessions})
+      returning restaurant_id, id
+    ), o as (
+      insert into orders (restaurant_id, session_id, customer_name)
+      select s.restaurant_id, s.id, 'Guest' from s, generate_series(1, 3)
+      returning restaurant_id, id
+    )
+    insert into order_items (restaurant_id, order_id, menu_item_id, name_snapshot, quantity, unit_price_usd, status)
+    select o.restaurant_id, o.id, ${restaurant.itemId}, 'Beef stew', 1, 8, 'delivered'
+    from o, generate_series(1, ${linesPerOrder})`);
+  await tx.execute(sql`set local session_replication_role = origin`);
+}
+
+type PlanNode = {
+  "Relation Name"?: string;
+  "Actual Rows": number;
+  "Actual Loops": number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Index Recheck"?: number;
+  Plans?: PlanNode[];
+};
+const nodesOf = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodesOf)];
+/** The rows a plan's nodes read from a table, kept or filtered out, over every loop. */
+const rowsRead = (plan: PlanNode, table: string) =>
+  nodesOf(plan)
+    .filter((node) => node["Relation Name"] === table)
+    .reduce(
+      (sum, node) =>
+        sum +
+        node["Actual Loops"] *
+          (node["Actual Rows"] +
+            (node["Rows Removed by Filter"] ?? 0) +
+            (node["Rows Removed by Index Recheck"] ?? 0)),
+      0,
+    );
+
+describe("the board's first load, at a restaurant with months of history", () => {
+  // Lines are never deleted, so the board must find the few lines in play
+  // without reading every line or order the restaurant ever had, as app_tenant,
+  // under RLS, once Postgres has statistics. This EXPLAINs the two reads getBoard
+  // sends, in a transaction that is rolled back, history and statistics with it.
+  it("reads only the lines in play, and no more orders than it has lines to show", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    const neighbour = await orderingRestaurant(owner.db);
+    const onBoard = [
+      await ordered(restaurant),
+      await ordered(restaurant, { status: "cooking" }),
+      await ordered(restaurant, { status: "done" }),
+    ];
+
+    const explain = async (tx: Parameters<Parameters<typeof owner.db.transaction>[0]>[0], query: SQLWrapper) => {
+      const { rows } = await tx.execute<{ "QUERY PLAN": [{ Plan: PlanNode }] }>(
+        sql`explain (analyze, format json) ${query}`,
+      );
+      return rows[0]["QUERY PLAN"][0].Plan;
+    };
+    let plans: { ids: PlanNode; lines: PlanNode; idsRead: string[] } | undefined;
+    await owner.db
+      .transaction(async (tx) => {
+        await history(tx, restaurant, { sessions: 1000, linesPerOrder: 1 });
+        // Other restaurants have history too: this one is a tenth of the table.
+        await history(tx, neighbour, { sessions: 1000, linesPerOrder: 9 });
+        await tx.execute(sql`analyze order_items, orders, table_sessions`);
+        await tx.execute(sql`set local role app_tenant`);
+        await tx.execute(sql`select set_config('app.restaurant_id', ${restaurant.restaurantId}, true)`);
+        const idsRead = (await boardLineIds(tx, restaurant)).map((line) => line.id);
+        plans = {
+          idsRead,
+          ids: await explain(tx, boardLineIds(tx, restaurant)),
+          lines: await explain(tx, boardLinesOf(tx, restaurant, idsRead)),
+        };
+        tx.rollback();
+      })
+      .catch((error: unknown) => {
+        if (plans === undefined) throw error;
+      });
+
+    expect(plans!.idsRead.sort()).toEqual(onBoard.map((line) => line.id).sort());
+    expect(rowsRead(plans!.ids, "order_items")).toBeLessThanOrEqual(3);
+    expect(plans!.lines["Actual Rows"]).toBe(3);
+    expect(rowsRead(plans!.lines, "orders")).toBeLessThanOrEqual(3);
+    expect(rowsRead(plans!.lines, "order_items")).toBeLessThanOrEqual(3);
   });
 });
 

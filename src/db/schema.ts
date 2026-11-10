@@ -879,6 +879,16 @@ export const orderItems = pgTable(
     changeXid: bigint("change_xid", { mode: "number" })
       .notNull()
       .default(sql`(pg_current_xact_id()::text::bigint)`),
+    // Whether the line is still on the kitchen board: not delivered or voided
+    // (proposed, S-40). Postgres computes it; nothing in the app writes it. The
+    // board's first load finds its lines on this, not on status: under RLS the
+    // planner can't use statistics through the enum's comparisons (not
+    // leakproof), so a status filter is estimated as most of the restaurant's
+    // lines, and read that way. A boolean's are leakproof, so its estimate is
+    // the share of lines in play. See getBoard in src/lib/kitchen.ts.
+    inPlay: boolean("in_play")
+      .notNull()
+      .generatedAlwaysAs(sql`status not in ('delivered', 'voided')`),
   },
   (table) => [
     foreignKey({
@@ -909,10 +919,10 @@ export const orderItems = pgTable(
     index().on(table.restaurantId, table.orderId),
     // The kitchen board's load (spec 07): only lines still in play (placed,
     // cooking, done), so a load doesn't read the restaurant's whole history
-    // (lines are never deleted).
+    // (lines are never deleted). On in_play, the column the board filters on.
     index("order_items_in_play")
-      .on(table.restaurantId, table.status)
-      .where(sql`${table.status} not in ('delivered', 'voided')`),
+      .on(table.restaurantId)
+      .where(sql`${table.inPlay}`),
     // The board's poll (#71): what changed since a stamp, delivered and voided
     // lines included, so the board can drop them.
     index("order_items_changes").on(table.restaurantId, table.changeXid),

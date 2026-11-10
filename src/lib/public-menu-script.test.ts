@@ -72,7 +72,12 @@ async function loadPage(
     feed,
     sessionId,
     orderReply: undefined as Reply | undefined,
-    requests: [] as { path: string; method: string; body?: URLSearchParams }[],
+    requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
+    /** While true, a tracker poll waits for its answer until `answer()` is called. */
+    holdPolls: false,
+    held: [] as (() => void)[],
+    /** The timeouts the script asked AbortSignal for, in milliseconds. */
+    timeouts: [] as number[],
   };
   const names = ["name", "place"] as const;
   const fields = Object.fromEntries(names.map((name) => [name, new FakeElement()])) as Record<
@@ -110,13 +115,21 @@ async function loadPage(
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => void storage.set(key, String(value)),
   };
-  const fetch = async (url: string, init: { method?: string; body?: URLSearchParams } = {}) => {
+  const fetch = async (
+    url: string,
+    init: { method?: string; body?: URLSearchParams; signal?: unknown } = {},
+  ) => {
     const path = url.replace("/api/t/some-token", "");
-    state.requests.push({ path, method: init.method ?? "GET", body: init.body });
+    state.requests.push({ path, method: init.method ?? "GET", body: init.body, signal: init.signal });
     if (path === "/session") {
       return { ok: true, status: 200, json: async () => ({ session: state.sessionId }) };
     }
-    if (path === "/tracker") return { ok: true, status: 200, json: async () => state.feed };
+    if (path === "/tracker") {
+      // The feed as it is when the poll was asked, not when it answers.
+      const feed = state.feed;
+      if (state.holdPolls) await new Promise<void>((resolve) => state.held.push(resolve));
+      return { ok: true, status: 200, json: async () => feed };
+    }
     const reply = state.orderReply ?? {
       status: 201,
       json: {
@@ -140,6 +153,12 @@ async function loadPage(
     fetch,
     URLSearchParams,
     Element: FakeElement,
+    AbortSignal: {
+      timeout: (ms: number) => {
+        state.timeouts.push(ms);
+        return { timeoutMs: ms };
+      },
+    },
     setInterval: (callback: () => unknown) => void (timer = callback),
     location: { pathname: "/t/some-token" },
   });
@@ -174,9 +193,17 @@ async function loadPage(
       await settle();
     },
     async tick() {
-      await timer?.();
+      // Not awaited: a tick that starts a poll held by holdPolls doesn't finish yet.
+      void timer?.();
       await settle();
     },
+    /** Lets every held poll answer. */
+    async answer() {
+      state.held.splice(0).forEach((resolve) => resolve());
+      await settle();
+      await settle();
+    },
+    polls: () => state.requests.filter((request) => request.path === "/tracker"),
     async orderOne(name: string) {
       await this.add(stew);
       await this.placeAs(name);
@@ -552,6 +579,43 @@ describe("the order tracker", () => {
     await page.placeAs("Tariro");
 
     expect(page.state.requests.filter((request) => request.path === "/tracker").length).toBeGreaterThan(before);
+    expect(page.trackerList.textContent).toContain("Tariro");
+  });
+
+  it("skips a tick while a poll is still waiting for its answer, so polls don't pile up on a slow line", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdPolls = true;
+
+    await page.tick();
+    const before = page.polls().length;
+    await page.tick();
+    await page.tick();
+    expect(page.polls()).toHaveLength(before);
+
+    page.state.holdPolls = false;
+    await page.answer();
+    await page.tick();
+    expect(page.polls()).toHaveLength(before + 1);
+  });
+
+  it("gives up on a poll after 4 seconds", async () => {
+    const page = await loadPage(new Map(), "session-1");
+
+    expect(page.state.timeouts).toContain(4000);
+    expect(page.polls().every((request) => request.signal !== undefined)).toBe(true);
+  });
+
+  it("never lets an older answer overwrite a newer one: an order placed during a poll polls again after it", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.state.holdPolls = true;
+    await page.tick();
+
+    page.state.feed = { session: "session-1", items: [item({ customer: "Tariro" })] };
+    page.state.holdPolls = false;
+    await page.placeAs("Tariro");
+    await page.answer();
+
     expect(page.trackerList.textContent).toContain("Tariro");
   });
 });

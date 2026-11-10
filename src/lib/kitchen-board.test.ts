@@ -1,12 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ageOf,
   type BoardItem,
   applyChanges,
+  arrivals,
   boardColumns,
+  FLASH_MS,
   isMove,
   nextStatus,
   previousStatus,
+  sendMove,
 } from "./kitchen-board";
 
 const MINUTE = 60_000;
@@ -134,5 +137,150 @@ describe("the columns", () => {
     expect(columns[0].groups[1].table).toBe("Patio 2");
     expect(columns[1].groups.map((group) => group.items.map((it) => it.id))).toEqual([["a3"]]);
     expect(columns[2].groups.map((group) => group.items.map((it) => it.id))).toEqual([["c1"]]);
+  });
+});
+
+/** Just enough of the Web Audio API to count the beeps a board makes. */
+class FakeAudio {
+  currentTime = 0;
+  destination = {};
+  resumed = 0;
+  tones: number[] = [];
+  resume() {
+    this.resumed += 1;
+    return Promise.resolve();
+  }
+  createGain() {
+    const gain = { gain: { value: 0 }, connect: (next: unknown) => next };
+    return gain;
+  }
+  createOscillator() {
+    const tones = this.tones;
+    return {
+      frequency: { value: 0 },
+      connect: (next: unknown) => next,
+      start: (when: number) => tones.push(when),
+      stop: () => {},
+    };
+  }
+}
+
+describe("new items arriving", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const board = () => {
+    const audio = new FakeAudio();
+    let flashing: ReadonlySet<string> = new Set();
+    const alert = arrivals({
+      makeAudio: () => audio as unknown as AudioContext,
+      onFlash: (ids) => (flashing = ids),
+    });
+    return { audio, alert, flashing: () => flashing };
+  };
+
+  it("flash for 4 seconds, with no sound before a tap has allowed one", () => {
+    const { audio, alert, flashing } = board();
+
+    alert.arrive(["a", "b"]);
+
+    expect([...flashing()].sort()).toEqual(["a", "b"]);
+    expect(audio.tones).toEqual([]);
+    vi.advanceTimersByTime(FLASH_MS - 1);
+    expect(flashing().size).toBe(2);
+    vi.advanceTimersByTime(1);
+    expect(flashing().size).toBe(0);
+  });
+
+  it("play a sound and flash after one tap enables sound", () => {
+    const { audio, alert, flashing } = board();
+
+    alert.enableSound();
+    expect(audio.resumed).toBe(1);
+    alert.arrive(["c"]);
+
+    expect(audio.tones.length).toBeGreaterThan(0);
+    expect([...flashing()]).toEqual(["c"]);
+  });
+
+  it("do nothing when nothing is new", () => {
+    const { audio, alert, flashing } = board();
+    alert.enableSound();
+
+    alert.arrive([]);
+
+    expect(audio.tones).toEqual([]);
+    expect(flashing().size).toBe(0);
+  });
+
+  it("stop flashing one batch without cutting short a later one", () => {
+    const { alert, flashing } = board();
+
+    alert.arrive(["a"]);
+    vi.advanceTimersByTime(2_000);
+    alert.arrive(["b"]);
+    vi.advanceTimersByTime(2_000);
+
+    expect([...flashing()]).toEqual(["b"]);
+  });
+});
+
+describe("sending a move", () => {
+  const reply = (status: number, body: unknown) =>
+    Promise.resolve(new Response(JSON.stringify(body), { status }));
+
+  const moving = (respond: () => Promise<Response>) => {
+    const applied: BoardItem[][] = [];
+    const said: (string | undefined)[] = [];
+    const requests: { url: string; body: FormData }[] = [];
+    const poller = { refreshes: 0, refresh() { this.refreshes += 1; } };
+    const deps = {
+      fetch: (url: string, init: { method: string; body: FormData }) => {
+        requests.push({ url, body: init.body });
+        return respond();
+      },
+      apply: (items: BoardItem[]) => void applied.push(items),
+      say: (message: string | undefined) => void said.push(message),
+      poller,
+    };
+    return { deps, applied, said, requests, poller };
+  };
+
+  it("posts the status the board showed and the one wanted, and applies the moved item", async () => {
+    const card = item({ id: "item-1" });
+    const moved = { ...card, status: "cooking" as const };
+    const { deps, applied, requests, poller } = moving(() => reply(200, { item: moved }));
+
+    await sendMove(card, "cooking", deps);
+
+    expect(requests[0].url).toBe("/api/kitchen/items/item-1/status");
+    expect(requests[0].body.get("from")).toBe("placed");
+    expect(requests[0].body.get("to")).toBe("cooking");
+    expect(applied).toEqual([[moved]]);
+    expect(poller.refreshes).toBe(0);
+  });
+
+  it("on a 409, shows the item where it really is, says so, and refreshes the board", async () => {
+    const card = item({ id: "item-1" });
+    const { deps, applied, said, poller } = moving(() =>
+      reply(409, { error: "That item had already moved.", status: "done" }),
+    );
+
+    await sendMove(card, "cooking", deps);
+
+    expect(applied).toEqual([[{ ...card, status: "done" }]]);
+    expect(said.at(-1)).toBe("That item had already moved.");
+    expect(poller.refreshes).toBe(1);
+  });
+
+  it("says so when the move doesn't reach the server, and changes nothing", async () => {
+    const card = item();
+    const { deps, applied, said, poller } = moving(() => Promise.reject(new Error("offline")));
+
+    await sendMove(card, "cooking", deps);
+
+    expect(applied).toEqual([]);
+    expect(said.at(-1)).toMatch(/didn't reach the server/);
+    expect(poller.refreshes).toBe(0);
   });
 });

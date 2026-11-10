@@ -1,7 +1,7 @@
 import "server-only";
 import { and, asc, eq, gte, inArray, sql, type SQL } from "drizzle-orm";
 import { diningTables, orderItems, orders, tableSessions } from "@/db/schema";
-import { type BoardItem, BOARD_STATUSES, type ItemStatus, isMove } from "@/lib/kitchen-board";
+import { type BoardItem, type ItemStatus, isMove } from "@/lib/kitchen-board";
 import { recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -42,9 +42,9 @@ const boardItemColumns = {
   statusChangedAt: orderItems.statusChangedAt,
 };
 
-/** Lines of the restaurant matching `where`, with their order and table. */
-async function boardItems(tx: TenantTransaction, ctx: Restaurant, where: SQL | undefined) {
-  const rows = await tx
+/** The query for the lines of the restaurant matching `where`, with their order and table. */
+function boardQuery(tx: TenantTransaction, ctx: Restaurant, where: SQL | undefined) {
+  return tx
     .select(boardItemColumns)
     .from(orderItems)
     .innerJoin(
@@ -67,24 +67,65 @@ async function boardItems(tx: TenantTransaction, ctx: Restaurant, where: SQL | u
     )
     .where(and(eq(orderItems.restaurantId, ctx.restaurantId), where))
     .orderBy(asc(orders.placedAt), asc(orderItems.id));
-  return rows.map(
+}
+
+const toBoardItems = (rows: Awaited<ReturnType<typeof boardQuery>>) =>
+  rows.map(
     (row): BoardItem => ({
       ...row,
       placedAt: row.placedAt.toISOString(),
       statusChangedAt: row.statusChangedAt.toISOString(),
     }),
   );
+
+/** Lines of the restaurant matching `where`, with their order and table. */
+async function boardItems(tx: TenantTransaction, ctx: Restaurant, where: SQL | undefined) {
+  return toBoardItems(await boardQuery(tx, ctx, where));
 }
 
 /**
- * The whole board: every placed, cooking and done line, read on the
- * order_items_in_play partial index, with the cursor for the first poll and the
- * server's clock, which ages the cards.
+ * The lines the board shows: placed, cooking and done, as the generated
+ * `in_play` column says, not a filter on status. As app_tenant, under RLS,
+ * Postgres can't use status's statistics (the enum's comparisons aren't
+ * leakproof), so a status filter, `in` or `not in`, is estimated as most of the
+ * restaurant's lines. A boolean's equality is leakproof, so in_play's estimate
+ * is the share of lines in play across every restaurant.
+ */
+const onTheBoard = sql`${orderItems.inPlay}`;
+
+/**
+ * The ids of the board's lines, read alone, on the order_items_in_play partial
+ * index: the lines in play, and none of the restaurant's history. Exported, with
+ * boardLinesOf, so a test can EXPLAIN exactly what the board sends.
+ */
+export const boardLineIds = (tx: TenantTransaction, ctx: Restaurant) =>
+  tx
+    .select({ id: orderItems.id })
+    .from(orderItems)
+    .where(and(eq(orderItems.restaurantId, ctx.restaurantId), onTheBoard));
+
+/** The board's lines with their order and table, from the ids boardLineIds read. */
+export const boardLinesOf = (tx: TenantTransaction, ctx: Restaurant, ids: string[]) =>
+  boardQuery(tx, ctx, and(inArray(orderItems.id, ids), onTheBoard));
+
+/**
+ * The whole board: every placed, cooking and done line, with the cursor for the
+ * first poll and the server's clock, which ages the cards. In two reads: the
+ * ids of the lines in play, then those lines by id with their orders and tables.
+ * One join filtered on in_play would leave the join's plan to that estimate,
+ * which is the share of lines in play across every restaurant times this
+ * restaurant's history: for a restaurant with a long history it comes out large
+ * enough that Postgres hash-joins every order the restaurant ever took. Given
+ * the ids, the second read is estimated at their number, so it fetches each
+ * line's order by its key. kitchen.int.test.ts measures both on a restaurant
+ * with history. A line that leaves the board between the two reads is left out
+ * by the second; the cursor, read first, brings the change in the next poll.
  */
 export function getBoard(ctx: Restaurant) {
   return withTenant(ctx, async (tx) => {
     const { cursor, now } = await cursorOf(tx);
-    const items = await boardItems(tx, ctx, inArray(orderItems.status, [...BOARD_STATUSES]));
+    const ids = (await boardLineIds(tx, ctx)).map((line) => line.id);
+    const items = ids.length === 0 ? [] : toBoardItems(await boardLinesOf(tx, ctx, ids));
     return { cursor, now, items };
   });
 }

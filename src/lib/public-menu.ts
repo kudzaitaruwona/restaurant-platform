@@ -104,7 +104,10 @@ const orderStyles = trusted(`[hidden]{display:none!important}
  * as markup. The cart lives in the page only; what the phone remembers is the
  * customer's name, per session, so the next party at the table starts blank.
  * The tracker is polled from an uncached endpoint every 5 seconds *(proposed)*,
- * only while the page is showing. A session the table has left behind (staff
+ * only while the page is showing, one poll at a time, each given up after 4
+ * seconds, so a slow line can't pile them up or land an older answer over a newer
+ * one: a tick during a poll is skipped, and a poll asked for after an order runs
+ * once the one in flight is done. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
  * next Add or Place order joins the table's fresh one.
  */
@@ -176,10 +179,14 @@ export const ORDER_SCRIPT = `(() => {
   const words = { placed: "Ordered", cooking: "Cooking", done: "Ready", delivered: "Delivered", voided: "Voided" };
   let shown = false;
   let last = "";
-  const poll = async () => {
+  let polling = false;
+  let again = false;
+  const poll = async (fresh) => {
     if (!session) return;
+    if (polling) { again = again || fresh; return; }
+    polling = true;
     try {
-      const response = await fetch(api("/tracker"));
+      const response = await fetch(api("/tracker"), AbortSignal.timeout ? { signal: AbortSignal.timeout(4000) } : {});
       if (!response.ok) return;
       const feed = await response.json();
       const text = JSON.stringify(feed);
@@ -199,7 +206,10 @@ export const ORDER_SCRIPT = `(() => {
         );
         return row;
       }));
-    } catch {}
+    } catch {} finally {
+      polling = false;
+      if (again) { again = false; poll(); }
+    }
   };
 
   join().then(() => {
@@ -218,7 +228,7 @@ export const ORDER_SCRIPT = `(() => {
     else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "" });
     say("");
     draw();
-    if (ended) await join().then(() => { last = ""; return poll(); }, () => {});
+    if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
   });
   bar.addEventListener("click", () => { form.hidden = false; say(""); });
   $("order-cancel").addEventListener("click", () => { form.hidden = true; });
@@ -246,7 +256,7 @@ export const ORDER_SCRIPT = `(() => {
         draw();
         say("Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ". Pay at the table with your waiter as usual.");
         last = "";
-        poll();
+        poll(true);
         return;
       }
       if (answer.code === "session_changed") await join().catch(() => {});

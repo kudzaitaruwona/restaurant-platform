@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, count, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   diningTables,
@@ -166,15 +166,24 @@ class Refused extends Error {
 }
 
 /**
- * What a line freezes (spec 06), worked out from the database at the moment of
- * the order, with the same functions the menu shows prices with: the special
- * live now, if any, by spec 00's precedence, else the item's own prices.
- * Undefined for an item that can't be ordered now: archived, sold out, another
- * restaurant's (RLS hides it), or a bundle outside its special's window.
+ * What each line freezes (spec 06), worked out from the database at the moment
+ * of the order, with the same functions the menu shows prices with: the special
+ * live now, if any, by spec 00's precedence, else the item's own prices. One
+ * rate and one set of rounding steps for the whole order. Four reads whatever
+ * the number of items, since they run while the session's row is held. An item
+ * that can't be ordered now (archived, sold out, another restaurant's, which
+ * RLS hides, or a bundle outside its special's window) is missing from the map.
  */
-async function pricedItem(tx: TenantTransaction, restaurantId: string, itemId: string) {
-  const [item] = await tx
+async function pricedItems(tx: TenantTransaction, restaurantId: string, itemIds: string[]) {
+  const [steps] = await tx
+    .select({ zigStep: restaurants.zigRoundingStep, usdStep: restaurants.usdRoundingStep })
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId));
+  const rate = (await latestRate(tx, restaurantId))?.usdToZig ?? null;
+  const pricing: Pricing = { rate, ...steps };
+  const items = await tx
     .select({
+      id: menuItems.id,
       name: menuItems.name,
       priceUsd: menuItems.priceUsd,
       priceZig: menuItems.priceZig,
@@ -184,43 +193,57 @@ async function pricedItem(tx: TenantTransaction, restaurantId: string, itemId: s
     .where(
       and(
         eq(menuItems.restaurantId, restaurantId),
-        eq(menuItems.id, itemId),
+        inArray(menuItems.id, itemIds),
         isNull(menuItems.archivedAt),
         eq(menuItems.available, true),
       ),
     );
-  if (!item) return undefined;
-  // D-05 means at most one of these.
-  const [special] = await tx
-    .select({ id: specials.id, priceUsd: specials.specialPriceUsd, priceZig: specials.specialPriceZig })
-    .from(specials)
-    .where(
-      and(
-        eq(specials.restaurantId, restaurantId),
-        eq(specials.menuItemId, itemId),
-        eq(specials.active, true),
-        or(isNull(specials.startsAt), lte(specials.startsAt, sql`now()`)),
-        or(isNull(specials.endsAt), gt(specials.endsAt, sql`now()`)),
-      ),
-    );
-  if (item.visibility === "special_only" && !special) return undefined;
+  // D-05 means at most one per item.
+  const specialOf = new Map(
+    (
+      await tx
+        .select({
+          menuItemId: specials.menuItemId,
+          id: specials.id,
+          priceUsd: specials.specialPriceUsd,
+          priceZig: specials.specialPriceZig,
+        })
+        .from(specials)
+        .where(
+          and(
+            eq(specials.restaurantId, restaurantId),
+            inArray(specials.menuItemId, itemIds),
+            eq(specials.active, true),
+            or(isNull(specials.startsAt), lte(specials.startsAt, sql`now()`)),
+            or(isNull(specials.endsAt), gt(specials.endsAt, sql`now()`)),
+          ),
+        )
+    ).map((special) => [special.menuItemId, special]),
+  );
 
-  const [steps] = await tx
-    .select({ zigStep: restaurants.zigRoundingStep, usdStep: restaurants.usdRoundingStep })
-    .from(restaurants)
-    .where(eq(restaurants.id, restaurantId));
-  const rate = (await latestRate(tx, restaurantId))?.usdToZig ?? null;
-  const pricing: Pricing = { rate, ...steps };
-  const zig = special ? specialZig(item, special, pricing) : effectiveZig(item, pricing);
-  return {
-    name: item.name,
-    specialId: special?.id ?? null,
-    unitPriceUsd: special ? specialUsd(item, special, pricing) : effectiveUsd(item, pricing),
-    unitPriceZig: zig?.amount ?? null,
-    zigSource: zig?.source ?? null,
-    rate,
-  };
+  const priced = new Map<string, PricedItem>();
+  for (const item of items) {
+    const special = specialOf.get(item.id);
+    if (item.visibility === "special_only" && !special) continue;
+    const zig = special ? specialZig(item, special, pricing) : effectiveZig(item, pricing);
+    priced.set(item.id, {
+      name: item.name,
+      specialId: special?.id ?? null,
+      unitPriceUsd: special ? specialUsd(item, special, pricing) : effectiveUsd(item, pricing),
+      unitPriceZig: zig?.amount ?? null,
+      zigSource: zig?.source ?? null,
+    });
+  }
+  return { rate, priced };
 }
+
+type PricedItem = {
+  name: string;
+  specialId: string | null;
+  unitPriceUsd: string | null;
+  unitPriceZig: string | null;
+  zigSource: "fixed" | "calculated" | null;
+};
 
 /**
  * Places an order (spec 06), one or more lines, into the open session of the table the token names,
@@ -267,14 +290,13 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
       }
 
       // Each distinct item once: a line for the same dish with another note shares its price.
-      const pricedById = new Map<string, NonNullable<Awaited<ReturnType<typeof pricedItem>>>>();
-      for (const { item } of request.lines) {
-        if (pricedById.has(item)) continue;
-        const priced = await pricedItem(tx, restaurantId, item);
-        if (!priced) throw new Refused({ outcome: "unavailable", item });
-        pricedById.set(item, priced);
-      }
-      const rate = [...pricedById.values()][0].rate;
+      const { rate, priced: pricedById } = await pricedItems(
+        tx,
+        restaurantId,
+        [...new Set(request.lines.map((line) => line.item))],
+      );
+      const unavailable = request.lines.find((line) => !pricedById.has(line.item));
+      if (unavailable) throw new Refused({ outcome: "unavailable", item: unavailable.item });
 
       const [order] = await tx
         .insert(orders)

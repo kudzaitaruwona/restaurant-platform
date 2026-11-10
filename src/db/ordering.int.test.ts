@@ -228,30 +228,6 @@ describe("frozen prices", () => {
   });
 });
 
-describe("the kitchen's index", () => {
-  // Lines are never deleted, so a filter on restaurant_id alone would read the
-  // restaurant's whole history on every load (spec 07 polls every 5 seconds).
-  // The partial index holds only the lines still in play.
-  it.each([
-    ["the list of placed lines", sql`status = 'placed'`],
-    ["the board's three columns (#71)", sql`status in ('placed', 'cooking', 'done')`],
-  ])("serves %s", async (_what, filter) => {
-    const { restaurantId } = await restaurantWithItem();
-
-    const plan = await asTenant(app.db, restaurantId, async (tx) => {
-      // An empty table would be read whole whatever the indexes; this asks
-      // which index the planner can use.
-      await tx.execute(sql`set local enable_seqscan = off`);
-      const { rows } = await tx.execute(
-        sql`explain select id from order_items where restaurant_id = ${restaurantId} and ${filter}`,
-      );
-      return rows.map((row) => Object.values(row).join("")).join("\n");
-    });
-
-    expect(plan).toContain("order_items_in_play");
-  });
-});
-
 describe("what an order holds", () => {
   it.each(["", "   ", "x".repeat(101)])("refuses a customer name of %j", async (customerName) => {
     const { restaurantId, tableId } = await restaurantWithItem();

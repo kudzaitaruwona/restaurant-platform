@@ -72,6 +72,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Audit log
 Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void, reject an order (S-36) and reopen.
+- *(proposed, S-40)* every order item status change, kitchen moves and mark delivered (`order_item.status`, from and to)
 
 ## Stack (decided, D-07)
 - Next.js App Router, TypeScript, Tailwind, shadcn/ui, deployed on Vercel
