@@ -280,6 +280,10 @@ notifications
   UNIQUE (booking_id, kind)                 -- never send the same message twice
 ```
 
+Built in ticket #44 (migration 0034). Like every tenant table it has `UNIQUE (restaurant_id, id)`, a composite foreign key to `bookings` and the tenant policy. `channel` defaults to `whatsapp` and `status` to `pending`. `scheduled_for` is when a row becomes due: the confirmation at the moment of confirming. A partial index on `scheduled_for` where `status = 'pending'` serves the job. Checks: `attempts >= 0`, a `sending` row has `claimed_at`, and `last_error` is at most 500 characters. The row is written by `app_tenant` in the booking's transaction; the job (`app_system`) may read only the columns that pick and claim a due row, and write only `status`, `claimed_at`, `attempts`, `last_error` and `provider_message_id`.
+
+`notification_sends` *(proposed, S-36)* is a view joining a notification to its booking and restaurant (the guest's name, number, opt-in, party size, start, manage token, and the restaurant's name, contact phone and timezone), showing only rows in `sending`. It is how the job reads what it sends without a grant on those columns for every booking. Only `app_system` may read it.
+
 ## 6. Table sessions and orders (phase 6; see spec 06)
 
 ```sql

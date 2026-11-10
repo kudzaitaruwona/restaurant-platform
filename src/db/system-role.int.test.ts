@@ -13,7 +13,7 @@ import {
 } from "../../test/integration/database";
 import { SYSTEM_DATABASE_ROLE } from "../lib/env";
 import { provisionSystemRole } from "./app-role";
-import { bookings } from "./schema";
+import { bookings, notifications } from "./schema";
 
 /**
  * The scheduled job's login (spec 01, S-28, S-35), proved from Postgres itself.
@@ -24,6 +24,9 @@ import { bookings } from "./schema";
  * a restaurant's timezone to read, and guest_phone to write. A column grant can't
  * say "only to null", so a trigger (migration 0033) refuses any other value it
  * writes there. No guest's name or number, no other tenant table, no credential.
+ * Spec 05's outbox: it claims and finishes notifications, and reads a guest's
+ * name, number and manage link only through notification_sends, for a
+ * notification it has claimed (migration 0034).
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -46,7 +49,7 @@ async function grantsOf(role: string) {
     from pg_class c
     join pg_namespace n on n.oid = c.relnamespace
     cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) as p(privilege)
-    where n.nspname = 'public' and c.relkind in ('r', 'p')
+    where n.nspname = 'public' and c.relkind in ('r', 'p', 'v')
       and has_table_privilege(${role}, c.oid, p.privilege)
     union all
     select c.relname || '.' || a.attname || ': ' || p.privilege
@@ -54,7 +57,7 @@ async function grantsOf(role: string) {
     join pg_namespace n on n.oid = c.relnamespace
     join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
     cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) as p(privilege)
-    where n.nspname = 'public' and c.relkind in ('r', 'p')
+    where n.nspname = 'public' and c.relkind in ('r', 'p', 'v')
       and not has_table_privilege(${role}, c.oid, p.privilege)
       and has_column_privilege(${role}, c.oid, a.attnum, p.privilege)
     order by 1
@@ -113,6 +116,18 @@ describe("app_system", () => {
       "bookings.status: SELECT",
       "bookings.status: UPDATE",
       "bookings.table_id: SELECT",
+      "notification_sends: SELECT",
+      "notifications.attempts: SELECT",
+      "notifications.attempts: UPDATE",
+      "notifications.claimed_at: UPDATE",
+      "notifications.id: SELECT",
+      "notifications.kind: SELECT",
+      "notifications.last_error: UPDATE",
+      "notifications.provider_message_id: UPDATE",
+      "notifications.restaurant_id: SELECT",
+      "notifications.scheduled_for: SELECT",
+      "notifications.status: SELECT",
+      "notifications.status: UPDATE",
       "restaurants.id: SELECT",
       "restaurants.timezone: SELECT",
       "staff_auth_code_limit.window_started_at: SELECT",
@@ -184,6 +199,53 @@ describe("app_system", () => {
         ),
       ).rejects.toMatchObject(refused);
       expect(await phoneOf(id)).toBe(PHONE);
+    });
+  });
+
+  describe("the outbox (spec 05)", () => {
+    /** A booking with a phone and its booking_confirmed row, in a restaurant of its own. */
+    async function aQueuedBooking() {
+      const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }] });
+      const [{ id: bookingId }] = await owner.db
+        .insert(bookings)
+        .values({ ...aBooking(restaurantId, tableIds[0], "2099-06-02T17:00:00Z", "2099-06-02T19:00:00Z"), guestPhone: "+263771234567" })
+        .returning({ id: bookings.id });
+      const [{ id }] = await owner.db
+        .insert(notifications)
+        .values({ restaurantId, bookingId, kind: "booking_confirmed", scheduledFor: new Date("2099-01-01T00:00:00Z") })
+        .returning({ id: notifications.id });
+      return { restaurantId, bookingId, id };
+    }
+    const sendsFor = (id: string) =>
+      system.db.execute(sql`select guest_name, guest_phone, manage_token from notification_sends where id = ${id}`);
+
+    it("reads a guest's details through notification_sends only once it has claimed the notification", async () => {
+      const { restaurantId, id } = await aQueuedBooking();
+      expect((await sendsFor(id)).rows).toEqual([]);
+
+      await system.db.execute(
+        sql`update notifications set status = 'sending', claimed_at = now() where restaurant_id = ${restaurantId} and id = ${id}`,
+      );
+      expect((await sendsFor(id)).rows).toEqual([
+        { guest_name: "Fixture guest", guest_phone: "+263771234567", manage_token: expect.any(String) },
+      ]);
+
+      await system.db.execute(
+        sql`update notifications set status = 'sent' where restaurant_id = ${restaurantId} and id = ${id}`,
+      );
+      expect((await sendsFor(id)).rows).toEqual([]);
+    });
+
+    it("can't queue a notification, move one to another booking, or delete one", async () => {
+      const { restaurantId, bookingId, id } = await aQueuedBooking();
+      for (const query of [
+        sql`insert into notifications (restaurant_id, booking_id, kind, scheduled_for) values (${restaurantId}, ${bookingId}, 'booking_reminder', now())`,
+        sql`update notifications set booking_id = booking_id where id = ${id}`,
+        sql`update notifications set scheduled_for = now() where id = ${id}`,
+        sql`delete from notifications where id = ${id}`,
+      ]) {
+        await expect(system.db.execute(query)).rejects.toMatchObject(refused);
+      }
     });
   });
 

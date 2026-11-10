@@ -24,6 +24,7 @@ import {
   localTime,
   nearestTimes,
 } from "@/lib/booking-engine";
+import { queueBookingConfirmed } from "@/lib/notifications";
 import { mintQrToken } from "@/lib/qr-token";
 import { whatsappLink } from "@/lib/whatsapp-link";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -559,6 +560,11 @@ export async function confirmBooking(
       }
 
       if (booked) {
+        await queueBookingConfirmed(
+          tx,
+          { restaurantId: tenant.restaurantId, id: booked[0].id, guestPhone: guest.phone, whatsappOptIn: guest.whatsappOptIn },
+          now,
+        );
         return {
           outcome: "confirmed",
           confirmation: {

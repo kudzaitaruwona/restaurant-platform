@@ -14,7 +14,9 @@ import { z } from "zod";
  * scheduled job (S-35) and stay optional, because the production check below
  * also runs on preview deployments, where a missing value would stop the whole
  * site booting. The job's route fails closed on its own: no secret, or no
- * login, and it refuses the call.
+ * login, and it refuses the call. WHATSAPP_PHONE_NUMBER_ID and
+ * WHATSAPP_ACCESS_TOKEN are the same kind of exception (spec 05): without them
+ * the job holds queued messages in production rather than the site not booting.
  *
  * An empty value (`KEY=` in a .env file) counts as unset.
  */
@@ -150,9 +152,15 @@ const configShape = {
   R2_BUCKET: required(text()),
   R2_PUBLIC_BASE_URL: required(r2PublicBaseUrl),
 
-  // WhatsApp Cloud API (spec 05).
-  WHATSAPP_PHONE_NUMBER_ID: optional(text()),
-  WHATSAPP_ACCESS_TOKEN: optional(text()),
+  // WhatsApp Cloud API (spec 05). The sender's two keys stay optional even in
+  // production, like the job's: without them the job holds queued messages as
+  // pending and sends them once the keys are set (src/lib/whatsapp/sender.ts).
+  WHATSAPP_PHONE_NUMBER_ID: optional(
+    text().regex(/^[0-9]+$/, { message: "must be Meta's numeric phone number ID, not the phone number" }),
+  ),
+  WHATSAPP_ACCESS_TOKEN: optional(
+    text().regex(/^\S+$/, { message: "must be the token alone, with no spaces or \"Bearer\"" }),
+  ),
   WHATSAPP_APP_SECRET: optional(text()),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: optional(text()),
 

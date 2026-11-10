@@ -91,3 +91,15 @@ Each session type has its own database login: the staff audience connects as `ap
 ### Environment
 
 Environment variables are validated with zod when the server starts (`src/instrumentation.ts`, `src/lib/env.ts`). A missing or invalid one makes the server exit with a list of what's wrong. `next build` doesn't validate, so it runs without secrets. `DEV_AUTH_BYPASS` and `NEON_WS_PROXY` are refused in production, and `DATABASE_URL_ADMIN`, `DATABASE_URL_STAFF_AUTH` and the sign-in variables are required there, which includes a local `npm run start`: leave the first two blank and give the rest stand-ins to run a production build on your machine. A build that needs the local database goes through the wsproxy, which production refuses, so start it with `NODE_ENV=test npx next start` and the variables in the shell: the bundle is still the production build, and `.env.local` isn't read.
+
+### Turning on WhatsApp
+
+Booking confirmations are queued in `notifications` when a booking is confirmed and sent by the scheduled job (spec 05, S-36). Until WhatsApp's keys are set, production holds them as `pending`, and development prints each message to the server console instead. Holding is safe: the job re-checks each booking before sending, so a held confirmation for a booking cancelled since is dropped, not sent.
+
+To turn it on, once Meta has approved the account and the `booking_confirmed` template (in language `en`, with a URL button to `{NEXT_PUBLIC_APP_URL}/b/{{1}}`):
+
+1. In the Vercel project's environment variables (Production), set `WHATSAPP_PHONE_NUMBER_ID` (the phone number's ID from Meta's WhatsApp Manager, digits only, not the number) and `WHATSAPP_ACCESS_TOKEN` (a permanent system-user token), then redeploy.
+2. The next run of the job, within 5 minutes, sends everything held. Its response lists `notifications` with how many it finished; while holding, its log says how many it is holding and which variable is missing.
+
+Delivery statuses from Meta's webhook come with issue #48, which adds setting the webhook URL and verify token in the Meta dashboard.
+

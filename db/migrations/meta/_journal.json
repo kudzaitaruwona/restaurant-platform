@@ -239,6 +239,13 @@
       "when": 1794316993712,
       "tag": "0033_booking_phone_set",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794320608155,
+      "tag": "0034_notification_outbox",
+      "breakpoints": true
     }
   ]
 }
