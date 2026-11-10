@@ -81,7 +81,7 @@ export async function completeOverdueSittings(db: Database, now: Date): Promise<
           refused.push(row.id);
         }
       }
-      await recordSystemAction(tx, changed, "booking.complete");
+      await recordSystemAction(tx, changed, "booking.finish");
       return { taken: rows.length, changed };
     });
     completed += changed.length;

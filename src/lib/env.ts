@@ -7,10 +7,14 @@ import { z } from "zod";
  * URL, photo storage). Required in production: sign-in, with its own login, and
  * the admin login, which development can do without (it has the dev bypass,
  * and prints emails to the console).
- * Optional: variables owned by later tickets (WhatsApp, Turnstile, the
- * scheduled job) and the migration/system database URLs, which only scripts and
- * specific routes load. A later ticket that starts depending on one of them
- * makes it required here.
+ * Optional: variables owned by later tickets (WhatsApp, Turnstile) and the
+ * migration/system database URLs, which only scripts and specific routes load.
+ * A later ticket that starts depending on one of them makes it required here.
+ * One deliberate exception: DATABASE_URL_SYSTEM and CRON_SECRET belong to the
+ * scheduled job (S-35) and stay optional, because the production check below
+ * also runs on preview deployments, where a missing value would stop the whole
+ * site booting. The job's route fails closed on its own: no secret, or no
+ * login, and it refuses the call.
  *
  * An empty value (`KEY=` in a .env file) counts as unset.
  */

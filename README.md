@@ -31,7 +31,7 @@ The public menu page is the one exception: a Route Handler with no React, Tailwi
 npm install
 cp .env.example .env.local   # fill in values; the "local" hints match docker-compose.yml
 npm run db:up                # Postgres 17 on :5499 and Neon's wsproxy on :5498
-npm run db:migrate           # also lets the app, admin and staff sign-in roles log in
+npm run db:migrate           # also lets the app, admin, staff sign-in and system (scheduled job) roles log in, and refuses to run without `DATABASE_URL_SYSTEM`
 npm run db:seed              # restaurants A and B and the platform admin, for DEV_AUTH_BYPASS
 npm run dev
 ```
@@ -47,11 +47,11 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run lint` | ESLint, including the photo-storage and database import boundaries |
 | `npm run typecheck` | Route type generation plus `tsc --noEmit` |
 | `npm run test:unit` | Unit tests (no database) |
-| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin`, `TEST_DATABASE_URL_STAFF_AUTH` as `app_staff_auth` |
+| `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin`, `TEST_DATABASE_URL_STAFF_AUTH` as `app_staff_auth`, `TEST_DATABASE_URL_SYSTEM` as `app_system` |
 | `npm test` | Both test projects |
 | `npm run test:production` | The public pages' cache, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
-| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL`, the `app_admin` password from `DATABASE_URL_ADMIN` and the `app_staff_auth` password from `DATABASE_URL_STAFF_AUTH`, and fails if RLS wouldn't apply to any of them |
+| `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL`, the `app_admin` password from `DATABASE_URL_ADMIN` and the `app_staff_auth` password from `DATABASE_URL_STAFF_AUTH` and the `app_system` password from `DATABASE_URL_SYSTEM`, and fails if RLS wouldn't apply to the first three, or if `app_system` isn't `BYPASSRLS` or has more power than the job needs (`provisionSystemRole`) |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |
 
 ### Tenant isolation
@@ -60,11 +60,11 @@ All tenant data goes through the seam in `src/lib/tenant`: `getTenantContext()` 
 
 A public route has no session, so `resolvePublicToken()` (`src/lib/tenant/public.ts`) turns its token into a tenant for `withTenant()` (S-31). Code on a public route imports `@/lib/tenant/scope`, not `@/lib/tenant`, which loads sign-in; a test fails if it reaches Better Auth (S-32).
 
-There are four database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), and staff sign-in as `app_staff_auth` (`DATABASE_URL_STAFF_AUTH`), each under the same rules and with its own pool (see "Platform admin" and "Sign-in"). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
+There are five database roles. The app connects as `app_tenant` (`DATABASE_URL`), which has no superuser or `BYPASSRLS` and owns no tables, so row-level security applies to it. The admin path connects as `app_admin` (`DATABASE_URL_ADMIN`), and staff sign-in as `app_staff_auth` (`DATABASE_URL_STAFF_AUTH`), each under the same rules and with its own pool (see "Platform admin" and "Sign-in"). The scheduled job connects as `app_system` (`DATABASE_URL_SYSTEM`), the one role with `BYPASSRLS`: it acts across restaurants, so it has only the column grants its tasks need, filters by `restaurant_id` itself, and only its route (`src/app/api/cron/tick`) and the Meta webhook may load that URL (S-35). Migrations and the seed run as the role that owns the tables (`DATABASE_URL_UNPOOLED`), which RLS skips. Outside `withTenant()`, `app_tenant` sees no tenant rows at all.
 
 Every restaurant keeps at least one active owner: a trigger on `staff` refuses any change that would remove the last one, for every role (S-26). That includes test cleanup, so a test that needs to remove owners gives them a restaurant of their own and leaves it behind.
 
-Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, to `sessionRoutes` if it takes no id, or to `publicRoutes` if it has no session. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, no `UNIQUE (restaurant_id, id)`, or a foreign key to another tenant table that isn't composite, or if a route isn't listed.
+Adding a tenant table: give it `restaurant_id`, `UNIQUE (restaurant_id, id)`, composite foreign keys and `tenantPolicy("restaurant_id")` (`src/db/schema.ts`). Adding a route: add it to `routes` in `src/lib/tenant/access.int.test.ts`, to `sessionRoutes` if it takes no id, or to `publicRoutes` if it has no session. A route with no session and no tenant at all, which is secret-protected instead (the scheduled job's `GET /api/cron/tick`), goes in `outsideTheHarness` in the same file, with a comment saying which test covers it. A route that `ActionForm` (`src/app/dashboard/action-form.tsx`) posts to must answer success with `formSaved()` (`src/lib/form-response.ts`), which gives it a 204 and a plain form post a 303; a bare redirect makes the browser fetch and render the page for nothing, and the form reports on that. A route reached only by a plain `<form>` returns the 303 itself, as `src/app/api/staff/[staffId]/route.ts` does. A test fails if a table has no RLS or tenant policy, no `UNIQUE (restaurant_id, id)`, or a foreign key to another tenant table that isn't composite, or if a route isn't listed.
 
 ### Public menu page
 

@@ -141,7 +141,7 @@ describe("a seated party past its hold", () => {
         restaurantId,
         actorType: "system",
         actorId: null,
-        action: "booking.complete",
+        action: "booking.finish",
         entityType: "booking",
         details: {},
       },
