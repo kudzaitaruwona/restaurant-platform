@@ -298,7 +298,7 @@ table_sessions
 
 orders
   id, restaurant_id, session_id
-  customer_name         text not null CHECK (trim(customer_name) <> '')
+  customer_name         text not null CHECK (trim(customer_name) <> '' AND length(customer_name) <= 100)  -- (proposed, S-37) the length
   rate_used             numeric null       -- exchange rate frozen at order time
   CHECK (rate_used > 0)                    -- (proposed) lower bound, so a frozen rate cannot give a negative ZiG price
   CHECK (rate_used < 'Infinity')           -- orders_rate_used_finite: finite only together with the > 0 above
@@ -308,12 +308,13 @@ order_items
   id, restaurant_id, order_id, menu_item_id
   special_id            → specials null    -- for "how many did the special sell"
   name_snapshot         text
-  quantity              int CHECK (> 0)
-  unit_price_usd, unit_price_zig  numeric  -- frozen
+  quantity              int CHECK (between 1 and 20)  -- (proposed, S-37) the upper bound
+  unit_price_usd, unit_price_zig  numeric null  -- frozen; null for a currency that couldn't be worked out when ordered (no rate yet), as the menu showed it
   CHECK (unit_price_usd >= 0 AND unit_price_zig >= 0)  -- (proposed) lower bound, so a frozen price cannot make a negative bill
   CHECK (unit_price_usd < 'Infinity' AND unit_price_zig < 'Infinity')  -- order_items_prices_finite: finite only together with the >= 0 above
   zig_source            enum(fixed, calculated)
-  note                  text null          -- per item: "no onions"
+  CHECK ((unit_price_zig IS NULL) = (zig_source IS NULL))  -- (proposed, S-37) a price that couldn't be worked out (no rate) is null, with no source
+  note                  text null          -- per item: "no onions"; (proposed, S-37) not blank, up to 200 characters
   status                enum(placed, cooking, done, delivered, voided)
   status_changed_at
   void_reason           text null
@@ -327,4 +328,6 @@ order_items
 - **Closure gate:** a trigger rejects `status → closed` while any item is not `delivered` or `voided`. It applies to every close path.
 - **Force-close:** one transaction voids the remaining items with a reason, then closes the session.
 - **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.
-- **Orders:** an insert fails unless the session is `open`.
+- **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0034). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
+- **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0034).
+- *(Proposed, S-37)* **No hard deletes:** `app_tenant` can't delete from `table_sessions`, `orders` or `order_items`. A cancellation is a void.

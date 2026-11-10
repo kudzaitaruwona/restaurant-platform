@@ -25,24 +25,30 @@ import {
   exchangeRates,
   menuItems,
   onboardingChecklist,
+  orderItems,
+  orders,
   restaurants,
   servicePeriods,
   specials,
   staff,
   staffAuthUser,
+  tableSessions,
 } from "@/db/schema";
 import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
 import { signIn } from "../../../test/integration/auth";
 import {
   aBooking,
+  asTenant,
   bookableRestaurant,
   bookingsOf,
 } from "../../../test/integration/bookings";
 import {
   openOwnerDatabase,
+  openTestDatabase,
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { installFakeServices } from "../../../test/integration/fake-services";
+import { linesOf, orderingRestaurant } from "../../../test/integration/ordering";
 import { statusOf } from "../../../test/integration/http";
 import {
   devIdentities,
@@ -939,6 +945,43 @@ const guestConfirm = "POST /api/r/[slug]/book";
 /** The other: a guest's cancel, by their manage token and nothing else. */
 const guestCancel = "POST /b/[manageToken]";
 
+/**
+ * A table page's writes (spec 06): a scan and an order, by the table's QR token
+ * and nothing else. Tested in "the table page's ordering" below.
+ */
+const tableScan = "POST /api/t/[qrToken]/session";
+const tableOrder = "POST /api/t/[qrToken]/orders";
+
+const postScan = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string>; body?: URLSearchParams },
+) =>
+  (await import("@/app/api/t/[qrToken]/session/route")).POST(
+    request(`/api/t/${qrToken}/session${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: init?.body,
+    }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+const postOrder = async (
+  qrToken: string,
+  fields: Record<string, string>,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/orders/route")).POST(
+    request(`/api/t/${qrToken}/orders${init?.query ?? ""}`, {
+      method: "POST",
+      headers: init?.headers,
+      body: new URLSearchParams(fields),
+    }),
+    { params: Promise.resolve({ qrToken }) },
+  );
+
+const scannedSession = async (qrToken: string) =>
+  (await (await postScan(qrToken)).json()).session as string;
+
 const postCancel = async (
   manageToken: string,
   init?: { query?: string; headers?: Record<string, string>; body?: FormData },
@@ -1200,6 +1243,19 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  // Sessions and orders on the harness's own tables, before those go.
+  const harnessTables = [fixtures.a.tableId, fixtures.b.tableId];
+  const harnessSessions = owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(inArray(tableSessions.tableId, harnessTables));
+  const harnessOrders = owner.db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(inArray(orders.sessionId, harnessSessions));
+  await owner.db.delete(orderItems).where(inArray(orderItems.orderId, harnessOrders));
+  await owner.db.delete(orders).where(inArray(orders.sessionId, harnessSessions));
+  await owner.db.delete(tableSessions).where(inArray(tableSessions.tableId, harnessTables));
   await owner.db
     .delete(bookings)
     .where(inArray(bookings.manageToken, [fixtureManageToken("a"), fixtureManageToken("b")]));
@@ -3141,6 +3197,144 @@ describe("the guest's confirm: the new refusals stay inside the slug's restauran
   });
 });
 
+describe("the table page's ordering", () => {
+  const anOrder = (itemId: string, session: string, extra: Record<string, string> = {}) => ({
+    item: itemId,
+    quantity: "1",
+    name: "Harness customer",
+    session,
+    ...extra,
+  });
+
+  it("needs no session to scan or to order", async () => {
+    session.identity = "";
+    const { qrToken, itemId, restaurantId } = await orderingRestaurant(owner.db);
+
+    const scan = await postScan(qrToken);
+    expect(scan.status).toBe(200);
+    const { session: joined } = await scan.json();
+    expect((await postOrder(qrToken, anOrder(itemId, joined))).status).toBe(201);
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is a 404 for an unknown token, and for a NUL in one, whoever is signed in", async () => {
+    session.identity = aOwner.key;
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => postScan(token))).toBe(404);
+      expect(
+        await statusOf(() =>
+          postOrder(token, anOrder(fixtures.a.itemId, crypto.randomUUID())),
+        ),
+      ).toBe(404);
+    }
+  });
+
+  it("a restaurant or table id in the query, headers or body can't stand in for the token", async () => {
+    session.identity = aOwner.key;
+    const { restaurantId, tableId, itemId } = await orderingRestaurant(owner.db);
+    const named = {
+      query: `?restaurantId=${restaurantId}&tableId=${tableId}`,
+      headers: { "x-restaurant-id": restaurantId },
+    };
+
+    expect(
+      await statusOf(() =>
+        postScan("no-such-token", {
+          ...named,
+          body: new URLSearchParams({ restaurantId, restaurant_id: restaurantId, tableId }),
+        }),
+      ),
+    ).toBe(404);
+    expect(
+      await statusOf(() =>
+        postOrder(
+          "no-such-token",
+          anOrder(itemId, crypto.randomUUID(), { restaurantId, restaurant_id: restaurantId, tableId }),
+          named,
+        ),
+      ),
+    ).toBe(404);
+    const sessions = await owner.db.select().from(tableSessions).where(eq(tableSessions.tableId, tableId));
+    expect(sessions).toEqual([]);
+    expect(await linesOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("the token decides the tenant, not the query, the headers, the body or a session", async () => {
+    session.identity = aOwner.key;
+    const id = fixtures.a.restaurantId;
+    const joined = await scannedSession(fixtureTableToken("b"));
+
+    const response = await postOrder(
+      fixtureTableToken("b"),
+      anOrder(fixtures.b.itemId, joined, { restaurantId: id, restaurant_id: id, tableId: fixtures.a.tableId }),
+      { query: `?restaurantId=${id}`, headers: { "x-restaurant-id": id } },
+    );
+
+    expect(response.status).toBe(201);
+    const [b] = await owner.db
+      .select({ restaurantId: tableSessions.restaurantId, tableId: tableSessions.tableId })
+      .from(tableSessions)
+      .where(eq(tableSessions.id, joined));
+    expect(b).toEqual({ restaurantId: fixtures.b.restaurantId, tableId: fixtures.b.tableId });
+    const ordered = await linesOf(owner.db, fixtures.a.restaurantId);
+    expect(ordered.filter(({ order }) => order.customerName === "Harness customer")).toEqual([]);
+  });
+
+  it("a token only reaches its own restaurant: another restaurant's item or session is refused", async () => {
+    session.identity = "";
+    const mine = await orderingRestaurant(owner.db);
+    const theirs = await orderingRestaurant(owner.db);
+    const myJoin = await scannedSession(mine.qrToken);
+    const theirJoin = await scannedSession(theirs.qrToken);
+
+    expect((await postOrder(mine.qrToken, anOrder(theirs.itemId, myJoin))).status).toBe(409);
+    expect((await postOrder(mine.qrToken, anOrder(mine.itemId, theirJoin))).status).toBe(409);
+    expect(await linesOf(owner.db, mine.restaurantId)).toEqual([]);
+    expect(await linesOf(owner.db, theirs.restaurantId)).toEqual([]);
+  });
+
+  it("restaurant A's context can't see restaurant B's sessions, orders or items", async () => {
+    session.identity = "";
+    const b = await orderingRestaurant(owner.db);
+    const joined = await scannedSession(b.qrToken);
+    await postOrder(b.qrToken, anOrder(b.itemId, joined));
+
+    const app = openTestDatabase();
+    const seenFromA = await asTenant(app.db, fixtures.a.restaurantId, async (tx) => ({
+      sessions: await tx.select().from(tableSessions).where(eq(tableSessions.restaurantId, b.restaurantId)),
+      orders: await tx.select().from(orders).where(eq(orders.restaurantId, b.restaurantId)),
+      items: await tx.select().from(orderItems).where(eq(orderItems.restaurantId, b.restaurantId)),
+    })).finally(() => app.pool.end());
+
+    expect(seenFromA).toEqual({ sessions: [], orders: [], items: [] });
+    expect(await linesOf(owner.db, b.restaurantId)).toHaveLength(1);
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the kitchen lists restaurant A's orders and never B's",
+    async (_key, who) => {
+      session.identity = "";
+      const forA = await scannedSession(fixtureTableToken("a"));
+      const forB = await scannedSession(fixtureTableToken("b"));
+      await postOrder(fixtureTableToken("a"), anOrder(fixtures.a.itemId, forA, { name: "Kitchen A guest" }));
+      await postOrder(fixtureTableToken("b"), anOrder(fixtures.b.itemId, forB, { name: "Kitchen B guest" }));
+
+      session.identity = who.key;
+      const { KitchenScreen } = await import("@/app/dashboard/kitchen/kitchen-screen");
+      const html = renderToStaticMarkup(await KitchenScreen());
+
+      expect(html).toContain("Kitchen A guest");
+      expect(html).not.toContain("Kitchen B guest");
+    },
+  );
+
+  it("the kitchen is a 401 with no session", async () => {
+    session.identity = "";
+    const { KitchenScreen } = await import("@/app/dashboard/kitchen/kitchen-screen");
+    expect(await statusOf(() => KitchenScreen())).toBe(401);
+  });
+});
+
 describe("the guest's cancel", () => {
   const MINUTE = 60_000;
   /** A booking far enough ahead to cancel, on a restaurant of its own. */
@@ -3386,6 +3580,8 @@ describe("harness coverage", () => {
       ...publicRoutes.map((route) => route.name),
       guestConfirm,
       guestCancel,
+      tableScan,
+      tableOrder,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());

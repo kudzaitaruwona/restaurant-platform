@@ -56,6 +56,7 @@ export async function Dashboard() {
         <nav className="mt-2 flex flex-wrap gap-4 text-sm underline">
           <Link href="/dashboard/menu">Menu</Link>
           <Link href="/dashboard/bookings">Bookings</Link>
+          <Link href="/dashboard/kitchen">Kitchen</Link>
           {tenant.role === "owner" && (
             <>
               <Link href="/dashboard/tables">Tables</Link>

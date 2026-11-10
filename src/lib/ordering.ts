@@ -1,0 +1,267 @@
+import "server-only";
+import { and, count, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { z } from "zod";
+import {
+  diningTables,
+  menuItems,
+  orderItems,
+  orders,
+  restaurants,
+  specials,
+  tableSessions,
+} from "@/db/schema";
+import { latestRate } from "@/lib/exchange-rate";
+import {
+  effectiveUsd,
+  effectiveZig,
+  type Pricing,
+  specialUsd,
+  specialZig,
+} from "@/lib/pricing";
+import { resolvePublicToken } from "@/lib/tenant/public";
+import { type TenantTransaction, withTenant } from "@/lib/tenant/scope";
+
+/**
+ * QR ordering for the customer (spec 06): everything a table's page does with
+ * no session, keyed by the table's QR token and nothing else. The token names
+ * the restaurant through the public seam (S-31), and the table is then found by
+ * that token inside the restaurant, under RLS. Nothing from the request can name
+ * a restaurant, a table or a session to write to.
+ *
+ * A public path, so it imports the tenant scope, never "@/lib/tenant", which
+ * would load sign-in (S-32).
+ */
+
+/** The live table a token names, inside its restaurant: none once archived or regenerated. */
+async function tableOf(tx: TenantTransaction, qrToken: string) {
+  const [table] = await tx
+    .select({ id: diningTables.id })
+    .from(diningTables)
+    .where(and(eq(diningTables.qrToken, qrToken), isNull(diningTables.archivedAt)));
+  return table;
+}
+
+/**
+ * A scan (spec 06): opens the table's session, or joins the one already open,
+ * and either way marks it active now. One statement, so two phones scanning a
+ * free table at once can't open two: the table lock
+ * (table_sessions_one_open_per_table) makes the second wait for the first, then
+ * join it. Undefined for a token that leads to no live table.
+ */
+export async function joinTableSession(qrToken: string) {
+  const tenant = await resolvePublicToken("table", qrToken);
+  if (!tenant) return undefined;
+  return withTenant(tenant, async (tx) => {
+    const table = await tableOf(tx, qrToken);
+    if (!table) return undefined;
+    const [session] = await tx
+      .insert(tableSessions)
+      .values({ restaurantId: tenant.restaurantId, tableId: table.id })
+      .onConflictDoUpdate({
+        target: tableSessions.tableId,
+        targetWhere: sql`${tableSessions.status} = 'open'`,
+        set: { lastActivityAt: sql`now()` },
+      })
+      .returning({ id: tableSessions.id });
+    return { sessionId: session.id };
+  });
+}
+
+// --- placing an order ---------------------------------------------------------
+
+/**
+ * The order rate limit *(proposed, S-37)*: a photographed code could otherwise
+ * flood a kitchen. Per session, so a busy table of real customers is the only
+ * thing it can slow down.
+ */
+export const ORDERS_PER_WINDOW = 10;
+const WINDOW = "5 minutes";
+const WINDOW_SECONDS = 300;
+
+const messages = {
+  name: "Enter a name for the waiter, up to 100 characters.",
+  quantity: "Choose a quantity from 1 to 20.",
+  note: "Keep the note to 200 characters.",
+  item: "Choose an item from the menu.",
+  session: "Scan the code again, then place your order.",
+};
+
+/**
+ * Everything an order request may say (spec 06): which item, how many, a note,
+ * the customer's name, and the session the page joined, which is only compared
+ * with the table's open session, never used to find one. Anything else in the
+ * request, a price, a rate or a restaurant, is never read.
+ */
+const orderRequest = z.object({
+  item: z.uuid(messages.item),
+  quantity: z
+    .string(messages.quantity)
+    .regex(/^[0-9]{1,2}$/, messages.quantity)
+    .transform(Number)
+    .refine((n) => n >= 1 && n <= 20, messages.quantity),
+  // Blank is no note.
+  note: z
+    .string()
+    .trim()
+    .max(200, messages.note)
+    .optional()
+    .transform((note) => note || null),
+  name: z.string(messages.name).trim().min(1, messages.name).max(100, messages.name),
+  session: z.uuid(messages.session),
+});
+
+export type OrderRequest = z.output<typeof orderRequest>;
+
+export const parseOrderRequest = (form: FormData) => {
+  const result = orderRequest.safeParse(Object.fromEntries(form));
+  return result.success
+    ? ({ success: true, data: result.data } as const)
+    : ({ success: false, message: result.error.issues[0].message } as const);
+};
+
+export type OrderOutcome =
+  | { outcome: "placed"; placed: { name: string; quantity: number } }
+  | { outcome: "no_table" }
+  | { outcome: "session_changed" }
+  | { outcome: "unavailable" }
+  | { outcome: "rate_limited"; retryAfterSeconds: number };
+
+/** Thrown inside the transaction so that a refusal rolls back whatever it had written. */
+class Refused extends Error {
+  constructor(readonly outcome: Exclude<OrderOutcome, { outcome: "placed" }>) {
+    super(outcome.outcome);
+  }
+}
+
+/**
+ * What a line freezes (spec 06), worked out from the database at the moment of
+ * the order, with the same functions the menu shows prices with: the special
+ * live now, if any, by spec 00's precedence, else the item's own prices.
+ * Undefined for an item that can't be ordered now: archived, sold out, another
+ * restaurant's (RLS hides it), or a bundle outside its special's window.
+ */
+async function pricedItem(tx: TenantTransaction, restaurantId: string, itemId: string) {
+  const [item] = await tx
+    .select({
+      name: menuItems.name,
+      priceUsd: menuItems.priceUsd,
+      priceZig: menuItems.priceZig,
+      visibility: menuItems.visibility,
+    })
+    .from(menuItems)
+    .where(
+      and(
+        eq(menuItems.restaurantId, restaurantId),
+        eq(menuItems.id, itemId),
+        isNull(menuItems.archivedAt),
+        eq(menuItems.available, true),
+      ),
+    );
+  if (!item) return undefined;
+  // D-05 means at most one of these.
+  const [special] = await tx
+    .select({ id: specials.id, priceUsd: specials.specialPriceUsd, priceZig: specials.specialPriceZig })
+    .from(specials)
+    .where(
+      and(
+        eq(specials.restaurantId, restaurantId),
+        eq(specials.menuItemId, itemId),
+        eq(specials.active, true),
+        or(isNull(specials.startsAt), lte(specials.startsAt, sql`now()`)),
+        or(isNull(specials.endsAt), gt(specials.endsAt, sql`now()`)),
+      ),
+    );
+  if (item.visibility === "special_only" && !special) return undefined;
+
+  const [steps] = await tx
+    .select({ zigStep: restaurants.zigRoundingStep, usdStep: restaurants.usdRoundingStep })
+    .from(restaurants)
+    .where(eq(restaurants.id, restaurantId));
+  const rate = (await latestRate(tx, restaurantId))?.usdToZig ?? null;
+  const pricing: Pricing = { rate, ...steps };
+  const zig = special ? specialZig(item, special, pricing) : effectiveZig(item, pricing);
+  return {
+    name: item.name,
+    specialId: special?.id ?? null,
+    unitPriceUsd: special ? specialUsd(item, special, pricing) : effectiveUsd(item, pricing),
+    unitPriceZig: zig?.amount ?? null,
+    zigSource: zig?.source ?? null,
+    rate,
+  };
+}
+
+/**
+ * Places one item (spec 06) into the open session of the table the token names,
+ * in one transaction, so a refusal writes nothing. The session is found by the
+ * token: the one the page says it joined must be that session, or the order is
+ * refused, so a stale tab can't order into a new party's session. Taking the
+ * session's row (to mark it active) also queues orders for one session behind
+ * each other, so the rate limit's count can't be raced.
+ */
+export async function placeOrder(qrToken: string, request: OrderRequest): Promise<OrderOutcome> {
+  const tenant = await resolvePublicToken("table", qrToken);
+  if (!tenant) return { outcome: "no_table" };
+  const { restaurantId } = tenant;
+  try {
+    return await withTenant(tenant, async (tx) => {
+      const table = await tableOf(tx, qrToken);
+      if (!table) throw new Refused({ outcome: "no_table" });
+
+      const [session] = await tx
+        .update(tableSessions)
+        .set({ lastActivityAt: sql`now()` })
+        .where(and(eq(tableSessions.tableId, table.id), eq(tableSessions.status, "open")))
+        .returning({ id: tableSessions.id });
+      if (session?.id !== request.session) throw new Refused({ outcome: "session_changed" });
+
+      const [recent] = await tx
+        .select({
+          count: count(),
+          retryAfter: sql<number | null>`ceil(extract(epoch from min(${orders.placedAt}) + ${WINDOW}::interval - now()))::int`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.restaurantId, restaurantId),
+            eq(orders.sessionId, session.id),
+            gt(orders.placedAt, sql`now() - ${WINDOW}::interval`),
+          ),
+        );
+      if (recent.count >= ORDERS_PER_WINDOW) {
+        throw new Refused({
+          outcome: "rate_limited",
+          retryAfterSeconds: Math.min(Math.max(recent.retryAfter ?? WINDOW_SECONDS, 1), WINDOW_SECONDS),
+        });
+      }
+
+      const priced = await pricedItem(tx, restaurantId, request.item);
+      if (!priced) throw new Refused({ outcome: "unavailable" });
+
+      const [order] = await tx
+        .insert(orders)
+        .values({
+          restaurantId,
+          sessionId: session.id,
+          customerName: request.name,
+          rateUsed: priced.rate,
+        })
+        .returning({ id: orders.id });
+      await tx.insert(orderItems).values({
+        restaurantId,
+        orderId: order.id,
+        menuItemId: request.item,
+        specialId: priced.specialId,
+        nameSnapshot: priced.name,
+        quantity: request.quantity,
+        unitPriceUsd: priced.unitPriceUsd,
+        unitPriceZig: priced.unitPriceZig,
+        zigSource: priced.zigSource,
+        note: request.note,
+      });
+      return { outcome: "placed" as const, placed: { name: priced.name, quantity: request.quantity } };
+    });
+  } catch (error) {
+    if (error instanceof Refused) return error.outcome;
+    throw error;
+  }
+}

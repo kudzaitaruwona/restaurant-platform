@@ -175,18 +175,26 @@ describe("public menu page weight, 30 items with photos", () => {
     expect(bytes).toBeLessThan(BUDGET_BYTES);
   });
 
-  it("a table's code serves the same page, so the same budget", () => {
-    expect(tableBody).toBe(body);
-    expect(Buffer.byteLength(tableBody)).toBeLessThan(BUDGET_BYTES);
+  it("a table's code serves the same page plus ordering, script included, under the same budget", () => {
+    const bytes = Buffer.byteLength(tableBody);
+    console.log(
+      `table page with ordering: ${bytes} bytes raw, ${gzipSync(tableBody).length} gzipped, budget ${BUDGET_BYTES}`,
+    );
+    expect(tableBody).toContain(body.slice(0, body.indexOf("<main>")));
+    expect(tableBody.match(/class="add"/g)?.length).toBeGreaterThanOrEqual(30);
+    // The script is inline, so this is all of it: there's nothing more to fetch.
+    expect(tableBody.match(/<script/g)).toHaveLength(1);
+    expect(tableBody).not.toMatch(/<script[^>]* src=/);
+    expect(bytes).toBeLessThan(BUDGET_BYTES);
   });
 
   it("a table's page with Book again is still under the budget", () => {
     expect(bookAgainBody).toContain("Book again");
-    expect(bookAgainBody).not.toBe(body);
+    expect(bookAgainBody).not.toBe(tableBody);
     expect(Buffer.byteLength(bookAgainBody)).toBeLessThan(BUDGET_BYTES);
   });
 
-  it("loads every image lazily at a fixed size, and ships no script", () => {
+  it("loads every image lazily at a fixed size, and the generic menu ships no script", () => {
     const images = body.match(/<img [^>]*>/g) ?? [];
     for (const image of images) {
       expect(image).toContain('loading="lazy"');

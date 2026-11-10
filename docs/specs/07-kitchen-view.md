@@ -10,7 +10,9 @@ The kitchen sees every incoming item with its table and notes, and moves items t
 - Orders arrive with no staff approval (D-01, settled as S-36), so the board is where staff first see a suspicious order, and can reject it from here.
 - Status is tracked per item: placed → cooking → done → delivered.
 
-## Layout `/admin/kitchen`
+## Layout `/dashboard/kitchen`
+Staff pages live under `/dashboard/*` (D-10). Ticket #69 built this path as a plain list of placed items (table label, quantity × item name, note, customer name), for owner and staff, linked from the dashboard; the board below grows from it.
+
 - Designed for a tablet in landscape, which staff leave logged in.
 - **Three columns:** Placed · Cooking · Done. Delivered items disappear from the board.
 - Each card is one item: table label (large), quantity × item name, the note **highlighted**, customer name, and how long ago it was ordered.
