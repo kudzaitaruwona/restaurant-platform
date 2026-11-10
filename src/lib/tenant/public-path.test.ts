@@ -34,6 +34,7 @@ describe("the public path", () => {
     ["the guest's booking route", () => import("@/app/api/r/[slug]/book/route")],
     ["the table page's scan", () => import("@/app/api/t/[qrToken]/session/route")],
     ["the table page's order", () => import("@/app/api/t/[qrToken]/orders/route")],
+    ["the table page's tracker", () => import("@/app/api/t/[qrToken]/tracker/route")],
     ["the ordering it does", () => import("@/lib/ordering")],
     ["the bookings it reads", () => import("@/lib/bookings")],
     ["the page it renders", () => import("@/lib/public-menu")],

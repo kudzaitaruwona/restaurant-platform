@@ -951,6 +951,16 @@ const guestCancel = "POST /b/[manageToken]";
  */
 const tableScan = "POST /api/t/[qrToken]/session";
 const tableOrder = "POST /api/t/[qrToken]/orders";
+const tableTracker = "GET /api/t/[qrToken]/tracker";
+
+const getTracker = async (
+  qrToken: string,
+  init?: { query?: string; headers?: Record<string, string> },
+) =>
+  (await import("@/app/api/t/[qrToken]/tracker/route")).GET(
+    request(`/api/t/${qrToken}/tracker${init?.query ?? ""}`, { headers: init?.headers }),
+    { params: Promise.resolve({ qrToken }) },
+  );
 
 const postScan = async (
   qrToken: string,
@@ -3310,6 +3320,46 @@ describe("the table page's ordering", () => {
     expect(await linesOf(owner.db, b.restaurantId)).toHaveLength(1);
   });
 
+  it("the tracker needs no session, and is a 404 for an unknown token, and for a NUL in one", async () => {
+    session.identity = "";
+    const { qrToken, itemId } = await orderingRestaurant(owner.db);
+    const joined = await scannedSession(qrToken);
+    await postOrder(qrToken, anOrder(itemId, joined, { name: "Tracked guest" }));
+
+    const tracked = await getTracker(qrToken);
+    expect(tracked.status).toBe(200);
+    expect(JSON.stringify(await tracked.json())).toContain("Tracked guest");
+    session.identity = aOwner.key;
+    for (const token of ["no-such-token", "a\0b"]) {
+      expect(await statusOf(() => getTracker(token))).toBe(404);
+    }
+  });
+
+  it("the tracker's token decides the tenant, not the query or the headers: restaurant A's guests never show on B's table", async () => {
+    session.identity = aOwner.key;
+    const forA = await scannedSession(fixtureTableToken("a"));
+    const forB = await scannedSession(fixtureTableToken("b"));
+    await postOrder(fixtureTableToken("a"), anOrder(fixtures.a.itemId, forA, { name: "Tracker A guest" }));
+    await postOrder(fixtureTableToken("b"), anOrder(fixtures.b.itemId, forB, { name: "Tracker B guest" }));
+    const a = fixtures.a;
+
+    const seenOnB = JSON.stringify(
+      await (
+        await getTracker(fixtureTableToken("b"), {
+          query: `?restaurantId=${a.restaurantId}&tableId=${a.tableId}&session=${forA}`,
+          headers: { "x-restaurant-id": a.restaurantId },
+        })
+      ).json(),
+    );
+
+    expect(seenOnB).toContain("Tracker B guest");
+    expect(seenOnB).not.toContain("Tracker A guest");
+    expect(seenOnB).not.toContain(forA);
+    const seenOnA = JSON.stringify(await (await getTracker(fixtureTableToken("a"))).json());
+    expect(seenOnA).toContain("Tracker A guest");
+    expect(seenOnA).not.toContain("Tracker B guest");
+  });
+
   it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
     "%s: the kitchen lists restaurant A's orders and never B's",
     async (_key, who) => {
@@ -3582,6 +3632,7 @@ describe("harness coverage", () => {
       guestCancel,
       tableScan,
       tableOrder,
+      tableTracker,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());

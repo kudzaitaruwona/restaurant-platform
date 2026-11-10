@@ -77,7 +77,7 @@ describe("POST /api/t/[qrToken]/orders", () => {
     const response = await order({ note: "  no onions  ", name: "  Tariro  " });
 
     expect(response.status).toBe(201);
-    expect(await response.json()).toEqual({ placed: { name: "Beef stew", quantity: 2 } });
+    expect(await response.json()).toEqual({ placed: { lines: [{ name: "Beef stew", quantity: 2 }] } });
     const [{ line, order: placed }] = await linesOf(owner.db, restaurantId);
     expect(placed).toMatchObject({ sessionId: session, customerName: "Tariro", rateUsed: "26.2" });
     expect(line).toMatchObject({
@@ -91,6 +91,119 @@ describe("POST /api/t/[qrToken]/orders", () => {
       note: "no onions",
       status: "placed",
     });
+  });
+
+  it("places several items as one order, each line with its own quantity, note and frozen price", async () => {
+    const { restaurantId, itemId, categoryId, qrToken, session } = await seated();
+    const [{ id: rice }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId, categoryId, name: "Rice", priceUsd: "3" })
+      .returning({ id: menuItems.id });
+
+    const body = new URLSearchParams();
+    for (const [item, quantity, note] of [
+      [itemId, "2", "no onions"],
+      [rice, "1", ""],
+      [itemId, "1", "extra gravy"],
+    ]) {
+      body.append("item", item);
+      body.append("quantity", quantity);
+      body.append("note", note);
+    }
+    body.set("name", "Tariro");
+    body.set("session", session);
+    const response = await POST(
+      new Request(`http://localhost/api/t/${qrToken}/orders`, { method: "POST", body }),
+      { params: Promise.resolve({ qrToken }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      placed: {
+        lines: [
+          { name: "Beef stew", quantity: 2 },
+          { name: "Rice", quantity: 1 },
+          { name: "Beef stew", quantity: 1 },
+        ],
+      },
+    });
+    const lines = await linesOf(owner.db, restaurantId);
+    expect(new Set(lines.map(({ order }) => order.id)).size).toBe(1);
+    expect(lines[0].order).toMatchObject({ sessionId: session, customerName: "Tariro", rateUsed: "26.2" });
+    expect(
+      lines
+        .map(({ line }) => [line.nameSnapshot, line.quantity, line.note, line.unitPriceUsd, line.unitPriceZig])
+        .sort(),
+    ).toEqual(
+      [
+        ["Beef stew", 2, "no onions", "8", "210"],
+        ["Rice", 1, null, "3", "80"],
+        ["Beef stew", 1, "extra gravy", "8", "210"],
+      ].sort(),
+    );
+  });
+
+  it("refuses the whole order, writing nothing, when one line can't be ordered", async () => {
+    const { restaurantId, itemId, categoryId, qrToken, session } = await seated();
+    const [{ id: gone }] = await owner.db
+      .insert(menuItems)
+      .values({ restaurantId, categoryId, name: "Gone", priceUsd: "3", available: false })
+      .returning({ id: menuItems.id });
+    const body = new URLSearchParams([
+      ["item", itemId],
+      ["quantity", "1"],
+      ["item", gone],
+      ["quantity", "1"],
+      ["name", "Tariro"],
+      ["session", session],
+    ]);
+
+    const response = await POST(
+      new Request(`http://localhost/api/t/${qrToken}/orders`, { method: "POST", body }),
+      { params: Promise.resolve({ qrToken }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "unavailable", item: gone });
+    expect(await linesOf(owner.db, restaurantId)).toEqual([]);
+    expect(await owner.db.select().from(orders).where(eq(orders.restaurantId, restaurantId))).toEqual([]);
+  });
+
+  it.each([
+    ["no lines", 0, 0],
+    ["21 lines", 21, 21],
+    ["a quantity missing for a line", 1, 0],
+  ])("is a 400 for %s", async (_what, items, quantities) => {
+    const { restaurantId, itemId, qrToken, session } = await seated();
+    const body = new URLSearchParams([["name", "Tariro"], ["session", session]]);
+    for (let n = 0; n < items; n++) body.append("item", itemId);
+    for (let n = 0; n < quantities; n++) body.append("quantity", "1");
+
+    const response = await POST(
+      new Request(`http://localhost/api/t/${qrToken}/orders`, { method: "POST", body }),
+      { params: Promise.resolve({ qrToken }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await linesOf(owner.db, restaurantId)).toEqual([]);
+  });
+
+  it("takes an order of 20 lines with long notes: the body limit allows it", async () => {
+    const { restaurantId, itemId, qrToken, session } = await seated();
+    const body = new URLSearchParams([["name", "Tariro"], ["session", session]]);
+    for (let n = 0; n < 20; n++) {
+      body.append("item", itemId);
+      body.append("quantity", "1");
+      body.append("note", "é".repeat(200));
+    }
+
+    const response = await POST(
+      new Request(`http://localhost/api/t/${qrToken}/orders`, { method: "POST", body }),
+      { params: Promise.resolve({ qrToken }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(20);
   });
 
   it("bumps the session's last activity", async () => {
@@ -384,7 +497,7 @@ describe("POST /api/t/[qrToken]/orders", () => {
   it("refuses a body over the size limit with a 413", async () => {
     const { order, restaurantId } = await seated();
 
-    expect((await order({ note: "x".repeat(10_000) })).status).toBe(413);
+    expect((await order({ note: "x".repeat(100_000) })).status).toBe(413);
     expect(await linesOf(owner.db, restaurantId)).toEqual([]);
   });
 

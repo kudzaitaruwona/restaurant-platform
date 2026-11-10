@@ -116,8 +116,8 @@ afterAll(async () => {
 });
 
 /** Each Add button, the order form, its styles and its script: all ordering adds. */
-const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" hidden>Add<\/button>/g;
-const orderBlock = /\n<style>[^<]*<\/style>\n<form id="order"[\s\S]*<\/script>\n/;
+const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden>Add<\/button>/g;
+const orderBlock = /\n<style>[^<]*<\/style>\n<section id="tracker"[\s\S]*<\/script>\n/;
 const withoutOrdering = (body: string) => body.replace(addButton, "").replace(orderBlock, "");
 
 const genericPage = (menuToken: string) =>
@@ -153,20 +153,22 @@ describe("/t/{qr_token}", () => {
     const body = await (await scan(qrToken)).text();
 
     expect(body).toContain(
-      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" hidden>Add</button>`,
+      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>Add</button>`,
     );
     expect(body).not.toContain(soldOut.id);
     expect(body.match(addButton)).toHaveLength(1);
   });
 
-  it("has a place-order step for one item and a name, which works only with its script", async () => {
+  it("has a cart, a name and a tracker, which work only with its script", async () => {
     const { qrToken } = await newRestaurant("Ordering", "Beef stew");
 
     const body = await (await scan(qrToken)).text();
 
     expect(body).toMatch(/<form id="order"[^>]* hidden>/);
-    expect(body).toContain('name="quantity"');
-    expect(body).toContain('name="note" maxlength="200"');
+    expect(body).toContain('id="cart"');
+    expect(body).toContain('id="tracker"');
+    expect(body).toContain('maxLength = 200');
+    expect(body).toContain("Pay at the table with your waiter as usual.");
     expect(body).toContain('name="name" maxlength="100" required');
     expect(body).toContain("Place order");
     // One script, and it talks only to the ordering endpoints, never to the page.
