@@ -7,14 +7,17 @@ import {
   arrivals,
   type BoardItem,
   boardColumns,
+  cardMenuActions,
   type BoardStatus,
   type ItemStatus,
+  itemsOfOrder,
   nextStatus,
   previousStatus,
   sendMove,
   sendReject,
   sendVoid,
   VOID_REASON_MAX,
+  voidReasonFrom,
 } from "@/lib/kitchen-board";
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
 
@@ -130,7 +133,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
 
   /** Void an item, or reject its whole order: every one of its items leaves the board. */
   async function override(item: BoardItem, kind: "void" | "reject", reason: string) {
-    const order = [...current.current.values()].filter((it) => it.orderId === item.orderId);
+    const order = itemsOfOrder(current.current, item.orderId);
     const busy = kind === "void" ? [item] : order;
     setPending((was) => new Set([...was, ...busy.map((it) => it.id)]));
     const deps = {
@@ -360,8 +363,9 @@ function CardMenu({
         className="flex flex-col gap-2 border-t p-2"
         onSubmit={(event) => {
           event.preventDefault();
-          if (reason.trim() === "") return;
-          void (asking === "void" ? onVoid : onReject)(reason);
+          const trimmed = voidReasonFrom(reason);
+          if (trimmed === null) return;
+          void (asking === "void" ? onVoid : onReject)(trimmed);
         }}
       >
         <label className="flex flex-col gap-1 text-sm font-medium">
@@ -381,7 +385,7 @@ function CardMenu({
         <div className="flex gap-2">
           <button
             type="submit"
-            disabled={pending || reason.trim() === ""}
+            disabled={pending || voidReasonFrom(reason) === null}
             className="rounded-md bg-red-700 px-3 py-2 font-medium text-white disabled:opacity-60"
           >
             {words}
@@ -394,34 +398,32 @@ function CardMenu({
     );
   }
 
+  const redButton = "rounded-md border border-red-700 px-3 py-2 font-medium text-red-700";
   return (
     <div className="flex flex-wrap gap-2 border-t p-2">
-      {back && (
-        <button
-          type="button"
-          disabled={pending}
-          className="rounded-md border px-3 py-2 font-medium"
-          onClick={onBack}
-        >
-          Move back to {statusNames[back]}
-        </button>
+      {cardMenuActions(item.status).map((action) =>
+        action === "back" && back ? (
+          <button
+            key={action}
+            type="button"
+            disabled={pending}
+            className="rounded-md border px-3 py-2 font-medium"
+            onClick={onBack}
+          >
+            Move back to {statusNames[back]}
+          </button>
+        ) : action === "void" || action === "reject" ? (
+          <button
+            key={action}
+            type="button"
+            disabled={pending}
+            className={redButton}
+            onClick={() => setAsking(action)}
+          >
+            {action === "void" ? "Void item…" : "Reject order…"}
+          </button>
+        ) : null,
       )}
-      <button
-        type="button"
-        disabled={pending}
-        className="rounded-md border border-red-700 px-3 py-2 font-medium text-red-700"
-        onClick={() => setAsking("void")}
-      >
-        Void item…
-      </button>
-      <button
-        type="button"
-        disabled={pending}
-        className="rounded-md border border-red-700 px-3 py-2 font-medium text-red-700"
-        onClick={() => setAsking("reject")}
-      >
-        Reject order…
-      </button>
       <button type="button" className="rounded-md px-3 py-2" onClick={onClose}>
         Close
       </button>

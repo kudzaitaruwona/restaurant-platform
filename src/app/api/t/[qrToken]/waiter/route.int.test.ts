@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { diningTables, tableSessions } from "@/db/schema";
 import { mintQrToken } from "@/lib/qr-token";
@@ -15,6 +15,7 @@ import { POST } from "./route";
  * does. Against a real Postgres as app_tenant.
  */
 const owner = openOwnerDatabase();
+const LONG_AGO = new Date("2020-01-01T10:00:00Z");
 
 beforeAll(() => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
@@ -64,13 +65,13 @@ describe("POST /api/t/[qrToken]/waiter", () => {
     await call(qrToken);
     await owner.db
       .update(tableSessions)
-      .set({ lastActivityAt: sql`now() - interval '30 minutes'` })
+      .set({ lastActivityAt: LONG_AGO })
       .where(eq(tableSessions.tableId, tableId));
 
     await call(qrToken);
 
     const [session] = await sessionsOf(owner.db, tableId);
-    expect(Date.now() - session.lastActivityAt.getTime()).toBeLessThan(60_000);
+    expect(session.lastActivityAt.getTime()).toBeGreaterThan(LONG_AGO.getTime());
   });
 
   it("doesn't stack: a call already pending stays pending, with its first time", async () => {

@@ -123,6 +123,15 @@ export function boardColumns(board: ReadonlyMap<string, BoardItem>) {
   });
 }
 
+/** What a card's menu offers for an item in `status` (#73, spec 07), in order. */
+export function cardMenuActions(status: ItemStatus): ("back" | "void" | "reject")[] {
+  return previousStatus(status) ? ["back", "void", "reject"] : ["void", "reject"];
+}
+
+/** Every item of an order that the board holds: what a reject takes off it. */
+export const itemsOfOrder = (board: ReadonlyMap<string, BoardItem>, orderId: string) =>
+  [...board.values()].filter((it) => it.orderId === orderId);
+
 /** How long a new card flashes. */
 export const FLASH_MS = 4_000;
 

@@ -74,6 +74,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void, reject an order (S-36) and reopen.
 - *(proposed, S-40)* every order item status change, kitchen moves and mark delivered (`order_item.status`, from and to)
 - *(proposed, #73)* a void as `order_item.void` per voided item (its order, the status it left and the reason), and a reject as `order.reject` (the reason and the items it voided) besides each item's `order_item.void`. An entered platform admin is recorded as one (S-29); the item's `voided_by` is their shadow staff row.
+- *(proposed, #77)* dismissing a table's "Call a waiter" (`table_session.waiter_dismiss`, on the session), only when a call was pending; a dismissal with nothing pending writes no entry.
 
 ## Stack (decided, D-07)
 - Next.js App Router, TypeScript, Tailwind, shadcn/ui, deployed on Vercel

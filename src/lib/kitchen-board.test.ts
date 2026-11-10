@@ -6,7 +6,9 @@ import {
   arrivals,
   boardColumns,
   FLASH_MS,
+  cardMenuActions,
   isMove,
+  itemsOfOrder,
   nextStatus,
   previousStatus,
   sendMove,
@@ -370,5 +372,31 @@ describe("voiding and rejecting from the board", () => {
 
     expect(applied).toEqual([]);
     expect(said.at(-1)).toMatch(/didn't reach the server/);
+  });
+});
+
+describe("the card menu (#73)", () => {
+  it("offers Void and Reject on a placed card, with nothing to move back", () => {
+    expect(cardMenuActions("placed")).toEqual(["void", "reject"]);
+  });
+
+  it("offers Move back as well on cooking and done cards", () => {
+    expect(cardMenuActions("cooking")).toEqual(["back", "void", "reject"]);
+    expect(cardMenuActions("done")).toEqual(["back", "void", "reject"]);
+  });
+
+  it("takes a blank reason as no reason, so the form refuses it", () => {
+    expect(voidReasonFrom("   ")).toBeNull();
+    expect(voidReasonFrom("")).toBeNull();
+  });
+
+  it("finds every one of an order's items on the board, for a reject", () => {
+    const first = item({ id: "a", orderId: "order-1" });
+    const second = item({ id: "b", orderId: "order-1", status: "done" });
+    const other = item({ id: "c", orderId: "order-2" });
+    const board = new Map([first, second, other].map((it) => [it.id, it]));
+
+    expect(itemsOfOrder(board, "order-1")).toEqual([first, second]);
+    expect(itemsOfOrder(board, "order-3")).toEqual([]);
   });
 });
