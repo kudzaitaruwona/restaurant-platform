@@ -4,6 +4,8 @@
  * imports: the board's client bundle loads this.
  */
 
+import { FORM_FETCH_HEADER } from "@/lib/form-response";
+
 export type ItemStatus = "placed" | "cooking" | "done" | "delivered" | "voided";
 
 /** One card: one line of an order, as the board needs it. Times are ISO strings. */
@@ -205,3 +207,66 @@ export async function sendMove(
     deps.say("That didn't reach the server. Try again.");
   }
 }
+
+/** A void's or reject's reason (#73, proposed): up to 200 characters, like a note. */
+export const VOID_REASON_MAX = 200;
+
+/**
+ * The reason a void or reject form sent, trimmed, or null when it is missing,
+ * blank or too long. Postgres's order_items_void_recorded holds the same rule.
+ */
+export function voidReasonFrom(value: FormDataEntryValue | null): string | null {
+  if (typeof value !== "string") return null;
+  const reason = value.trim();
+  return reason !== "" && reason.length <= VOID_REASON_MAX ? reason : null;
+}
+
+type OverrideDeps = {
+  fetch: (
+    url: string,
+    init: { method: string; body: FormData; headers?: Record<string, string> },
+  ) => Promise<Response>;
+  apply: (items: BoardItem[]) => void;
+  say: (message: string | undefined) => void;
+  poller: { refresh: () => void } | null;
+};
+
+/**
+ * Posts a void or reject as a form, as ActionForm does (FORM_FETCH_HEADER
+ * asks for a 204, not a redirect). On success the given items leave the board at
+ * once, as voided; a refusal says why and refreshes the board. Whether it worked.
+ */
+async function sendOverride(url: string, reason: string, gone: BoardItem[], deps: OverrideDeps) {
+  deps.say(undefined);
+  try {
+    const body = new FormData();
+    body.set("reason", reason);
+    const response = await deps.fetch(url, {
+      method: "POST",
+      body,
+      headers: { [FORM_FETCH_HEADER]: "1" },
+    });
+    if (response.ok) {
+      deps.apply(gone.map((item) => ({ ...item, status: "voided" as const })));
+      return true;
+    }
+    const answer = (await response.json().catch(() => ({}))) as { error?: string };
+    deps.say(answer.error ?? "That didn't work. Try again.");
+    deps.poller?.refresh();
+    return false;
+  } catch {
+    deps.say("That didn't reach the server. Try again.");
+    return false;
+  }
+}
+
+/** Void one item from its card's menu (#73), with a reason. */
+export const sendVoid = (item: BoardItem, reason: string, deps: OverrideDeps) =>
+  sendOverride(`/api/order-items/${item.id}/void`, reason, [item], deps);
+
+/**
+ * Reject the card's whole order (#73, S-36), with a reason. `onBoard` is the
+ * order's items the board shows, which all leave it.
+ */
+export const sendReject = (item: BoardItem, onBoard: BoardItem[], reason: string, deps: OverrideDeps) =>
+  sendOverride(`/api/orders/${item.orderId}/reject`, reason, onBoard, deps);

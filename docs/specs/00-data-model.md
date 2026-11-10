@@ -323,7 +323,7 @@ order_items
   status_changed_at
   void_reason           text null
   voided_by             → staff null
-  CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))
+  CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))  -- order_items_void_recorded; (proposed, #73) the reason also not blank and up to 200 characters
   change_xid            bigint             -- (proposed, #71) the kitchen board's change stamp: the id of the transaction that last wrote the row, set by a trigger
   in_play               bool not null      -- (proposed, S-40, migration 0042) GENERATED ALWAYS AS (status NOT IN ('delivered', 'voided')) STORED, what the kitchen board's load reads its line ids on;
   -- an index on (restaurant_id) WHERE in_play. Not a filter on status: under RLS the enum's comparisons, not leakproof, get no statistics (S-40 in detail).
@@ -338,4 +338,5 @@ order_items
 - **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0040). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
 - **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0040). *(Proposed, S-40)* The same triggers refuse a change to a line's `order_id` and an order's `session_id`, so money can't move between bills (`order_items_frozen`, `orders_frozen`).
 - *(Proposed, #71)* **Kitchen change stamp:** a trigger sets `order_items.change_xid` to the writing transaction's id on every insert and update, whatever the writer sends (`order_items_change_stamp`, migration 0041). The board's poll asks for stamps at or above the oldest transaction still running at its previous poll, so a line written by a transaction that commits late is never skipped (S-40 in detail).
+- *(Proposed, #73)* **A void is final:** a trigger refuses any change to a voided line's `status`, `void_reason` or `voided_by`, and voiding a `delivered` line, whoever asks (`order_items_void_final`, migration 0043). A voided line comes off the bill and keeps its first reason; a delivered one was eaten.
 - *(Proposed, S-40)* **No hard deletes:** `app_tenant` can't delete from `table_sessions`, `orders` or `order_items`. A cancellation is a void.

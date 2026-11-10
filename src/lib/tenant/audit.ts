@@ -42,28 +42,53 @@ async function insertEntry(
   actor: AuditActor,
   entry: AuditEntry,
 ) {
-  await tx.insert(auditLog).values({
-    restaurantId,
-    actorType: actor.type,
-    actorId: actor.id ?? null,
-    action: entry.action,
-    entityType: entry.entityType,
-    entityId: entry.entityId,
-    details: entry.details ?? {},
-  });
+  await insertEntries(tx, restaurantId, [{ actor, entry }]);
 }
+
+async function insertEntries(
+  tx: TenantTransaction,
+  restaurantId: string,
+  rows: { actor: AuditActor; entry: AuditEntry }[],
+) {
+  if (rows.length === 0) return;
+  await tx.insert(auditLog).values(
+    rows.map(({ actor, entry }) => ({
+      restaurantId,
+      actorType: actor.type,
+      actorId: actor.id ?? null,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      details: entry.details ?? {},
+    })),
+  );
+}
+
+const actorOf = (ctx: Acting, entry: AuditEntry): AuditActor =>
+  entry.actor ??
+  (ctx.platformAdminId
+    ? { type: "platform_admin", id: ctx.platformAdminId }
+    : { type: "staff", id: ctx.staffId });
 
 export async function recordAudit(
   tx: TenantTransaction,
   ctx: Acting,
   entry: AuditEntry,
 ): Promise<void> {
-  const actor: AuditActor =
-    entry.actor ??
-    (ctx.platformAdminId
-      ? { type: "platform_admin", id: ctx.platformAdminId }
-      : { type: "staff", id: ctx.staffId });
-  await insertEntry(tx, ctx.restaurantId, actor, entry);
+  await insertEntry(tx, ctx.restaurantId, actorOf(ctx, entry), entry);
+}
+
+/** Several entries in one insert, as recordAudit would write each. */
+export async function recordAudits(
+  tx: TenantTransaction,
+  ctx: Acting,
+  entries: AuditEntry[],
+): Promise<void> {
+  await insertEntries(
+    tx,
+    ctx.restaurantId,
+    entries.map((entry) => ({ actor: actorOf(ctx, entry), entry })),
+  );
 }
 
 /**

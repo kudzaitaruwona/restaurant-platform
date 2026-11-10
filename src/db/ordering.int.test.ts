@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { asTenant, bookableRestaurant } from "../../test/integration/bookings";
 import { openOwnerDatabase, openTestDatabase } from "../../test/integration/database";
+import { orderingRestaurant } from "../../test/integration/ordering";
 import { categories, menuItems, orderItems, orders, tableSessions } from "./schema";
 
 /**
@@ -270,5 +271,74 @@ describe("what an order holds", () => {
         .insert(orderItems)
         .values({ ...aLine(restaurantId, orderId, menuItemId), unitPriceZig: null, zigSource: null }),
     );
+  });
+});
+
+describe("a void's record (#73)", () => {
+  /** A placed line at a restaurant with a staff member, written as app_tenant. */
+  async function placedLine() {
+    const r = await orderingRestaurant(owner.db);
+    const sessionId = await openSession(r.restaurantId, r.tableId);
+    const orderId = await placeOrder(r.restaurantId, sessionId);
+    const [{ id }] = await asTenant(app.db, r.restaurantId, (tx) =>
+      tx
+        .insert(orderItems)
+        .values(aLine(r.restaurantId, orderId, r.itemId))
+        .returning({ id: orderItems.id }),
+    );
+    const set = (values: Partial<typeof orderItems.$inferInsert>) =>
+      asTenant(app.db, r.restaurantId, (tx) =>
+        tx.update(orderItems).set(values).where(eq(orderItems.id, id)),
+      );
+    return { ...r, lineId: id, set };
+  }
+
+  it.each([
+    ["no reason", { voidReason: null }],
+    ["a blank reason", { voidReason: "   " }],
+    ["a reason over 200 characters", { voidReason: "x".repeat(201) }],
+    ["nobody who voided it", { voidedBy: null }],
+  ])("refuses a voided line with %s", async (_what, change) => {
+    const line = await placedLine();
+
+    await expect(
+      line.set({ status: "voided", voidReason: "Nobody at the table", voidedBy: line.staffId, ...change }),
+    ).rejects.toMatchObject(check("order_items_void_recorded"));
+  });
+
+  it("takes a voided line with a reason and the staff member who voided it", async () => {
+    const line = await placedLine();
+
+    await line.set({ status: "voided", voidReason: "Nobody at the table", voidedBy: line.staffId });
+
+    const [row] = await owner.db.select().from(orderItems).where(eq(orderItems.id, line.lineId));
+    expect(row).toMatchObject({ status: "voided", voidReason: "Nobody at the table", voidedBy: line.staffId });
+  });
+
+  // Proposed (#73): a void comes off the bill, so it is final, whoever asks.
+  it.each([
+    ["back into play", sql`status = 'placed'`],
+    ["to delivered", sql`status = 'delivered'`],
+    ["to another reason", sql`void_reason = 'A better reason'`],
+    ["to another staff member", sql`voided_by = gen_random_uuid()`],
+  ])("refuses changing a voided line %s, even by the owner role", async (_what, assignment) => {
+    const line = await placedLine();
+    await line.set({ status: "voided", voidReason: "Nobody at the table", voidedBy: line.staffId });
+
+    await expect(
+      owner.db.execute(sql`update order_items set ${assignment} where id = ${line.lineId}`),
+    ).rejects.toMatchObject(check("order_items_void_final"));
+  });
+
+  it("refuses voiding a delivered line, even by the owner role: it was eaten", async () => {
+    const line = await placedLine();
+    await line.set({ status: "delivered" });
+
+    await expect(
+      owner.db
+        .update(orderItems)
+        .set({ status: "voided", voidReason: "Too late", voidedBy: line.staffId })
+        .where(eq(orderItems.id, line.lineId)),
+    ).rejects.toMatchObject(check("order_items_void_final"));
   });
 });
