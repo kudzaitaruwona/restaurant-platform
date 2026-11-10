@@ -10,6 +10,10 @@ import {
   nextStatus,
   previousStatus,
   sendMove,
+  sendReject,
+  sendVoid,
+  VOID_REASON_MAX,
+  voidReasonFrom,
 } from "./kitchen-board";
 
 const MINUTE = 60_000;
@@ -282,5 +286,89 @@ describe("sending a move", () => {
     expect(applied).toEqual([]);
     expect(said.at(-1)).toMatch(/didn't reach the server/);
     expect(poller.refreshes).toBe(0);
+  });
+});
+
+describe("a void's reason", () => {
+  it("is the reason trimmed, up to 200 characters", () => {
+    expect(voidReasonFrom("  Nobody at the table ")).toBe("Nobody at the table");
+    expect(voidReasonFrom("x".repeat(VOID_REASON_MAX))).toHaveLength(200);
+  });
+
+  it.each([null, "", "   ", "x".repeat(201)])("refuses %j", (value) => {
+    expect(voidReasonFrom(value)).toBeNull();
+  });
+
+  it("refuses a file", () => {
+    expect(voidReasonFrom(new File(["x"], "x.txt"))).toBeNull();
+  });
+});
+
+describe("voiding and rejecting from the board", () => {
+  const reply = (status: number, body?: unknown) =>
+    Promise.resolve(new Response(body === undefined ? null : JSON.stringify(body), { status }));
+
+  const sending = (respond: () => Promise<Response>) => {
+    const applied: BoardItem[][] = [];
+    const said: (string | undefined)[] = [];
+    const requests: { url: string; body: FormData; headers?: Record<string, string> }[] = [];
+    const poller = { refreshes: 0, refresh() { this.refreshes += 1; } };
+    const deps = {
+      fetch: (url: string, init: { method: string; body: FormData; headers?: Record<string, string> }) => {
+        requests.push({ url, body: init.body, headers: init.headers });
+        return respond();
+      },
+      apply: (items: BoardItem[]) => void applied.push(items),
+      say: (message: string | undefined) => void said.push(message),
+      poller,
+    };
+    return { deps, applied, said, requests, poller };
+  };
+
+  it("voids one item with its reason, and takes it off the board", async () => {
+    const card = item({ id: "item-1" });
+    const { deps, applied, requests } = sending(() => reply(204));
+
+    expect(await sendVoid(card, "Nobody at the table", deps)).toBe(true);
+
+    expect(requests[0].url).toBe("/api/order-items/item-1/void");
+    expect(requests[0].body.get("reason")).toBe("Nobody at the table");
+    expect(requests[0].headers).toEqual({ "x-form-fetch": "1" });
+    expect(applied).toEqual([[{ ...card, status: "voided" }]]);
+  });
+
+  it("rejects the order with its reason, and takes every one of its items off the board", async () => {
+    const first = item({ id: "item-1", orderId: "order-9" });
+    const second = item({ id: "item-2", orderId: "order-9", status: "cooking" });
+    const { deps, applied, requests } = sending(() => reply(204));
+
+    expect(await sendReject(first, [first, second], "Nobody at the table", deps)).toBe(true);
+
+    expect(requests[0].url).toBe("/api/orders/order-9/reject");
+    expect(requests[0].body.get("reason")).toBe("Nobody at the table");
+    expect(applied).toEqual([[{ ...first, status: "voided" }, { ...second, status: "voided" }]]);
+  });
+
+  it("on a refusal, says why, changes nothing and refreshes the board", async () => {
+    const card = item();
+    const { deps, applied, said, poller } = sending(() =>
+      reply(409, { error: "This item is delivered, so it can't be voided." }),
+    );
+
+    expect(await sendVoid(card, "Late", deps)).toBe(false);
+
+    expect(applied).toEqual([]);
+    expect(said.at(-1)).toBe("This item is delivered, so it can't be voided.");
+    expect(poller.refreshes).toBe(1);
+  });
+
+  it("says so when it doesn't reach the server, and changes nothing", async () => {
+    const card = item();
+    const { deps, applied, said } = sending(() => Promise.reject(new Error("offline")));
+
+    expect(await sendReject(card, [card], "Late", deps)).toBe(false);
+
+    expect(applied).toEqual([]);
+    expect(said.at(-1)).toMatch(/didn't reach the server/);
   });
 });

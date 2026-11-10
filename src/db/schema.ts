@@ -1062,9 +1062,13 @@ export const orderItems = pgTable(
       "order_items_zig_source",
       sql`(${table.unitPriceZig} is null) = (${table.zigSource} is null)`,
     ),
+    // A void says who and why (spec 00); the reason is non-blank and up to 200
+    // characters (proposed, #73), like a note. Once voided, a line stays voided
+    // with its first reason, and a delivered line can't be voided: the trigger
+    // order_items_void_final (migration order_items_void_final) holds both.
     check(
       "order_items_void_recorded",
-      sql`${table.status} <> 'voided' or (${table.voidReason} is not null and ${table.voidedBy} is not null)`,
+      sql`${table.status} <> 'voided' or (${table.voidReason} is not null and trim(${table.voidReason}) <> '' and length(${table.voidReason}) <= 200 and ${table.voidedBy} is not null)`,
     ),
     tenantPolicy("restaurant_id"),
   ],

@@ -12,6 +12,9 @@ import {
   nextStatus,
   previousStatus,
   sendMove,
+  sendReject,
+  sendVoid,
+  VOID_REASON_MAX,
 } from "@/lib/kitchen-board";
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
 
@@ -44,7 +47,8 @@ const TICK_MS = 15_000;
 /**
  * The kitchen board (spec 07): three columns, one card per item, an order's
  * items grouped. One tap moves an item on; a long press, or its ⋯ button, opens
- * the menu that moves it back. It polls every 5 seconds for what changed, ages
+ * the menu that moves it back, voids it or rejects its order, each with a
+ * reason (#73, S-36). It polls every 5 seconds for what changed, ages
  * cards against the server's clock, and flashes, with a sound once a tap has
  * allowed one, when new items arrive.
  */
@@ -124,6 +128,32 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     }
   }
 
+  /** Void an item, or reject its whole order: every one of its items leaves the board. */
+  async function override(item: BoardItem, kind: "void" | "reject", reason: string) {
+    const order = [...current.current.values()].filter((it) => it.orderId === item.orderId);
+    const busy = kind === "void" ? [item] : order;
+    setPending((was) => new Set([...was, ...busy.map((it) => it.id)]));
+    const deps = {
+      fetch: (url: string, init: RequestInit & { body: FormData }) => fetch(url, init),
+      apply: update,
+      say: setMessage,
+      poller: poller.current,
+    };
+    try {
+      const worked =
+        kind === "void"
+          ? await sendVoid(item, reason, deps)
+          : await sendReject(item, order, reason, deps);
+      if (worked) setMenuFor(undefined);
+    } finally {
+      setPending((was) => {
+        const next = new Set(was);
+        for (const it of busy) next.delete(it.id);
+        return next;
+      });
+    }
+  }
+
   const now = new Date(clock);
   const columns = boardColumns(board);
 
@@ -183,6 +213,8 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
                       if (to) void move(item, to);
                     }}
                     onMenu={(open) => setMenuFor(open ? item.id : undefined)}
+                    onVoid={(reason) => override(item, "void", reason)}
+                    onReject={(reason) => override(item, "reject", reason)}
                   />
                 ))}
               </div>
@@ -203,6 +235,8 @@ function Card({
   onForward,
   onBack,
   onMenu,
+  onVoid,
+  onReject,
 }: {
   item: BoardItem;
   now: Date;
@@ -212,6 +246,8 @@ function Card({
   onForward: () => void;
   onBack: () => void;
   onMenu: (open: boolean) => void;
+  onVoid: (reason: string) => Promise<void>;
+  onReject: (reason: string) => Promise<void>;
 }) {
   const age = ageOf(item, now);
   const pressTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -236,7 +272,6 @@ function Card({
           onPointerDown={() => {
             longPressed.current = false;
             cancelPress();
-            if (!back) return;
             pressTimer.current = setTimeout(() => {
               longPressed.current = true;
               onMenu(true);
@@ -269,33 +304,127 @@ function Card({
           <span className="text-sm">For {item.customerName}</span>
           <span className="text-sm font-medium">{age.label}</span>
         </button>
-        {back && (
-          <button
-            type="button"
-            aria-label={`More for ${item.quantity} × ${item.name}`}
-            aria-expanded={menuOpen}
-            className="px-3 text-2xl"
-            onClick={() => onMenu(!menuOpen)}
-          >
-            ⋯
-          </button>
-        )}
+        <button
+          type="button"
+          aria-label={`More for ${item.quantity} × ${item.name}`}
+          aria-expanded={menuOpen}
+          className="px-3 text-2xl"
+          onClick={() => onMenu(!menuOpen)}
+        >
+          ⋯
+        </button>
       </div>
-      {menuOpen && back && (
-        <div className="flex gap-2 border-t p-2">
-          <button
-            type="button"
-            disabled={pending}
-            className="rounded-md border px-3 py-2 font-medium"
-            onClick={onBack}
-          >
-            Move back to {statusNames[back]}
-          </button>
-          <button type="button" className="rounded-md px-3 py-2" onClick={() => onMenu(false)}>
-            Close
-          </button>
-        </div>
+      {menuOpen && (
+        <CardMenu
+          item={item}
+          back={back}
+          pending={pending}
+          onBack={onBack}
+          onClose={() => onMenu(false)}
+          onVoid={onVoid}
+          onReject={onReject}
+        />
       )}
     </article>
+  );
+}
+
+/**
+ * A card's menu (spec 07): move back one status for a mis-tap, void the item,
+ * or reject its whole order (S-36). Void and reject ask for a reason first.
+ */
+function CardMenu({
+  item,
+  back,
+  pending,
+  onBack,
+  onClose,
+  onVoid,
+  onReject,
+}: {
+  item: BoardItem;
+  back: ItemStatus | undefined;
+  pending: boolean;
+  onBack: () => void;
+  onClose: () => void;
+  onVoid: (reason: string) => Promise<void>;
+  onReject: (reason: string) => Promise<void>;
+}) {
+  const [asking, setAsking] = useState<"void" | "reject">();
+  const [reason, setReason] = useState("");
+
+  if (asking) {
+    const words = asking === "void" ? "Void item" : "Reject order";
+    return (
+      <form
+        className="flex flex-col gap-2 border-t p-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (reason.trim() === "") return;
+          void (asking === "void" ? onVoid : onReject)(reason);
+        }}
+      >
+        <label className="flex flex-col gap-1 text-sm font-medium">
+          {asking === "void"
+            ? `Why void ${item.quantity} × ${item.name}?`
+            : `Why reject ${item.customerName}'s whole order at ${item.table}?`}
+          <input
+            name="reason"
+            required
+            maxLength={VOID_REASON_MAX}
+            autoFocus
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            className="rounded-md border px-2 py-2 text-base font-normal"
+          />
+        </label>
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={pending || reason.trim() === ""}
+            className="rounded-md bg-red-700 px-3 py-2 font-medium text-white disabled:opacity-60"
+          >
+            {words}
+          </button>
+          <button type="button" className="rounded-md px-3 py-2" onClick={() => setAsking(undefined)}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2 border-t p-2">
+      {back && (
+        <button
+          type="button"
+          disabled={pending}
+          className="rounded-md border px-3 py-2 font-medium"
+          onClick={onBack}
+        >
+          Move back to {statusNames[back]}
+        </button>
+      )}
+      <button
+        type="button"
+        disabled={pending}
+        className="rounded-md border border-red-700 px-3 py-2 font-medium text-red-700"
+        onClick={() => setAsking("void")}
+      >
+        Void item…
+      </button>
+      <button
+        type="button"
+        disabled={pending}
+        className="rounded-md border border-red-700 px-3 py-2 font-medium text-red-700"
+        onClick={() => setAsking("reject")}
+      >
+        Reject order…
+      </button>
+      <button type="button" className="rounded-md px-3 py-2" onClick={onClose}>
+        Close
+      </button>
+    </div>
   );
 }

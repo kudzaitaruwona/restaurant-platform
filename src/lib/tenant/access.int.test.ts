@@ -338,7 +338,7 @@ const postMove = async (bookingId: string, tableId: string, init?: { path?: stri
  * of its own on the target's fixture table, in the open session there or a new
  * one: a move can be made once, so it can't be run again on the same line.
  */
-const plantedKitchenItems: { id: string; restaurantId: string }[] = [];
+const plantedKitchenItems: { id: string; orderId: string; restaurantId: string }[] = [];
 const plantKitchenItem = async (target: Target) => {
   const [open] = await owner.db
     .select({ id: tableSessions.id })
@@ -367,9 +367,24 @@ const plantKitchenItem = async (target: Target) => {
       unitPriceUsd: "8.50",
     })
     .returning({ id: orderItems.id });
-  plantedKitchenItems.push({ id, restaurantId: target.restaurantId });
+  plantedKitchenItems.push({ id, orderId, restaurantId: target.restaurantId });
   return id;
 };
+/** The order of a kitchen line planted for the call, for the reject route (#73). */
+const plantKitchenOrder = async (target: Target) => {
+  await plantKitchenItem(target);
+  return plantedKitchenItems.at(-1)!.orderId;
+};
+const postVoid = async (itemId: string, fields: Record<string, string> = { reason: "Harness void" }) =>
+  (await import("@/app/api/order-items/[itemId]/void/route")).POST(
+    request(`/api/order-items/${itemId}/void`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ itemId }) },
+  );
+const postReject = async (orderId: string, fields: Record<string, string> = { reason: "Harness reject" }) =>
+  (await import("@/app/api/orders/[orderId]/reject/route")).POST(
+    request(`/api/orders/${orderId}/reject`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ orderId }) },
+  );
 /** Whether the kitchen lines planted since `mark` in a restaurant are all still placed. */
 const kitchenItemsAsPlanted = async (restaurantId: string, mark: number) => {
   const ids = plantedKitchenItems
@@ -842,6 +857,29 @@ const routes: TenantRoute[] = [
         ? await plantKitchenItem(target)
         : target.tableId;
       return postKitchenMove(itemId, { from: "placed", to: "cooking" });
+    },
+  },
+  {
+    // Void (#73), from the kitchen card's menu and the floor's detail, owners and
+    // staff alike (S-26). Each call voids a line planted for it.
+    name: "POST /api/order-items/[itemId]/void",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenItem(target)
+        : target.tableId;
+      return postVoid(itemId);
+    },
+  },
+  {
+    // Reject (#73, S-36). Each call rejects an order planted for it.
+    name: "POST /api/orders/[orderId]/reject",
+    ownerOnly: false,
+    call: async (target) => {
+      const orderId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenOrder(target)
+        : target.tableId;
+      return postReject(orderId);
     },
   },
 ];
@@ -3677,6 +3715,86 @@ describe("the floor view", () => {
     for (const id of ["not-a-uuid", "'; drop table order_items; --", crypto.randomUUID()]) {
       expect(await statusOf(() => deliver(id))).toBe(404);
     }
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: voids an item and rejects an order of restaurant A, recorded with who and why; B's are a 404 left alone",
+    async (_key, who) => {
+      const item = await orderedAt("a", `Void A ${who.key}`, "placed");
+      const rejected = await orderedAt("a", `Reject A ${who.key}`, "done");
+      const theirs = await orderedAt("b", `Void B ${who.key}`, "placed");
+      const orderOf = async (id: string) =>
+        (await owner.db.select().from(orderItems).where(eq(orderItems.id, id)))[0].orderId;
+
+      session.identity = who.key;
+      expect((await postVoid(item, { reason: "Nobody at the table" })).status).toBeLessThan(400);
+      expect((await postReject(await orderOf(rejected), { reason: "Photographed code" })).status).toBeLessThan(400);
+
+      const [voided] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+      expect(voided).toMatchObject({ status: "voided", voidReason: "Nobody at the table", voidedBy: who.staffId });
+      const [onRejected] = await owner.db.select().from(orderItems).where(eq(orderItems.id, rejected));
+      expect(onRejected).toMatchObject({ status: "voided", voidReason: "Photographed code", voidedBy: who.staffId });
+
+      const theirOrder = await orderOf(theirs);
+      expect(await statusOf(() => postVoid(theirs))).toBe(404);
+      expect(await statusOf(() => postReject(theirOrder))).toBe(404);
+      expect(await statusOfLine(theirs)).toBe("placed");
+    },
+  );
+
+  it("refuses a blank or over-long reason with a 400 for both, and changes nothing", async () => {
+    const item = await orderedAt("a", "Blank reason", "placed");
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+    session.identity = aStaff.key;
+
+    const forms: Record<string, string>[] = [{}, { reason: "" }, { reason: "   " }, { reason: "x".repeat(201) }];
+    for (const fields of forms) {
+      const voided = await postVoid(item, fields);
+      expect(voided.status).toBe(400);
+      expect((await voided.json()).error).toMatch(/reason/i);
+      expect((await postReject(orderId, fields)).status).toBe(400);
+    }
+    expect(await statusOfLine(item)).toBe("placed");
+  });
+
+  it("refuses voiding a delivered or voided item, and rejecting an order with nothing left, with a 409", async () => {
+    const delivered = await orderedAt("a", "Already eaten", "done");
+    session.identity = aStaff.key;
+    await deliver(delivered);
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, delivered));
+
+    const refused = await postVoid(delivered);
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/delivered/);
+    expect((await postReject(orderId)).status).toBe(409);
+    expect(await statusOfLine(delivered)).toBe("delivered");
+
+    const once = await orderedAt("a", "Voided once", "placed");
+    session.identity = aStaff.key;
+    expect((await postVoid(once, { reason: "First" })).status).toBeLessThan(400);
+    const again = await postVoid(once, { reason: "Second" });
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/already voided/);
+    const [row] = await owner.db.select().from(orderItems).where(eq(orderItems.id, once));
+    expect(row.voidReason).toBe("First");
+  });
+
+  it("voiding and rejecting are a 404 for a malformed or unknown id", async () => {
+    session.identity = aStaff.key;
+    for (const id of ["not-a-uuid", "'; drop table order_items; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postVoid(id))).toBe(404);
+      expect(await statusOf(() => postReject(id))).toBe(404);
+    }
+  });
+
+  it("voiding and rejecting are a 401 with no session, and change nothing", async () => {
+    const item = await orderedAt("a", "Unauthenticated void", "placed");
+    const [{ orderId }] = await owner.db.select().from(orderItems).where(eq(orderItems.id, item));
+    session.identity = "";
+
+    expect(await statusOf(() => postVoid(item))).toBe(401);
+    expect(await statusOf(() => postReject(orderId))).toBe(401);
+    expect(await statusOfLine(item)).toBe("placed");
   });
 
   it("marking delivered is a 401 with no session, and changes nothing", async () => {

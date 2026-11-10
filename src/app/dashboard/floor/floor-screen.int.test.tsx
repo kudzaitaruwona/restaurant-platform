@@ -138,6 +138,54 @@ describe("the table detail screen", () => {
     expect(html).toContain(`action="/api/order-items/${done.id}/deliver"`);
   });
 
+  it("offers Void, with a required reason, on items not yet delivered or voided (#73)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [
+      { status: "placed" },
+      { status: "done" },
+      { status: "delivered" },
+      { status: "voided", voidReason: "Mistake", voidedBy: r.staffId },
+    ]);
+    const lines = await owner.db.select().from(orderItems).where(eq(orderItems.restaurantId, r.restaurantId));
+    const id = (status: string) => lines.find((line) => line.status === status)!.id;
+
+    const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+    expect(html).toContain(`action="/api/order-items/${id("placed")}/void"`);
+    expect(html).toContain(`action="/api/order-items/${id("done")}/void"`);
+    expect(html).not.toContain(`/api/order-items/${id("delivered")}/void`);
+    expect(html).not.toContain(`/api/order-items/${id("voided")}/void`);
+    expect(html.match(/<input[^>]*name="reason"[^>]*>/g)?.every((input) => /required/.test(input) && /maxLength="200"/i.test(input))).toBe(true);
+    expect(html).toContain("Voided");
+  });
+
+  it("offers Reject order on an order with an item still to void, and not on one that's all delivered or voided (#73)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [{ status: "delivered" }, { status: "cooking" }]);
+    const [live] = await owner.db.select().from(orders).where(eq(orders.restaurantId, r.restaurantId));
+    const [{ id: sessionId }] = await owner.db.select().from(tableSessions)
+      .where(eq(tableSessions.restaurantId, r.restaurantId));
+    const [{ id: finished }] = await owner.db
+      .insert(orders)
+      .values({ restaurantId: r.restaurantId, sessionId, customerName: "Farai" })
+      .returning({ id: orders.id });
+    await owner.db.insert(orderItems).values({
+      restaurantId: r.restaurantId,
+      orderId: finished,
+      menuItemId: r.itemId,
+      nameSnapshot: "Rice",
+      quantity: 1,
+      status: "delivered",
+    });
+
+    const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+    expect(html).toContain(`action="/api/orders/${live.id}/reject"`);
+    expect(html).not.toContain(`/api/orders/${finished}/reject`);
+  });
+
   it("says so for a free table", async () => {
     const r = await orderingRestaurant(owner.db);
     as(r);
