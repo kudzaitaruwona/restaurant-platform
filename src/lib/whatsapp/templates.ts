@@ -11,7 +11,7 @@ import { dateLabel, localTime, localToday } from "@/lib/booking-engine";
 /** Every template is submitted to Meta in this one language. */
 export const TEMPLATE_LANGUAGE = "en";
 
-export type TemplateName = "booking_confirmed";
+export type TemplateName = "booking_confirmed" | "booking_reminder";
 
 /** One template message, ready for a sender: who, which template, and the values. */
 export type TemplateMessage = {
@@ -29,6 +29,9 @@ const templateText: Record<TemplateName, string> = {
   booking_confirmed:
     "Hi {{1}}, your table at {{2}} is confirmed for {{3}} people on {{4}} at {{5}}. " +
     "Need to cancel? Use the button below. This number doesn't receive replies — to reach the restaurant, call {{6}}.",
+  booking_reminder:
+    "Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}} people. " +
+    "Can't make it? Please cancel so someone else can have the table.",
 };
 
 export type ConfirmedBooking = {
@@ -60,6 +63,22 @@ export function bookingConfirmed(booking: ConfirmedBooking): TemplateMessage {
       String(booking.partySize),
       ...whenOf(booking.startsAt, booking.timezone),
       booking.restaurantPhone,
+    ],
+    manageToken: booking.manageToken,
+  };
+}
+
+/** booking_reminder: guest, restaurant, date, time, party size. Names the date, never "today" (spec 05). */
+export function bookingReminder(booking: ConfirmedBooking): TemplateMessage {
+  return {
+    to: booking.guestPhone,
+    template: "booking_reminder",
+    language: TEMPLATE_LANGUAGE,
+    body: [
+      booking.guestName,
+      booking.restaurantName,
+      ...whenOf(booking.startsAt, booking.timezone),
+      String(booking.partySize),
     ],
     manageToken: booking.manageToken,
   };

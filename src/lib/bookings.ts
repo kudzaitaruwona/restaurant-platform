@@ -562,7 +562,7 @@ export async function confirmBooking(
       if (booked) {
         await queueBookingConfirmed(
           tx,
-          { restaurantId: tenant.restaurantId, id: booked[0].id, guestPhone: guest.phone, whatsappOptIn: guest.whatsappOptIn },
+          { restaurantId: tenant.restaurantId, id: booked[0].id, guestPhone: guest.phone, whatsappOptIn: guest.whatsappOptIn, startsAt: chosen!.startsAt },
           now,
         );
         return {

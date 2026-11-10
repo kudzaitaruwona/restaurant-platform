@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { bookings, notifications, restaurants } from "@/db/schema";
+import { cancelBooking as staffCancel } from "@/lib/booking-day";
 import { confirmBooking } from "@/lib/bookings";
 import { metaSender, type SenderChoice, type SendResult, type WhatsAppSender } from "@/lib/whatsapp/sender";
 import type { TemplateMessage } from "@/lib/whatsapp/templates";
@@ -396,8 +397,94 @@ describe("confirming a booking, end to end, against a stand-in for Meta's Graph 
       "+263771234567",
     ]);
     const { rows } = await owner.db.execute<{ status: string; provider_message_id: string }>(
-      sql`select status, provider_message_id from notifications where restaurant_id = ${restaurantId}`,
+      sql`select status, provider_message_id from notifications where restaurant_id = ${restaurantId} and kind = 'booking_confirmed'`,
     );
     expect(rows).toEqual([{ status: "sent", provider_message_id: expect.stringMatching(/^wamid\./) }]);
+    // The reminder (#45) is queued beside it, for 16:30 on the day, and is not due yet.
+    const { rows: reminders } = await owner.db.execute<{ status: string }>(
+      sql`select status from notifications where restaurant_id = ${restaurantId} and kind = 'booking_reminder'`,
+    );
+    expect(reminders).toEqual([{ status: "pending" }]);
+  });
+});
+
+/**
+ * The booking reminder (#45), sent by the same task. Year 1993, before every other
+ * test here: a run sends every row due by its "now", so these must be the only rows
+ * that early, and the blocks above only queue rows from 1994.
+ */
+describe("the booking reminder", () => {
+  /** A booking starting at `startsAt` with its reminder pending at starts_at - 3h. */
+  async function withReminder(startsAt: string, status: Status = "confirmed") {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const start = new Date(startsAt);
+    const [booking] = await owner.db
+      .insert(bookings)
+      .values({
+        ...aBooking(restaurantId, tableIds[0], startsAt, new Date(start.getTime() + 2 * 3_600_000).toISOString()),
+        guestName: "Tariro Moyo",
+        guestPhone: GUEST_PHONE,
+        partySize: 4,
+        status,
+      })
+      .returning({ id: bookings.id, manageToken: bookings.manageToken });
+    const [reminder] = await owner.db
+      .insert(notifications)
+      .values({
+        restaurantId,
+        bookingId: booking.id,
+        kind: "booking_reminder",
+        scheduledFor: new Date(start.getTime() - 3 * 3_600_000),
+      })
+      .returning({ id: notifications.id });
+    return { restaurantId, ...booking, reminderId: reminder.id };
+  }
+
+  it("is not sent before starts_at - 3h, and is sent with its own template once that time comes", async () => {
+    // 17:00 UTC is 19:00 in Harare.
+    const { manageToken, reminderId, restaurantId } = await withReminder("1993-03-10T17:00:00Z");
+    const early = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1993-03-10T13:59:00Z"), early.choice);
+    expect(sentAmong(early.sent, { manageToken })).toEqual([]);
+    expect((await row(reminderId)).status).toBe("pending");
+
+    const due = recordingSender();
+    await sendDueNotifications(system.db, new Date("1993-03-10T14:00:00Z"), due.choice);
+    expect(due.sent.filter((message) => message.manageToken === manageToken)).toEqual([
+      {
+        to: GUEST_PHONE,
+        template: "booking_reminder",
+        language: "en",
+        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "Wed 10 Mar", "19:00", "4"],
+        manageToken,
+      },
+    ]);
+    expect(await row(reminderId)).toMatchObject({ status: "sent", providerMessageId: `wamid.${manageToken}` });
+  });
+
+  it("is marked cancelled without sending when the booking is no longer confirmed at send time", async () => {
+    // The booking changed some way that didn't cancel the row.
+    const { manageToken, reminderId } = await withReminder("1993-04-10T17:00:00Z", "seated");
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1993-04-10T15:00:00Z"), choice);
+
+    expect(sentAmong(sent, { manageToken })).toEqual([]);
+    expect((await row(reminderId)).status).toBe("cancelled");
+  });
+
+  it("is never sent for a booking cancelled before the reminder time", async () => {
+    const { restaurantId, id, manageToken, reminderId } = await withReminder("1993-05-10T17:00:00Z");
+
+    expect((await staffCancel({ restaurantId, staffId: crypto.randomUUID() }, id)).outcome).toBe("done");
+
+    const { sent, choice } = recordingSender();
+    // At the reminder time, an hour after it, and the day after: never.
+    for (const at of ["1993-05-10T14:00:00Z", "1993-05-10T15:00:00Z", "1993-05-11T14:00:00Z"]) {
+      await sendDueNotifications(system.db, new Date(at), choice);
+    }
+    expect(sentAmong(sent, { manageToken })).toEqual([]);
+    expect((await row(reminderId)).status).toBe("cancelled");
   });
 });

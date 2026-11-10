@@ -207,7 +207,7 @@ export async function addStaffBooking(
       });
       await queueBookingConfirmed(
         tx,
-        { restaurantId: actor.restaurantId, id: booked.id, guestPhone: request.phone, whatsappOptIn: request.whatsappOptIn },
+        { restaurantId: actor.restaurantId, id: booked.id, guestPhone: request.phone, whatsappOptIn: request.whatsappOptIn, startsAt: slot.startsAt },
         now,
       );
       const label = await labelOf(tx, actor.restaurantId, booked.tableId);
