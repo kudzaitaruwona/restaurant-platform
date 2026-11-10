@@ -52,7 +52,7 @@ Someone could photograph a table's QR code and order from anywhere. v1 accepts t
 4. "Call a waiter" link *(proposed)*: sends a flag to the staff view, with no chat
 5. No payment step. "Pay at the table with your waiter as usual."
 
-The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript. `/t/{qr_token}` stays the hand-written Route Handler that serves the menu (S-32), and ordering adds one small standalone script to it for the cart, the name and the tracker. The menu HTML stays cached; the script talks to uncached endpoints of its own. `/m/{menu_token}` gets no script and never takes an order (spec 03).
+The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript. `/t/{qr_token}` stays the hand-written Route Handler that serves the menu (S-32), and ordering adds one small standalone script to it for the cart, the name and the tracker. *(Proposed: the menu HTML stays cached; the script talks to uncached endpoints of its own.)* `/m/{menu_token}` gets no script and never takes an order (spec 03).
 
 ## Staff: floor view
 - A grid of tables showing status (free, open, flagged), time open, and item counts by status.
@@ -74,4 +74,4 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 - [ ] A reopened session is not closed by idle expiry on the next job run.
 - [ ] Changing a menu price after an order doesn't change that order's lines.
 - [ ] Idle expiry closes a fully delivered session at 90 minutes of inactivity, not 90 minutes since it opened.
-- [ ] A staff reject voids every undelivered item of the order, recorded with the staff member and reason, and the order leaves the kitchen board (S-36). This replaces "a remote order can't reach the kitchen", which no longer fits D-01's decision: a remote order does reach it.
+- [ ] A staff reject voids every item of the order (undelivered items only, *proposed*, see S-36), recorded with the staff member and reason, and the order leaves the kitchen board (S-36). This replaces "a remote order can't reach the kitchen", which no longer fits D-01's decision: a remote order does reach it.
