@@ -233,11 +233,34 @@ describe("the table detail screen", () => {
     expect(html).not.toContain(`/api/orders/${finished}/reject`);
   });
 
-  it("says so for a free table", async () => {
+  it("offers Clear table and Force-close, with a required reason, each naming the session it shows (#74)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [{ status: "cooking" }]);
+    const [{ id: sessionId }] = await owner.db.select().from(tableSessions)
+      .where(eq(tableSessions.restaurantId, r.restaurantId));
+
+    const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+    const formOf = (action: string) =>
+      html.match(new RegExp(`<form[^>]*action="${action}"[^>]*>.*?</form>`))?.[0] ?? "";
+    const clear = formOf(`/api/floor/${r.tableId}/clear`);
+    const force = formOf(`/api/floor/${r.tableId}/force-close`);
+    expect(clear).toContain("Clear table");
+    expect(clear).toContain(`name="session" value="${sessionId}"`);
+    expect(force).toContain("Force-close");
+    expect(force).toContain(`name="session" value="${sessionId}"`);
+    expect(force).toMatch(/<input[^>]*required[^>]*name="reason"/);
+  });
+
+  it("says so for a free table, with nothing to clear or force-close", async () => {
     const r = await orderingRestaurant(owner.db);
     as(r);
 
-    expect(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }))).toContain("No open session");
+    const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+    expect(html).toContain("No open session");
+    expect(html).not.toContain("/clear");
+    expect(html).not.toContain("/force-close");
   });
 
   it("is a 404 for another restaurant's table", async () => {

@@ -316,6 +316,13 @@
       "when": 1794338569994,
       "tag": "0044_waiter_flag_ends_with_session",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794339541508,
+      "tag": "0045_session_closure_gate",
+      "breakpoints": true
     }
   ]
 }

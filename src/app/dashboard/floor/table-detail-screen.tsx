@@ -20,14 +20,28 @@ const statusWords = {
 const voidable = (status: keyof typeof statusWords) => status !== "delivered" && status !== "voided";
 
 /**
- * A void or reject behind a disclosure, with its required reason (#73). Plain
- * HTML until it posts, so it needs no script of its own.
+ * A void, reject or force-close behind a disclosure, with its required reason
+ * (#73, #74). Plain HTML until it posts, so it needs no script of its own.
+ * `session` is the session the page showed, for a close's precondition.
  */
-function ReasonForm({ action, label, submit }: { action: string; label: string; submit: string }) {
+function ReasonForm({
+  action,
+  label,
+  submit,
+  session,
+  confirmation,
+}: {
+  action: string;
+  label: string;
+  submit: string;
+  session?: string;
+  confirmation?: string;
+}) {
   return (
     <details className="text-sm">
       <summary className="cursor-pointer underline">{label}</summary>
-      <ActionForm action={action} className="mt-2 flex flex-wrap items-center gap-2">
+      <ActionForm action={action} confirmation={confirmation} className="mt-2 flex flex-wrap items-center gap-2">
+        {session && <input type="hidden" name="session" value={session} />}
         <input
           name="reason"
           required
@@ -47,7 +61,8 @@ function ReasonForm({ action, label, submit }: { action: string; label: string; 
 /**
  * One table's open session (spec 06): every order and line with the customer's
  * name, the note and the status, Mark delivered on lines that are done, Void on
- * lines not yet delivered and Reject on orders with any (#73, S-36). A
+ * lines not yet delivered and Reject on orders with any (#73, S-36), and Clear
+ * table and Force-close for the session (#74). A
  * table that isn't a live one of this restaurant is a 404. React escapes
  * everything a customer typed. `now` is for tests.
  */
@@ -140,6 +155,22 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               </ul>
             </section>
           ))}
+          <section className="flex flex-col gap-3 rounded-md border p-4">
+            <h2 className="font-semibold">Close the table</h2>
+            <ActionForm action={`/api/floor/${table.id}/clear`} className="flex flex-col gap-2">
+              <input type="hidden" name="session" value={session.id} />
+              <button type="submit" className="self-start rounded-md border px-3 py-1 font-medium">
+                Clear table
+              </button>
+            </ActionForm>
+            <ReasonForm
+              action={`/api/floor/${table.id}/force-close`}
+              label="Force-close…"
+              submit="Force-close"
+              session={session.id}
+              confirmation="Void every item not yet delivered and close this table?"
+            />
+          </section>
         </>
       )}
     </>

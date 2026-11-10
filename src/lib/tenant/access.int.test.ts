@@ -385,6 +385,63 @@ const postReject = async (orderId: string, fields: Record<string, string> = { re
     request(`/api/orders/${orderId}/reject`, { method: "POST", body: form(fields) }),
     { params: Promise.resolve({ orderId }) },
   );
+/**
+ * A table planted in the target's restaurant with an open session, and on it,
+ * when `outstanding`, a placed line, for the close routes (#74): a session closes
+ * once, so each call plants its own, and a fixture table's session is the other
+ * routes' to use.
+ */
+const plantedSessions: { id: string; restaurantId: string }[] = [];
+const plantOpenTable = async (target: Target, outstanding: boolean) => {
+  const tableId = await plantTable(target.restaurantId);
+  const [{ id: sessionId }] = await owner.db
+    .insert(tableSessions)
+    .values({ restaurantId: target.restaurantId, tableId })
+    .returning({ id: tableSessions.id });
+  plantedSessions.push({ id: sessionId, restaurantId: target.restaurantId });
+  if (outstanding) {
+    const [{ id: orderId }] = await owner.db
+      .insert(orders)
+      .values({ restaurantId: target.restaurantId, sessionId, customerName: "Harness close" })
+      .returning({ id: orders.id });
+    const [{ id }] = await owner.db
+      .insert(orderItems)
+      .values({
+        restaurantId: target.restaurantId,
+        orderId,
+        menuItemId: target.itemId,
+        nameSnapshot: harnessItem,
+        quantity: 1,
+        unitPriceUsd: "8.50",
+      })
+      .returning({ id: orderItems.id });
+    plantedKitchenItems.push({ id, orderId, restaurantId: target.restaurantId });
+  }
+  return { tableId, sessionId };
+};
+const postClear = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/clear/route")).POST(
+    request(`/api/floor/${tableId}/clear`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+const postForceClose = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/force-close/route")).POST(
+    request(`/api/floor/${tableId}/force-close`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+/** Whether the sessions planted since `mark` in a restaurant are all still open. */
+const sessionsStillOpen = async (restaurantId: string, mark: number) => {
+  const ids = plantedSessions
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: tableSessions.status })
+    .from(tableSessions)
+    .where(inArray(tableSessions.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "open");
+};
 /** Whether the kitchen lines planted since `mark` in a restaurant are all still placed. */
 const kitchenItemsAsPlanted = async (restaurantId: string, mark: number) => {
   const ids = plantedKitchenItems
@@ -901,6 +958,29 @@ const routes: TenantRoute[] = [
         ? await plantKitchenItem(target)
         : target.tableId;
       return postVoid(itemId);
+    },
+  },
+  {
+    // Clear table (#74), owners and staff alike (S-26). Each call clears a table
+    // planted with an empty open session; a made-up id is aimed at as it is.
+    name: "POST /api/floor/[tableId]/clear",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantOpenTable(target, false)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postClear(tableId, { session: sessionId });
+    },
+  },
+  {
+    // Force-close (#74). Each call force-closes a table planted with a placed line.
+    name: "POST /api/floor/[tableId]/force-close",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantOpenTable(target, true)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postForceClose(tableId, { session: sessionId, reason: "Harness force-close" });
     },
   },
   {
@@ -1491,8 +1571,10 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  // Sessions and orders on the harness's own tables, before those go.
-  const harnessTables = [fixtures.a.tableId, fixtures.b.tableId];
+  // Sessions and orders on the harness's own tables, and on the tables it
+  // planted (the close routes open sessions there), before those and the staff
+  // who closed them go.
+  const harnessTables = [fixtures.a.tableId, fixtures.b.tableId, ...planted.map(({ id }) => id)];
   const harnessSessions = owner.db
     .select({ id: tableSessions.id })
     .from(tableSessions)
@@ -1832,6 +1914,7 @@ describe("cross-tenant access", () => {
       const closureMark = plantedClosures.length;
       const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
       const kitchenMark = plantedKitchenItems.length;
+      const sessionMark = plantedSessions.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1851,6 +1934,7 @@ describe("cross-tenant access", () => {
       expect(await closuresUnremoved(fixtures.b.restaurantId, closureMark)).toBe(true);
       expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
       expect(await kitchenItemsAsPlanted(fixtures.b.restaurantId, kitchenMark)).toBe(true);
+      expect(await sessionsStillOpen(fixtures.b.restaurantId, sessionMark)).toBe(true);
     },
   );
 
@@ -3868,6 +3952,112 @@ describe("the floor view", () => {
 
     expect(await statusOf(() => deliver(done))).toBe(401);
     expect(await statusOfLine(done)).toBe("done");
+  });
+
+  const sessionRow = async (id: string) =>
+    (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0];
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: clears and force-closes restaurant A's tables, recorded with who and why; B's are a 404 left open",
+    async (_key, who) => {
+      const cleared = await plantOpenTable(fixtures.a, false);
+      const forced = await plantOpenTable(fixtures.a, true);
+      const forcedLine = plantedKitchenItems.at(-1)!.id;
+      const theirs = await plantOpenTable(fixtures.b, true);
+
+      session.identity = who.key;
+      expect((await postClear(cleared.tableId, { session: cleared.sessionId })).status).toBeLessThan(400);
+      expect(
+        (await postForceClose(forced.tableId, { session: forced.sessionId, reason: "Walked out" })).status,
+      ).toBeLessThan(400);
+
+      expect(await sessionRow(cleared.sessionId)).toMatchObject({
+        status: "closed",
+        closeReason: "staff_clear",
+        closedBy: who.staffId,
+      });
+      expect(await sessionRow(forced.sessionId)).toMatchObject({
+        status: "closed",
+        closeReason: "force_close",
+        closedBy: who.staffId,
+      });
+      const [line] = await owner.db.select().from(orderItems).where(eq(orderItems.id, forcedLine));
+      expect(line).toMatchObject({ status: "voided", voidReason: "Walked out", voidedBy: who.staffId });
+      const [entry] = await owner.db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.entityId, forced.sessionId), eq(auditLog.action, "session.force_close")));
+      expect(entry).toMatchObject({ actorType: "staff", actorId: who.staffId, details: { reason: "Walked out" } });
+
+      expect(await statusOf(() => postClear(theirs.tableId, { session: theirs.sessionId }))).toBe(404);
+      expect(
+        await statusOf(() => postForceClose(theirs.tableId, { session: theirs.sessionId, reason: "Not mine" })),
+      ).toBe(404);
+      expect((await sessionRow(theirs.sessionId)).status).toBe("open");
+    },
+  );
+
+  it("clear table is a 409 listing the items in the way and pointing to force-close, and closes nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, true);
+    session.identity = aStaff.key;
+
+    const refused = await postClear(tableId, { session: sessionId });
+
+    expect(refused.status).toBe(409);
+    const body = await refused.json();
+    expect(body.error).toMatch(/force-close/);
+    expect(body.items).toEqual([
+      { id: plantedKitchenItems.at(-1)!.id, summary: `1 × ${harnessItem} for Harness close: placed` },
+    ]);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+
+  it("a close for a session the page no longer shows is a 409, and one without a session a 400", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, false);
+    session.identity = aStaff.key;
+
+    const stale = await postClear(tableId, { session: crypto.randomUUID() });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error).toMatch(/changed/);
+    expect((await postForceClose(tableId, { session: crypto.randomUUID(), reason: "Stale" })).status).toBe(409);
+    expect((await postClear(tableId, {})).status).toBe(400);
+    expect((await postForceClose(tableId, { session: "not-a-uuid", reason: "Stale" })).status).toBe(400);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+
+  it("refuses a blank or over-long force-close reason with a 400, and changes nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, true);
+    const line = plantedKitchenItems.at(-1)!.id;
+    session.identity = aStaff.key;
+
+    for (const reason of [undefined, "", "   ", "x".repeat(201)]) {
+      const fields: Record<string, string> = { session: sessionId };
+      if (reason !== undefined) fields.reason = reason;
+      const refused = await postForceClose(tableId, fields);
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).error).toMatch(/reason/i);
+    }
+    expect((await sessionRow(sessionId)).status).toBe("open");
+    expect(await statusOfLine(line)).toBe("placed");
+  });
+
+  it("clearing and force-closing are a 404 for a malformed or unknown table", async () => {
+    session.identity = aStaff.key;
+    for (const id of ["not-a-uuid", "'; drop table table_sessions; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postClear(id, { session: crypto.randomUUID() }))).toBe(404);
+      expect(
+        await statusOf(() => postForceClose(id, { session: crypto.randomUUID(), reason: "Unknown" })),
+      ).toBe(404);
+    }
+  });
+
+  it("clearing and force-closing are a 401 with no session, and close nothing", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, false);
+    session.identity = "";
+
+    expect(await statusOf(() => postClear(tableId, { session: sessionId }))).toBe(401);
+    expect(await statusOf(() => postForceClose(tableId, { session: sessionId, reason: "No one" }))).toBe(401);
+    expect((await sessionRow(sessionId)).status).toBe("open");
   });
 });
 

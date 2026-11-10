@@ -105,6 +105,8 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     const r = await orderingRestaurant(owner.db);
     const old = await join(r.qrToken);
     await order(r.qrToken, { item: r.itemId, quantity: "1", name: "Old party", session: old });
+    // The closure gate: the party was served before the table was cleared.
+    await owner.db.update(orderItems).set({ status: "delivered" }).where(eq(orderItems.restaurantId, r.restaurantId));
     await owner.db
       .update(tableSessions)
       .set({ status: "closed", closedAt: new Date(), closeReason: "staff_clear" })

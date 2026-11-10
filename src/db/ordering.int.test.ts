@@ -204,7 +204,9 @@ describe("frozen prices", () => {
   });
 
   it("refuses moving an order onto another session, open or closed", async () => {
-    const { restaurantId, tableId, orderId: earlierOrderId, sessionId: closedId } = await line();
+    const { restaurantId, tableId, orderId: earlierOrderId, sessionId: closedId, lineId } = await line();
+    // The closure gate: a session closes only once its lines are delivered or voided.
+    await owner.db.update(orderItems).set({ status: "delivered" }).where(eq(orderItems.id, lineId));
     await closeSession(closedId);
     const openId = await openSession(restaurantId, tableId);
     const laterOrderId = await placeOrder(restaurantId, openId);
