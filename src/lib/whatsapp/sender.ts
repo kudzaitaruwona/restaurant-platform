@@ -83,8 +83,11 @@ function requestBody(message: TemplateMessage) {
       language: { code: message.language },
       components: [
         { type: "body", parameters: message.body.map((text) => ({ type: "text", text })) },
-        // The template's one button is a URL button to /b/{{1}}: the manage page.
-        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: message.manageToken }] },
+        // booking_confirmed's one button is a URL button to /b/{{1}}: the manage page.
+        // booking_cancelled has no button, and Meta refuses a component the template lacks.
+        ...(message.manageToken === undefined
+          ? []
+          : [{ type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: message.manageToken }] }]),
       ],
     },
   };

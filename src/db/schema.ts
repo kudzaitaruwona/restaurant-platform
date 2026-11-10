@@ -818,6 +818,8 @@ export const notificationSends = pgView("notification_sends", {
   restaurantName: text("restaurant_name").notNull(),
   restaurantPhone: text("restaurant_phone"),
   timezone: text().notNull(),
+  /** Who cancelled, for booking_cancelled's wording; null unless the booking is cancelled. */
+  cancelledBy: bookingCancelledBy("cancelled_by"),
 }).existing();
 
 /**

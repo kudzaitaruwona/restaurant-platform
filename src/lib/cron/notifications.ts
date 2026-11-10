@@ -3,7 +3,7 @@ import { and, asc, count, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { notifications, notificationSends } from "@/db/schema";
 import type { SenderChoice, SendResult } from "@/lib/whatsapp/sender";
-import { bookingConfirmed, type TemplateMessage } from "@/lib/whatsapp/templates";
+import { bookingCancelled, bookingConfirmed, type TemplateMessage } from "@/lib/whatsapp/templates";
 
 /**
  * Spec 05's outbox, run by the scheduled job (S-35) as app_system. Claim, then
@@ -15,7 +15,7 @@ import { bookingConfirmed, type TemplateMessage } from "@/lib/whatsapp/templates
  * Before each send the booking is read again, through notification_sends, the
  * one place app_system may read a guest's details, and only for a row it has
  * claimed (migration 0034). A booking_confirmed whose booking is no longer
- * confirmed, or whose guest has no number or no opt-in now, is marked cancelled
+ * confirmed (a booking_cancelled's, no longer cancelled), or whose guest has no number or no opt-in now, is marked cancelled
  * without sending. A failed send is marked failed with its error; retrying it,
  * and returning rows stuck in sending, are #47's.
  *
@@ -44,6 +44,7 @@ const TIME_BUDGET_MS = 75_000;
 /** The kinds this task can send, and the booking status each needs at send time. */
 const sendable = {
   booking_confirmed: "confirmed",
+  booking_cancelled: "cancelled",
 } as const;
 const sendableKinds = Object.keys(sendable) as (keyof typeof sendable)[];
 
@@ -152,11 +153,16 @@ async function sendOne(db: Database, row: Claimed, send: (message: TemplateMessa
   if (found.bookingStatus !== sendable[found.kind as keyof typeof sendable] || !found.whatsappOptIn || !found.guestPhone) {
     return finish(db, row, { status: "cancelled" });
   }
-  if (!found.restaurantPhone) {
-    return finish(db, row, { status: "failed", lastError: "The restaurant has no contact phone for {{6}}." });
+  let message: TemplateMessage;
+  if (found.kind === "booking_cancelled") {
+    // Fine without a restaurant phone: {{5}} then has no number to give.
+    message = bookingCancelled({ ...found, guestPhone: found.guestPhone });
+  } else {
+    if (!found.restaurantPhone) {
+      return finish(db, row, { status: "failed", lastError: "The restaurant has no contact phone for {{6}}." });
+    }
+    message = bookingConfirmed({ ...found, guestPhone: found.guestPhone, restaurantPhone: found.restaurantPhone });
   }
-
-  const message = bookingConfirmed({ ...found, guestPhone: found.guestPhone, restaurantPhone: found.restaurantPhone });
   let result: SendResult;
   try {
     result = await send(message);
