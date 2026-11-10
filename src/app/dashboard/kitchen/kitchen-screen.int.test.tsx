@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { diningTables, orderItems, orders, tableSessions } from "@/db/schema";
 import type { TenantContext } from "@/lib/tenant";
@@ -7,7 +7,7 @@ import { openOwnerDatabase, testDatabaseSettings } from "../../../../test/integr
 import { orderingRestaurant } from "../../../../test/integration/ordering";
 import { KitchenScreen } from "./kitchen-screen";
 
-/** The kitchen's list as markup, on a restaurant of its own. Who's asking is faked: access.int.test.ts has the real seam. */
+/** The kitchen board as markup, on a restaurant of its own. Who's asking is faked: access.int.test.ts has the real seam. */
 const session = vi.hoisted(() => ({ tenant: undefined as unknown }));
 vi.mock("@/lib/tenant", async (original) => ({
   ...(await original<typeof import("@/lib/tenant")>()),
@@ -47,7 +47,7 @@ async function ordered(
     .insert(orders)
     .values({ restaurantId: restaurant.restaurantId, sessionId, customerName })
     .returning({ id: orders.id });
-  await owner.db.insert(orderItems).values({
+  const [{ id }] = await owner.db.insert(orderItems).values({
     restaurantId: restaurant.restaurantId,
     orderId,
     menuItemId: restaurant.itemId,
@@ -55,12 +55,22 @@ async function ordered(
     quantity: 2,
     unitPriceUsd: "8",
     ...rest,
-  });
+  }).returning({ id: orderItems.id });
+  return { id, orderId };
 }
+
+/** The markup of one column, from its heading to the next one's. */
+const column = (html: string, name: "Placed" | "Cooking" | "Done") => {
+  const start = html.indexOf(`>${name}<`);
+  const ends = [">Placed<", ">Cooking<", ">Done<"]
+    .map((heading) => html.indexOf(heading, start + 1))
+    .filter((at) => at > start);
+  return html.slice(start, ends.length ? Math.min(...ends) : undefined);
+};
 
 describe("the kitchen screen", () => {
   it.each(["owner", "staff"] as const)(
-    "lists placed items with table, quantity × name, note and customer name, for %s",
+    "shows each item with table, quantity × name, note and customer name, for %s",
     async (role) => {
       const restaurant = await orderingRestaurant(owner.db);
       session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role };
@@ -83,7 +93,7 @@ describe("the kitchen screen", () => {
     expect(await render()).toContain("2 × Old name");
   });
 
-  it("lists placed items only, oldest first", async () => {
+  it("puts placed, cooking and done items in their columns, oldest first, and leaves delivered ones off", async () => {
     const restaurant = await orderingRestaurant(owner.db);
     session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
     const [{ id: secondTable }] = await owner.db
@@ -97,13 +107,66 @@ describe("the kitchen screen", () => {
       .returning({ id: diningTables.id });
     await ordered(restaurant, { customerName: "First" });
     await ordered(restaurant, { customerName: "Second", tableId: secondTable });
-    await ordered(restaurant, { customerName: "Cooking", status: "cooking" });
+    await ordered(restaurant, { customerName: "Cooker", status: "cooking" });
+    await ordered(restaurant, { customerName: "Finished", status: "done" });
+    await ordered(restaurant, { customerName: "Carried", status: "delivered" });
 
     const html = await render();
 
-    expect(html.indexOf("First")).toBeLessThan(html.indexOf("Second"));
-    expect(html).toContain("Patio 2");
-    expect(html).not.toContain("Cooking");
+    const placed = column(html, "Placed");
+    expect(placed.indexOf("First")).toBeLessThan(placed.indexOf("Second"));
+    expect(placed).toContain("Patio 2");
+    expect(placed).not.toContain("Cooker");
+    expect(column(html, "Cooking")).toContain("Cooker");
+    expect(column(html, "Done")).toContain("Finished");
+    expect(html).not.toContain("Carried");
+  });
+
+  it("shows a long note whole, set apart from the rest of the card", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+    const note = `Allergic to peanuts. ${"Please keep it well away from anything with nuts. ".repeat(3)}`.slice(0, 200).trim();
+    await ordered(restaurant, { note });
+
+    const html = await render();
+
+    expect(html).toContain(note);
+    expect(html).toMatch(/data-note="true"/);
+    expect(html).not.toMatch(/truncate|line-clamp|text-ellipsis/);
+  });
+
+  it("groups an order's items together and says how long ago it was ordered", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+    const { orderId } = await ordered(restaurant, { nameSnapshot: "Sadza" });
+    await owner.db.insert(orderItems).values({
+      restaurantId: restaurant.restaurantId,
+      orderId,
+      menuItemId: restaurant.itemId,
+      nameSnapshot: "Greens",
+      quantity: 1,
+      unitPriceUsd: "2",
+    });
+    await owner.db
+      .update(orders)
+      // On the database's clock, which the board ages against.
+      .set({ placedAt: sql`now() - interval '20 minutes 30 seconds'` })
+      .where(eq(orders.id, orderId));
+
+    const html = await render();
+
+    const group = html.slice(html.indexOf(`data-order="${orderId}"`));
+    expect(group).toContain("Sadza");
+    expect(group).toContain("Greens");
+    expect(html).toContain("20 min ago");
+    expect(html).toMatch(/data-age="amber"/);
+  });
+
+  it("offers sound behind a tap, on load", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+
+    expect(await render()).toContain("Tap to enable sound");
   });
 
   it("says so when nothing is waiting", async () => {

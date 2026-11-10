@@ -333,6 +333,65 @@ const postMove = async (bookingId: string, tableId: string, init?: { path?: stri
     }),
     bookingParams(bookingId),
   );
+/**
+ * Kitchen lines the status route is aimed at (#71). Each call plants a placed line
+ * of its own on the target's fixture table, in the open session there or a new
+ * one: a move can be made once, so it can't be run again on the same line.
+ */
+const plantedKitchenItems: { id: string; restaurantId: string }[] = [];
+const plantKitchenItem = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  const sessionId =
+    open?.id ??
+    (
+      await owner.db
+        .insert(tableSessions)
+        .values({ restaurantId: target.restaurantId, tableId: target.tableId })
+        .returning({ id: tableSessions.id })
+    )[0].id;
+  const [{ id: orderId }] = await owner.db
+    .insert(orders)
+    .values({ restaurantId: target.restaurantId, sessionId, customerName: "Harness kitchen" })
+    .returning({ id: orders.id });
+  const [{ id }] = await owner.db
+    .insert(orderItems)
+    .values({
+      restaurantId: target.restaurantId,
+      orderId,
+      menuItemId: target.itemId,
+      nameSnapshot: harnessItem,
+      quantity: 1,
+      unitPriceUsd: "8.50",
+    })
+    .returning({ id: orderItems.id });
+  plantedKitchenItems.push({ id, restaurantId: target.restaurantId });
+  return id;
+};
+/** Whether the kitchen lines planted since `mark` in a restaurant are all still placed. */
+const kitchenItemsAsPlanted = async (restaurantId: string, mark: number) => {
+  const ids = plantedKitchenItems
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: orderItems.status })
+    .from(orderItems)
+    .where(inArray(orderItems.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "placed");
+};
+const postKitchenMove = async (itemId: string, fields: Record<string, string>, query = "") =>
+  (await import("@/app/api/kitchen/items/[itemId]/status/route")).POST(
+    request(`/api/kitchen/items/${itemId}/status${query}`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ itemId }) },
+  );
+const getKitchenChanges = async (query = "", init?: { headers?: Record<string, string> }) =>
+  (await import("@/app/api/kitchen/changes/route")).GET(
+    request(`/api/kitchen/changes${query}`, { headers: init?.headers }),
+  );
 const form = (fields: Record<string, string>) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
@@ -709,6 +768,18 @@ const routes: TenantRoute[] = [
       );
     },
   },
+  {
+    // A kitchen move (#71), owners and staff alike (S-26). Each call moves a line
+    // planted for it; a made-up id is aimed at as it is.
+    name: "POST /api/kitchen/items/[itemId]/status",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantKitchenItem(target)
+        : target.tableId;
+      return postKitchenMove(itemId, { from: "placed", to: "cooking" });
+    },
+  },
 ];
 
 /**
@@ -951,6 +1022,12 @@ const guestCancel = "POST /b/[manageToken]";
  */
 const tableScan = "POST /api/t/[qrToken]/session";
 const tableOrder = "POST /api/t/[qrToken]/orders";
+
+/**
+ * The kitchen board's poll (#71): no id, owners and staff alike, so neither
+ * `routes` nor the owner-only `sessionRoutes`. Tested in "the kitchen" below.
+ */
+const kitchenChanges = "GET /api/kitchen/changes";
 
 const postScan = async (
   qrToken: string,
@@ -1583,6 +1660,7 @@ describe("cross-tenant access", () => {
       const bookingMark = plantedBookings.length;
       const closureMark = plantedClosures.length;
       const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
+      const kitchenMark = plantedKitchenItems.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1601,6 +1679,7 @@ describe("cross-tenant access", () => {
       expect(await bookingsAsPlanted(fixtures.b.restaurantId, bookingMark)).toBe(true);
       expect(await closuresUnremoved(fixtures.b.restaurantId, closureMark)).toBe(true);
       expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
+      expect(await kitchenItemsAsPlanted(fixtures.b.restaurantId, kitchenMark)).toBe(true);
     },
   );
 
@@ -3333,6 +3412,50 @@ describe("the table page's ordering", () => {
     const { KitchenScreen } = await import("@/app/dashboard/kitchen/kitchen-screen");
     expect(await statusOf(() => KitchenScreen())).toBe(401);
   });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the kitchen's poll has restaurant A's new lines and never B's, whatever id the request names",
+    async (_key, who) => {
+      session.identity = who.key;
+      const start = await getKitchenChanges();
+      expect(start.status).toBe(200);
+      expect(start.headers.get("cache-control")).toBe("no-store");
+      const { cursor } = await start.json();
+      const mine = await plantKitchenItem(fixtures.a);
+      const theirs = await plantKitchenItem(fixtures.b);
+
+      const response = await getKitchenChanges(
+        `?since=${cursor}&restaurantId=${fixtures.b.restaurantId}&restaurant_id=${fixtures.b.restaurantId}`,
+        { headers: { "x-restaurant-id": fixtures.b.restaurantId } },
+      );
+
+      const ids = ((await response.json()).items as { id: string }[]).map((item) => item.id);
+      expect(ids).toContain(mine);
+      expect(ids).not.toContain(theirs);
+    },
+  );
+
+  it("the kitchen's poll is a 401 with no session, and refuses a cursor that isn't one", async () => {
+    session.identity = "";
+    expect(await statusOf(() => getKitchenChanges())).toBe(401);
+    session.identity = aStaff.key;
+    expect(await statusOf(() => getKitchenChanges("?since=abc"))).toBe(400);
+  });
+
+  it("a kitchen move that skips a status or is stale is a 409 with the line's status, and a bad form is a 400", async () => {
+    session.identity = aStaff.key;
+    const itemId = await plantKitchenItem(fixtures.a);
+
+    const skipped = await postKitchenMove(itemId, { from: "placed", to: "done" });
+    expect(skipped.status).toBe(409);
+    expect((await skipped.json()).status).toBe("placed");
+    expect((await postKitchenMove(itemId, { from: "placed", to: "cooking" })).status).toBe(200);
+    const stale = await postKitchenMove(itemId, { from: "placed", to: "cooking" });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).status).toBe("cooking");
+    expect((await postKitchenMove(itemId, { from: "cooking", to: "burnt" })).status).toBe(400);
+    expect(await statusOf(() => postKitchenMove("not-an-id", { from: "placed", to: "cooking" }))).toBe(404);
+  });
 });
 
 describe("the guest's cancel", () => {
@@ -3582,6 +3705,7 @@ describe("harness coverage", () => {
       guestCancel,
       tableScan,
       tableOrder,
+      kitchenChanges,
       ...outsideTheHarness,
     ];
     expect(found.sort()).toEqual(covered.sort());
