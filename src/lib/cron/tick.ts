@@ -1,25 +1,36 @@
 import "server-only";
 import type { Database } from "@/db/client";
 import { completeOverdueSittings, markNoShows } from "./booking-status";
+import { getEnv } from "@/lib/env";
+import { chooseSender } from "@/lib/whatsapp/sender";
 import { pruneCodeLimits } from "./code-limits";
+import { sendDueNotifications } from "./notifications";
 import { purgeGuestPhones } from "./phone-purge";
 
 /**
  * One run of the 5-minute scheduled job (S-35): every task specs 04, 05 and 06
  * put on it, in order, on the system login the route hands over. A later task
- * (the notification outbox, the phone purge, QR idle expiry) is one more entry
- * here, in the place S-35 gives it. Each must be idempotent and safe to overlap
+ * (QR idle expiry) is one more entry here, in the place S-35 gives it. Each must be idempotent and safe to overlap
  * with itself: Vercel can deliver a run twice and doesn't retry a failed one.
  */
 export type TickTask = {
   name: string;
-  /** Does its work as of `now`; returns how many rows it changed. */
+  /**
+   * Does its work as of `now`; returns how many rows it changed. The outbox
+   * counts the notifications it finished: sent, failed or cancelled.
+   */
   run: (db: Database, now: Date) => Promise<number>;
 };
 
 export const tickTasks: readonly TickTask[] = [
   { name: "noShows", run: markNoShows },
   { name: "completed", run: completeOverdueSittings },
+  // After the status rules, so a booking they have just closed gets no confirmation.
+  // The sender is chosen per run from the environment: Meta, the console, or hold.
+  {
+    name: "notifications",
+    run: (db, now) => sendDueNotifications(db, now, chooseSender(getEnv())),
+  },
   { name: "phonesPurged", run: purgeGuestPhones },
   { name: "codeLimitsPruned", run: pruneCodeLimits },
 ];

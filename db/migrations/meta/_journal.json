@@ -239,6 +239,48 @@
       "when": 1794316993712,
       "tag": "0033_booking_phone_set",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794320608155,
+      "tag": "0034_notification_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794323196307,
+      "tag": "0035_notification_retries",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794324368953,
+      "tag": "0036_booking_reminder_cancel",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794324425645,
+      "tag": "0037_notification_sends_cancelled_by",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794324459096,
+      "tag": "0038_delivery_status_webhook",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794326164830,
+      "tag": "0039_quiet_tempest",
+      "breakpoints": true
     }
   ]
 }

@@ -100,11 +100,13 @@ describe("row-level security coverage", () => {
     expect(uncovered).toEqual([]);
   });
 
-  it("every public table the app role can read has RLS on", async () => {
+  // A view has no RLS of its own and runs as its owner, which RLS skips, so the
+  // app role may read none: 0002's default privileges would hand it each new one.
+  it("every public table the app role can read has RLS on, and it can read no view", async () => {
     const { rows } = await owner.db.execute(sql`
       select c.relname as table from pg_class c
       join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind in ('r', 'p')
+      where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm')
         and not c.relrowsecurity
         and has_table_privilege('app_tenant', c.oid, 'select')
     `);

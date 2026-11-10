@@ -62,6 +62,7 @@ const row = (time: string, overrides: Partial<DayRow> = {}): DayRow => ({
   note: null,
   phone: null,
   late: false,
+  confirmationFailed: false,
   ...overrides,
 });
 

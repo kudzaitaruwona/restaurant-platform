@@ -19,6 +19,7 @@ WhatsApp Business messaging requires Meta Business verification, a WhatsApp Busi
 - **One platform-owned WhatsApp number** sends for every restaurant. Messages name the restaurant in the body.
 - Per-restaurant numbers would make each venue go through Meta verification, which defeats "effortless first yes." Revisit only if a venue insists on its own number.
 - Direct integration with the **WhatsApp Cloud API** (Meta-hosted), with no third-party provider markup. Twilio and similar providers are a fallback if Meta onboarding stalls.
+- **Before Meta approves the account — Decided (S-37):** the app runs without WhatsApp's keys. In production the job holds queued messages as `pending` and sends them once `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` are set; outside production a console sender prints them. Turning WhatsApp on needs no code change. Templates are in language `en`, defined in one place (`src/lib/whatsapp/templates.ts`).
 
 ## Templates (utility category)
 
@@ -44,7 +45,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 
 | Event | Queued |
 |-------|--------|
-| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` *(proposed, D-03)*. The reminder is skipped if that time has already passed. |
+| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). The reminder is skipped if that time has already passed. |
 | Booking cancelled (by guest or staff) | Pending reminder → `cancelled`. `booking_cancelled` now. |
 | Booking marked no-show or completed | Pending reminder → `cancelled` |
 
@@ -53,6 +54,8 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 - `UNIQUE (booking_id, kind)` only prevents duplicate *rows*. Duplicate *sends* are prevented by the claim.
 - **Crash recovery is at-least-once:** a row stuck in `sending` for more than 10 minutes returns to `pending`. If the crash happened after Meta accepted the message, the guest gets it twice. That's accepted, because a rare duplicate is better than a lost reminder.
 - Retry: up to 3 attempts with backoff, then `failed`.
+- *(Proposed, S-37)* A send Meta doesn't accept (a non-2xx, a network error, or no message ID) records the error in `last_error`. One that may work later (a network error or timeout, a 408, 429 or 5xx, or one of Meta's throttling codes) goes back to `pending`, due again 5 minutes later, then 10; the third failed attempt marks it `failed`. Any other refusal is `failed` at once (#47). A row recovered from `sending` on its third attempt is marked `failed` rather than `pending`. Every step after a claim requires that claim's `claimed_at`, so a run can't send a row recovered from it. A run stops sending after 75 seconds, so a slow Meta can't hold the job past its function's limit; the rows it claimed but didn't start go back to `pending`, with the claim's attempt given back, for the next run. A `booking_confirmed` for a restaurant with no contact phone is marked `failed` without sending, since {{6}} would be empty. The reminder doesn't name the phone, and a `booking_cancelled` is still sent without one, its {{5}} then saying to contact the restaurant (#45, #46).
+- *(Proposed, S-37)* The job reads a guest's name, number and manage link only through the `notification_sends` view, which shows them only for a row it has claimed (spec 00, 5).
 - **Before sending, re-check the booking's status for that message kind.** `booking_confirmed` and `booking_reminder` require `status = confirmed`. `booking_cancelled` requires `status = cancelled`. On a mismatch, mark the row `cancelled` without sending. A reminder for a cancelled booking is worse than no reminder.
 - The same job runs the booking auto-status rules from spec 04 and the phone retention purge *(proposed, D-06; built as the `phonesPurged` task, which runs after the status rules and needs nothing from the outbox: a booking 30 days past has nothing left to send)*.
 - This job and the Meta webhook work across all tenants, so they use the privileged database role described in spec 01.
@@ -62,9 +65,12 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 ## Delivery status
 - A Meta webhook receives `sent`, `delivered`, `read` and `failed` statuses and updates `notifications.status`. Verify the webhook signature with the app secret.
 - **Staff day view:** show a small warning icon on a booking whose confirmation `failed`, for example when the number isn't on WhatsApp. Staff can then call the guest. The booking itself stays valid.
+- *(Proposed, S-37, #48)* The webhook is `GET`/`POST /api/webhooks/whatsapp`. `GET` is Meta's subscription handshake, checked against `WHATSAPP_WEBHOOK_VERIFY_TOKEN`. `POST` is refused (401) unless `X-Hub-Signature-256` is the HMAC-SHA256 of the raw body under `WHATSAPP_APP_SECRET`, compared in constant time, and refused always while the secret is unset. Each status finds its row by `provider_message_id`, then writes it by `(restaurant_id, id)`.
+- *(Proposed, S-37, #48)* **Out of order.** A status only moves forward: `delivered` and `read` replace `sent` and `failed`, `read` replaces `delivered`, `failed` replaces only `sent`, and `sent` changes nothing. A row in `pending`, `sending` or `cancelled` is never touched. A `failed` status keeps Meta's first error in `last_error`. A message id the app doesn't know is ignored.
+- *(Proposed, S-37, #48)* The warning shows only while the booking is `confirmed`: once the guest is seated there is no one to call.
 
 ## Data and privacy
-- Only send when `whatsapp_opt_in = true` and `guest_phone` is set.
+- Only send when `whatsapp_opt_in = true` and `guest_phone` is set. *(Proposed, S-37)* Checked when queueing (nothing is queued without both) and again at send time (a booking that has lost its number, e.g. to the D-06 purge, gets its row marked `cancelled`).
 - Never send marketing messages through these templates. Utility-category templates must stay strictly transactional, or Meta can reclassify or block them.
 
 ## Cost

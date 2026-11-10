@@ -1056,6 +1056,11 @@ const outsideTheHarness = [
   // The scheduled job (S-35): no session at all, only CRON_SECRET, and it takes
   // no input that could name a tenant: src/app/api/cron/tick/route.test.ts.
   "GET /api/cron/tick",
+  // Meta's webhook (spec 05, #48): no session, only Meta's signature, and a
+  // status names a message id, never a tenant: src/app/api/webhooks/whatsapp/route.test.ts
+  // and src/lib/whatsapp/delivery-status.int.test.ts.
+  "GET /api/webhooks/whatsapp",
+  "POST /api/webhooks/whatsapp",
 ];
 
 const [aOwner, aStaff, bOwner, bStaff] = devIdentities;

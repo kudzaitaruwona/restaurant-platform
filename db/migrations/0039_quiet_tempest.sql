@@ -1,0 +1,1 @@
+CREATE INDEX "notifications_sending_claimed_at_index" ON "notifications" USING btree ("claimed_at") WHERE "notifications"."status" = 'sending';

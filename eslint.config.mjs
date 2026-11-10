@@ -38,14 +38,14 @@ const staffAuthSeam = [
 ];
 
 // The system login (spec 01, S-28, S-35): BYPASSRLS across every tenant, so only
-// the scheduled job's route opens it, besides the tooling. The Meta webhook's
-// route joins this list when it is built.
-const systemSeam = ["src/app/api/cron/tick/route.ts"];
+// the scheduled job's route and the Meta webhook's (#48) open it, besides the
+// tooling.
+const systemSeam = ["src/app/api/cron/tick/route.ts", "src/app/api/webhooks/whatsapp/route.ts"];
 
-// The scheduled job's tasks run outside any tenant, on the system login the
-// job's route hands them. They may name the database's type and the tables;
-// they open no login of their own.
-const cronTasks = ["src/lib/cron/**"];
+// The scheduled job's tasks, and the webhook's write of delivery statuses, run
+// outside any tenant, on the system login their route hands them. They may name
+// the database's type and the tables; they open no login of their own.
+const cronTasks = ["src/lib/cron/**", "src/lib/whatsapp/delivery-status.ts"];
 
 // Sign-in's own files, the only ones that may use authDatabase(): it hands back
 // the admin login or staff sign-in's, so anywhere else it's a way round both.
@@ -97,11 +97,11 @@ const staffAuthDatabaseBoundary = [
   },
 ];
 
-// Nothing but the job's route reaches the role that bypasses RLS.
+// Nothing but the job's route and the Meta webhook reach the role that bypasses RLS.
 const systemDatabaseBoundary = [
   {
     regex: "(^|/)db/system$",
-    message: "Only the scheduled job's route opens the system login (S-35).",
+    message: "Only the scheduled job's route and the Meta webhook open the system login (S-35).",
   },
 ];
 
