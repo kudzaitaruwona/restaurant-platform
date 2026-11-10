@@ -57,7 +57,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 - The same job runs the booking auto-status rules from spec 04 and the phone retention purge *(proposed, D-06)*.
 - This job and the Meta webhook work across all tenants, so they use the privileged database role described in spec 01.
 
-**Hosting check:** Vercel cron frequency depends on the plan, and the Hobby plan doesn't run jobs every few minutes. Either use a paid plan or trigger the job from an external scheduler, such as Upstash QStash or a GitHub Actions schedule calling a secret-protected route. Decide this before phase 5.
+**Hosting — Decided (S-35):** the job runs every 5 minutes on Vercel Cron, on the Pro plan, calling `GET /api/cron/tick`, which is protected by `CRON_SECRET` sent as a bearer token. Vercel Cron doesn't retry and can deliver a run twice, so every task the job runs is idempotent and safe to overlap with itself. See S-35 in `docs/decisions.md`.
 
 ## Delivery status
 - A Meta webhook receives `sent`, `delivered`, `read` and `failed` statuses and updates `notifications.status`. Verify the webhook signature with the app secret.
