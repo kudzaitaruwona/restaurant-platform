@@ -1,12 +1,13 @@
 # 07 · Kitchen View
 
-**Phase 6.** It ships with QR ordering (spec 06) and is useless without it.
+**Phase 6.** It ships with QR ordering (spec 06) and is useless without it. Items marked *proposed* are built as written and stay marked proposed (S-36 in `docs/decisions.md`).
 
 ## Goal
 The kitchen sees every incoming item with its table and notes, and moves items through cooking, done and delivered without paper tickets.
 
 ## Decided
 - Shows the order, its table, and **per-item notes**.
+- Orders arrive with no staff approval (D-01, settled as S-36), so the board is where staff first see a suspicious order, and can reject it from here.
 - Status is tracked per item: placed → cooking → done → delivered.
 
 ## Layout `/admin/kitchen`
@@ -14,7 +15,7 @@ The kitchen sees every incoming item with its table and notes, and moves items t
 - **Three columns:** Placed · Cooking · Done. Delivered items disappear from the board.
 - Each card is one item: table label (large), quantity × item name, the note **highlighted**, customer name, and how long ago it was ordered.
 - Items from the same order and table are grouped visually, so the kitchen can plate a table together.
-- **One tap** moves an item forward. A long press or a menu moves it back (for mis-taps) or voids it (with a reason).
+- **One tap** moves an item forward. A long press or a menu moves it back (for mis-taps), voids it (with a reason), or rejects its whole order (with a reason, S-36).
 - **Ageing:** a card turns amber after 15 minutes in Placed or Cooking and red after 25 *(proposed thresholds, configurable later)*.
 - A sound and visual flash when new items arrive. Browsers need one tap to unlock audio, so show a "Tap to enable sound" banner on load.
 
@@ -26,7 +27,7 @@ The kitchen sees every incoming item with its table and notes, and moves items t
 ## Who can do what
 - Any logged-in staff member can move items through cooking and done.
 - **Delivered** is set by front-of-house in the floor view (spec 06), or from the kitchen view if the restaurant uses it that way.
-- Void requires a reason and is audited.
+- Void and reject require a reason and are audited.
 
 ## Out of scope (v1)
 - Kitchen printers and tickets

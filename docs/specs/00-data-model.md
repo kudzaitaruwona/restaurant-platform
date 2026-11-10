@@ -286,7 +286,7 @@ notifications
 table_sessions
   id, restaurant_id, table_id
   status                enum(open, closed)
-  approved_at           timestamptz null   -- only used if D-01 picks staff approval
+  approved_at           timestamptz null   -- unused in v1: D-01 settled without staff approval (S-36). Kept, not dropped, so approval can be added later without a schema change; nothing writes or reads it
   opened_at, last_activity_at              -- bumped by scans, orders, item status changes, reopen
   waiter_requested_at   timestamptz null   -- "call a waiter" flag (proposed)
   closed_at

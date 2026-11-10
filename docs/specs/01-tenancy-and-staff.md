@@ -71,7 +71,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
 
 ### Audit log
-Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void and reopen.
+Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void, reject an order (S-36) and reopen.
 
 ## Stack (decided, D-07)
 - Next.js App Router, TypeScript, Tailwind, shadcn/ui, deployed on Vercel

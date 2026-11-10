@@ -14,7 +14,7 @@ A multi-tenant platform for sit-down restaurants in Zimbabwe. It covers the menu
 | 03 | [Tables and QR codes](specs/03-tables-and-qr.md) | Draft | 3 |
 | 04 | [Autonomous bookings](specs/04-bookings.md) | Draft | 4 |
 | 05 | [Booking notifications (WhatsApp)](specs/05-booking-notifications.md) | Draft | 5 |
-| 06 | [QR table ordering and sessions](specs/06-qr-ordering.md) | **Blocked** on [D-01](decisions.md#d-01-fake-remote-qr-orders) | 6 |
+| 06 | [QR table ordering and sessions](specs/06-qr-ordering.md) | Draft (D-01 settled as S-36) | 6 |
 | 07 | [Kitchen view](specs/07-kitchen-view.md) | Draft (ships with 06) | 6 |
 
 Decisions, both settled and open, are tracked in [decisions.md](decisions.md).
@@ -26,7 +26,7 @@ Decisions, both settled and open, are tracked in [decisions.md](decisions.md).
 3. **Tables and QR codes.** Table codes point to the menu until ordering ships, so printed codes never need reprinting.
 4. **Bookings.** A web booking page with autonomous table assignment, plus a staff day view.
 5. **WhatsApp notifications.** Booking confirmations and reminders through templates only, with no chatbot.
-6. **QR ordering and kitchen view.** These wait until the fraud decision (D-01) is made.
+6. **QR ordering and kitchen view.** The fraud decision (D-01) is settled as S-36: the QR token alone lets a customer order, and staff reject suspicious orders.
 
 Bookings come before ordering because a real prospect asked for hands-off booking. QR ordering has no demand evidence yet.
 

@@ -1,6 +1,6 @@
 # 06 · QR Table Ordering and Sessions
 
-**Phase 6. Blocked on [D-01](../decisions.md#d-01-fake-remote-qr-orders), the fake remote orders problem.** Everything else in this spec is decided, except items marked *proposed*. Don't start building until D-01 is resolved.
+**Phase 6.** D-01, the fake remote orders problem, is settled: the QR token alone lets a customer order, and staff reject or void suspicious orders (S-36 in `docs/decisions.md`). Everything in this spec is decided, except items marked *proposed*. The proposed items are built as written and stay marked proposed (S-36).
 
 ## Goal
 Customers at a table scan, order, and track their food without waiting to flag a waiter. This runs alongside waiters, not instead of them. The restaurant keeps taking payment on its own swipe machine.
@@ -12,7 +12,7 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 
 ### Sessions
 - A session belongs to a table. **Only one session can be open per table**, and the table is locked to it.
-- The first scan of a table with no open session opens one (subject to D-01). Later scans **join** the open session, which covers latecomers.
+- The first scan of a table with no open session opens one. Later scans **join** the open session, which covers latecomers. Nobody approves a session, and no code is typed (S-36).
 - A session closes on any of several independent triggers:
   - **Staff "clear table"** (v1)
   - **Idle expiry:** 90 minutes with no activity (v1). Activity means scans, orders, item status changes, and reopen. Delivering food counts, so a table that is eating isn't treated as idle.
@@ -33,16 +33,17 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 
 ### Access
 - Customers stay anonymous, and orders attach to the session.
-- Staff login is required for: clear table, force-close, void, reopen, and every kitchen status change.
+- Staff login is required for: clear table, force-close, void, reject, reopen, and every kitchen status change.
 
-## D-01 options (decide before building)
-| Option | Customer friction | Staff cost | Stops photo-of-QR fraud |
-|--------|-------------------|------------|-------------------------|
-| **Staff approve new sessions** (recommended) | None; the first order shows "Waiting for staff to confirm your table" | One tap per new table | Yes |
-| Per-table code | Type a short code every visit | None | Yes, if the code rotates per session |
-| Both, chosen per restaurant | Varies | Varies | Yes; the most to build |
-
-`table_sessions.approved_at` already exists in the data model, so the recommended option needs no schema change.
+## Remote orders (D-01, settled as S-36)
+Someone could photograph a table's QR code and order from anywhere. v1 accepts that risk rather than put a step in front of every party.
+- The QR token alone opens or joins the table's session, and orders go straight to the kitchen. There is no staff approval, no per-table code and no Wi-Fi, IP or location check.
+- Staff see every order as it arrives, with its table and customer name, on the kitchen board (spec 07) and the floor view.
+- **Reject an order:** staff void every item of the order that hasn't been delivered, with one required reason. *(Proposed: a delivered item was carried to a real table, so it stays.)* The order leaves the kitchen board.
+- **Void an item:** staff void one item, with a required reason.
+- Both record the staff member and reason on each item (`voided_by`, `void_reason`), are audited (spec 01), and can be done from the floor view or the kitchen view by owner or staff (S-26).
+- Regenerating the table's token (spec 03) stops a photographed code for good.
+- `table_sessions.approved_at` is unused in v1 and stays in the data model, so staff approval can still be added later without a schema change.
 
 ## Customer flow `/t/{qr_token}`
 1. Menu (the same page as spec 02) with "Add" buttons and a cart
@@ -51,11 +52,11 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 4. "Call a waiter" link *(proposed)*: sends a flag to the staff view, with no chat
 5. No payment step. "Pay at the table with your waiter as usual."
 
-The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript.
+The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript. `/t/{qr_token}` stays the hand-written Route Handler that serves the menu (S-32), and ordering adds one small standalone script to it for the cart, the name and the tracker. The menu HTML stays cached; the script talks to uncached endpoints of its own. `/m/{menu_token}` gets no script and never takes an order (spec 03).
 
 ## Staff: floor view
 - A grid of tables showing status (free, open, flagged), time open, and item counts by status.
-- Table detail: every order and item, plus mark delivered, void (with a reason), clear table, force-close, and reopen (within the window).
+- Table detail: every order and item, plus mark delivered, void (with a reason), reject an order (with a reason, S-36), clear table, force-close, and reopen (within the window).
 - Idle sessions that are blocked by undelivered items are shown as flagged.
 
 ## Out of scope (v1)
@@ -73,4 +74,4 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 - [ ] A reopened session is not closed by idle expiry on the next job run.
 - [ ] Changing a menu price after an order doesn't change that order's lines.
 - [ ] Idle expiry closes a fully delivered session at 90 minutes of inactivity, not 90 minutes since it opened.
-- [ ] Whatever D-01 decides has an automated test showing a remote order can't reach the kitchen.
+- [ ] A staff reject voids every undelivered item of the order, recorded with the staff member and reason, and the order leaves the kitchen board (S-36). This replaces "a remote order can't reach the kitchen", which no longer fits D-01's decision: a remote order does reach it.
