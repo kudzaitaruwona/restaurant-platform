@@ -68,6 +68,36 @@ export async function joinTableSession(qrToken: string) {
   });
 }
 
+/**
+ * "Call a waiter" (spec 06, step 4, *proposed*, #77): flags the table's open
+ * session, opening or joining one exactly as a scan does (one statement on the
+ * table lock), and marks it active. A call already pending stays pending with its
+ * first time: `coalesce` keeps it, so a hammered button is still one call and
+ * can't push its own time forward. Undefined for a token that leads to no live
+ * table. The flag is cleared by staff, or by the session closing (0044).
+ */
+export async function callWaiter(qrToken: string) {
+  const tenant = await resolvePublicToken("table", qrToken);
+  if (!tenant) return undefined;
+  return withTenant(tenant, async (tx) => {
+    const table = await tableOf(tx, qrToken);
+    if (!table) return undefined;
+    const [session] = await tx
+      .insert(tableSessions)
+      .values({ restaurantId: tenant.restaurantId, tableId: table.id, waiterRequestedAt: sql`now()` })
+      .onConflictDoUpdate({
+        target: tableSessions.tableId,
+        targetWhere: sql`${tableSessions.status} = 'open'`,
+        set: {
+          lastActivityAt: sql`now()`,
+          waiterRequestedAt: sql`coalesce(${tableSessions.waiterRequestedAt}, now())`,
+        },
+      })
+      .returning({ id: tableSessions.id, requestedAt: tableSessions.waiterRequestedAt });
+    return { sessionId: session.id, requestedAt: session.requestedAt! };
+  });
+}
+
 // --- placing an order ---------------------------------------------------------
 
 /**

@@ -110,6 +110,53 @@ describe("the floor screen", () => {
   });
 });
 
+describe("a table calling a waiter", () => {
+  const calling = async (r: Restaurant) => {
+    await openTable(r, [{ status: "placed" }]);
+    await owner.db
+      .update(tableSessions)
+      .set({ waiterRequestedAt: new Date("2031-01-01T10:05:00Z") })
+      .where(eq(tableSessions.tableId, r.tableId));
+  };
+
+  it("is marked on the grid with its time on the restaurant's clock, and can be dismissed from there", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await owner.db.update(restaurants).set({ timezone: "Pacific/Auckland" }).where(eq(restaurants.id, r.restaurantId));
+    await calling(r);
+
+    const html = renderToStaticMarkup(await FloorScreen());
+
+    expect(html).toContain("Calling a waiter since 23:05");
+    expect(html).toContain(`action="/api/floor/${r.tableId}/dismiss-waiter"`);
+  });
+
+  it("is marked on the table's detail too, with the same dismiss", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await calling(r);
+
+    const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+    expect(html).toContain("Calling a waiter since");
+    expect(html).toContain(`action="/api/floor/${r.tableId}/dismiss-waiter"`);
+  });
+
+  it("shows nothing, and no dismiss, on a table that isn't calling", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [{ status: "placed" }]);
+
+    const grid = renderToStaticMarkup(await FloorScreen());
+    const detail = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+    for (const html of [grid, detail]) {
+      expect(html).not.toContain("Calling a waiter");
+      expect(html).not.toContain("dismiss-waiter");
+    }
+  });
+});
+
 describe("the table detail screen", () => {
   it("lists orders and items with customer name, note and status, escaping what a customer typed", async () => {
     const r = await orderingRestaurant(owner.db);

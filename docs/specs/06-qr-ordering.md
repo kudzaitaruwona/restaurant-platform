@@ -53,7 +53,7 @@ Someone could photograph a table's QR code and order from anywhere. v1 accepts t
 1. Menu (the same page as spec 02) with "Add" buttons and a cart
 2. Cart → name → **Place order**
 3. **Order tracker**, a live view of every item in the session with its status. This is shared, so everyone at the table sees everything.
-4. "Call a waiter" link *(proposed)*: sends a flag to the staff view, with no chat
+4. "Call a waiter" link *(proposed)*: sends a flag to the staff view, with no chat (`POST /api/t/{qr_token}/waiter`; it opens or joins the table's session like a scan, and is activity)
 5. No payment step. "Pay at the table with your waiter as usual."
 
 The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript. `/t/{qr_token}` stays the hand-written Route Handler that serves the menu (S-32), and ordering adds one small standalone script to it for the cart, the name and the tracker. *(Proposed: the menu HTML stays cached; the script talks to uncached endpoints of its own.)* `/m/{menu_token}` gets no script and never takes an order (spec 03).
@@ -73,6 +73,7 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 
 ## Staff: floor view
 - A grid of tables showing status (free, open, flagged), time open, and item counts by status.
+- A table whose customers pressed "Call a waiter" *(proposed)* is marked "Calling a waiter since HH:MM" on the grid and in its detail until staff dismiss it (one tap, either place) or the session closes. Pressing it again while one is pending changes nothing.
 - Table detail: every order and item, plus mark delivered, void (with a reason), reject an order (with a reason, S-36), clear table, force-close, and reopen (within the window).
 - Idle sessions that are blocked by undelivered items are shown as flagged.
 

@@ -3,7 +3,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, diningTables, orderItems, orders, tableSessions } from "@/db/schema";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { orderingRestaurant } from "../../test/integration/ordering";
-import { floorCounts, floorTables, getFloor, getTableDetail, markItemDelivered } from "./floor";
+import {
+  dismissWaiter,
+  floorCounts,
+  floorTables,
+  getFloor,
+  getTableDetail,
+  markItemDelivered,
+} from "./floor";
 
 const owner = openOwnerDatabase();
 beforeAll(() => {
@@ -431,5 +438,89 @@ describe("marking an item delivered", () => {
     expect(await markItemDelivered(ctx(r), ids[0])).toEqual({ outcome: "wrong_status", status: "cooking" });
 
     expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([]);
+  });
+});
+
+describe("a table calling a waiter (spec 06, proposed)", () => {
+  const calledAt = new Date("2031-01-01T10:05:00Z");
+  const flag = (sessionId: string, at: Date | null = calledAt) =>
+    owner.db.update(tableSessions).set({ waiterRequestedAt: at }).where(eq(tableSessions.id, sessionId));
+  const waiterOf = async (sessionId: string) =>
+    (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, sessionId)))[0].waiterRequestedAt;
+
+  it("shows on the grid and the detail: since when the open session has been calling", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const quiet = await addTable(r, "Quiet", 9);
+    const { sessionId } = await order(r, [{}]);
+    await order(r, [{}], { tableId: quiet });
+    await flag(sessionId);
+
+    const { tables } = await getFloor(ctx(r));
+
+    expect(tables.map((t) => [t.label, t.waiterRequestedAt])).toEqual([
+      ["Table 7", calledAt],
+      ["Quiet", null],
+    ]);
+    expect((await getTableDetail(ctx(r), r.tableId))?.session?.waiterRequestedAt).toEqual(calledAt);
+  });
+
+  it("is not shown on a free table", async () => {
+    const r = await orderingRestaurant(owner.db);
+    expect((await getFloor(ctx(r))).tables[0].waiterRequestedAt).toBeNull();
+  });
+
+  it("is dismissed by staff, clearing the flag and auditing who", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(r, [{}]);
+    await flag(sessionId);
+
+    expect(await dismissWaiter(ctx(r), r.tableId)).toEqual({ outcome: "done" });
+
+    expect(await waiterOf(sessionId)).toBeNull();
+    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([
+      expect.objectContaining({
+        action: "table_session.waiter_dismiss",
+        entityType: "table_session",
+        entityId: sessionId,
+        actorType: "staff",
+        actorId: r.staffId,
+      }),
+    ]);
+  });
+
+  it("doesn't move the session's last activity: only the customer's call is activity", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(r, [{}]);
+    const longAgo = new Date("2020-01-01T10:00:00Z");
+    await owner.db.update(tableSessions).set({ lastActivityAt: longAgo, waiterRequestedAt: calledAt }).where(eq(tableSessions.id, sessionId));
+
+    await dismissWaiter(ctx(r), r.tableId);
+
+    const [row] = await owner.db.select().from(tableSessions).where(eq(tableSessions.id, sessionId));
+    expect(row.lastActivityAt).toEqual(longAgo);
+  });
+
+  it("dismissing a call nobody made, or twice, is fine and writes no audit entry", async () => {
+    const r = await orderingRestaurant(owner.db);
+    expect(await dismissWaiter(ctx(r), r.tableId)).toEqual({ outcome: "nothing_pending" });
+    const { sessionId } = await order(r, [{}]);
+    await flag(sessionId);
+    const outcomes = await Promise.all([dismissWaiter(ctx(r), r.tableId), dismissWaiter(ctx(r), r.tableId)]);
+
+    expect(outcomes.map((o) => o.outcome).sort()).toEqual(["done", "nothing_pending"]);
+    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toHaveLength(1);
+  });
+
+  it("is not found for another restaurant's table, an archived one or an unknown one, and changes nothing", async () => {
+    const mine = await orderingRestaurant(owner.db);
+    const theirs = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(theirs, [{}]);
+    await flag(sessionId);
+    const archived = await addTable(mine, "Old", 3, { archivedAt: new Date() });
+
+    for (const id of [theirs.tableId, archived, crypto.randomUUID()]) {
+      expect(await dismissWaiter(ctx(mine), id)).toEqual({ outcome: "not_found" });
+    }
+    expect(await waiterOf(sessionId)).toEqual(calledAt);
   });
 });

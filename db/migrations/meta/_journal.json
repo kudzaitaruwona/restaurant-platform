@@ -309,6 +309,13 @@
       "when": 1794332096840,
       "tag": "0043_order_items_void_final",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794338569994,
+      "tag": "0044_waiter_flag_ends_with_session",
+      "breakpoints": true
     }
   ]
 }

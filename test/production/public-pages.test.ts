@@ -718,6 +718,17 @@ describe("ordering from a table's page", () => {
     expect(
       (await post(`/api/t/${restaurant.qrToken}/orders`, new URLSearchParams(), elsewhere)).status,
     ).toBe(403);
+    expect((await post(`/api/t/${restaurant.qrToken}/waiter`, undefined, elsewhere)).status).toBe(403);
+  });
+
+  it("answers a waiter call fresh, uncached, with the same session and time for repeat calls", async () => {
+    const restaurant = await newRestaurant("Stew");
+    const first = await post(`/api/t/${restaurant.qrToken}/waiter`);
+    const again = await post(`/api/t/${restaurant.qrToken}/waiter`);
+    expect(first.status).toBe(200);
+    expect(cacheStatus(first)).toBeNull();
+    expect(await again.json()).toEqual(await first.json());
+    expect((await post(`/api/t/no-such-token-${crypto.randomUUID()}/waiter`)).status).toBe(404);
   });
 
   it("is a 404 for an unknown token", async () => {

@@ -81,6 +81,16 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
           <p className="text-muted-foreground">
             Open since {localTime(session.openedAt, timezone)} ({openFor(session.openedAt, at)})
           </p>
+          {session.waiterRequestedAt && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-500 bg-amber-100 p-3 text-amber-950">
+              <strong>Calling a waiter since {localTime(session.waiterRequestedAt, timezone)}</strong>
+              <ActionForm action={`/api/floor/${table.id}/dismiss-waiter`}>
+                <button type="submit" className="rounded-md border border-amber-950 px-3 py-1 font-medium">
+                  Dismiss
+                </button>
+              </ActionForm>
+            </div>
+          )}
           {orders.length === 0 && <p className="text-muted-foreground">Nothing ordered yet.</p>}
           {orders.map((order) => (
             <section key={order.id} className="flex flex-col gap-2 rounded-md border p-4">

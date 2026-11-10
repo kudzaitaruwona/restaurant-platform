@@ -292,7 +292,7 @@ table_sessions
   status                enum(open, closed)
   approved_at           timestamptz null   -- unused in v1: D-01 settled without staff approval (S-36). Kept, not dropped, so approval can be added later without a schema change; nothing writes or reads it
   opened_at, last_activity_at              -- bumped by scans, orders, item status changes, reopen
-  waiter_requested_at   timestamptz null   -- "call a waiter" flag (proposed)
+  waiter_requested_at   timestamptz null   -- "call a waiter" flag (proposed): set by the table page, cleared by staff or by the session closing (trigger)
   closed_at
   close_reason          enum(in_app_payment, staff_clear, idle_expiry,
                              pos_payment, force_close) null

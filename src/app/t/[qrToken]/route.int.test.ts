@@ -176,6 +176,14 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain('"/api/t/"');
   });
 
+  it("has a Call a waiter button, hidden until the script has joined the session", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toMatch(/<button type="button" id="call-waiter"[^>]* hidden>Call a waiter<\/button>/);
+  });
+
   it("escapes an item's name in the Add button", async () => {
     const { qrToken } = await newRestaurant("Ordering", `Stew "<script>alert(1)</script>"`);
 
