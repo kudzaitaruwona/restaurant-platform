@@ -320,6 +320,7 @@ order_items
   void_reason           text null
   voided_by             → staff null
   CHECK (status <> 'voided' OR (void_reason IS NOT NULL AND voided_by IS NOT NULL))
+  change_xid            bigint             -- (proposed, #71) the kitchen board's change stamp: the id of the transaction that last wrote the row, set by a trigger
 ```
 
 ### Enforced in the database
@@ -330,4 +331,5 @@ order_items
 - **Reopen:** allowed only if `closed_at > now() - 15 min` **and** no session on that table has `opened_at > this.closed_at`, whether that newer session is open or already closed. Reopening also sets `last_activity_at = now()`, so idle expiry doesn't immediately close the session again.
 - **Orders:** an insert fails unless the session is `open`. A line's insert fails too unless its order's session is `open` (triggers `orders_session_open`, `order_items_session_open`, migration 0034). Each takes the session row `FOR SHARE`, so an order and a close can't both pass.
 - **Frozen prices:** a trigger refuses any update to a line's `menu_item_id`, `special_id`, `name_snapshot`, `quantity`, `unit_price_usd`, `unit_price_zig` or `zig_source`, and to `orders.rate_used`, whoever asks (migration 0034). *(Proposed, S-40)* The same triggers refuse a change to a line's `order_id` and an order's `session_id`, so money can't move between bills (`order_items_frozen`, `orders_frozen`).
+- *(Proposed, #71)* **Kitchen change stamp:** a trigger sets `order_items.change_xid` to the writing transaction's id on every insert and update, whatever the writer sends (`order_items_change_stamp`, migration 0035). The board's poll asks for stamps at or above the oldest transaction still running at its previous poll, so a line written by a transaction that commits late is never skipped (S-40 in detail).
 - *(Proposed, S-40)* **No hard deletes:** `app_tenant` can't delete from `table_sessions`, `orders` or `order_items`. A cancellation is a void.

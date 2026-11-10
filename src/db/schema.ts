@@ -871,6 +871,14 @@ export const orderItems = pgTable(
       .defaultNow(),
     voidReason: text("void_reason"),
     voidedBy: uuid("voided_by"),
+    // The kitchen board's change stamp (#71, proposed): the id of the transaction
+    // that last wrote the row, set by the order_items_change_stamp trigger
+    // whatever the writer says. A poll returns rows stamped at or after the
+    // oldest transaction still running when the previous poll read, so a write
+    // that commits late is never skipped. See src/lib/kitchen.ts.
+    changeXid: bigint("change_xid", { mode: "number" })
+      .notNull()
+      .default(sql`(pg_current_xact_id()::text::bigint)`),
   },
   (table) => [
     foreignKey({
@@ -899,12 +907,15 @@ export const orderItems = pgTable(
     }),
     unique().on(table.restaurantId, table.id),
     index().on(table.restaurantId, table.orderId),
-    // The kitchen's lines (spec 07): only those still in play, so a load doesn't
-    // read the restaurant's whole history (lines are never deleted). Placed for
-    // now; #71's board filters on placed, cooking and done.
+    // The kitchen board's load (spec 07): only lines still in play (placed,
+    // cooking, done), so a load doesn't read the restaurant's whole history
+    // (lines are never deleted).
     index("order_items_in_play")
       .on(table.restaurantId, table.status)
       .where(sql`${table.status} not in ('delivered', 'voided')`),
+    // The board's poll (#71): what changed since a stamp, delivered and voided
+    // lines included, so the board can drop them.
+    index("order_items_changes").on(table.restaurantId, table.changeXid),
     // 1 to 20 (proposed): the spec says only "> 0".
     check("order_items_quantity", sql`${table.quantity} between 1 and 20`),
     // Up to 200 characters (proposed), like a booking's note; blank is stored as null.
