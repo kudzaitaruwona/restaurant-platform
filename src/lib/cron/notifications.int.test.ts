@@ -800,4 +800,19 @@ describe("booking_cancelled", () => {
     );
     expect((await row(id)).status).toBe("sent");
   });
+
+  // Recovery runs every 5 minutes and filters on status = 'sending' and claimed_at. Behaviour
+  // can't show an index exists (a scan gives the same rows), so this asks the planner: with
+  // sequential scans off it must have an index to use for the query recover() runs.
+  it("has an index the stuck-in-sending query can use, so recovery doesn't read the whole table", async () => {
+    const plan = await system.db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const result = await tx.execute(sql`explain select restaurant_id, id from notifications
+        where status = 'sending' and claimed_at < now() - interval '10 minutes'
+        limit 50 for update skip locked`);
+      return result.rows.map((r) => Object.values(r)[0]).join("\n");
+    });
+
+    expect(plan).toContain("notifications_sending_claimed_at_index");
+  });
 });

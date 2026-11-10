@@ -790,6 +790,11 @@ export const notifications = pgTable(
     index("notifications_provider_message_id_index")
       .on(table.providerMessageId)
       .where(sql`${table.providerMessageId} is not null`),
+    // Crash recovery looks across every restaurant for rows stuck in sending, every run.
+    // Partial, so it holds only the rows in flight (almost always none).
+    index("notifications_sending_claimed_at_index")
+      .on(table.claimedAt)
+      .where(sql`${table.status} = 'sending'`),
     check("notifications_attempts_non_negative", sql`${table.attempts} >= 0`),
     check(
       "notifications_sending_claimed",
