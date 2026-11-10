@@ -24,7 +24,7 @@ import {
   localTime,
   nearestTimes,
 } from "@/lib/booking-engine";
-import { queueBookingConfirmed } from "@/lib/notifications";
+import { queueBookingCancelled, queueBookingConfirmed } from "@/lib/notifications";
 import { mintQrToken } from "@/lib/qr-token";
 import { whatsappLink } from "@/lib/whatsapp-link";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -675,10 +675,17 @@ export async function cancelBooking(tenant: Tenant, token: string): Promise<Canc
           cancellableNow,
         ),
       )
-      .returning({ id: bookings.id });
+      .returning({
+        id: bookings.id,
+        guestPhone: bookings.guestPhone,
+        whatsappOptIn: bookings.whatsappOptIn,
+      });
     const booking = await readManaged(tx, tenant, token);
     if (!booking) return { outcome: "not_found" };
-    if (cancelled.length > 0) return { outcome: "cancelled", booking };
+    if (cancelled.length > 0) {
+      await queueBookingCancelled(tx, { restaurantId: tenant.restaurantId, ...cancelled[0] }, new Date());
+      return { outcome: "cancelled", booking };
+    }
     if (booking.status === "cancelled") return { outcome: "already_cancelled", booking };
     return { outcome: booking.status === "confirmed" ? "too_late" : "not_cancellable", booking };
   }).catch(failed("cancelling a booking"));

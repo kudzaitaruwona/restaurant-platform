@@ -71,6 +71,16 @@ describe("the Meta Cloud API sender", () => {
     });
   });
 
+  it("sends a template with no manage link without a button component", async () => {
+    answer = { status: 200, body: JSON.stringify({ messages: [{ id: "wamid.HBgM" }] }) };
+
+    await sender().send({ to: message.to, language: "en", template: "booking_cancelled", body: ["Tariro Moyo", "Kudu Grill", "Fri 6 Nov", "19:30", "Bye."] });
+
+    expect((requests[0].body as { template: { components: { type: string }[] } }).template.components).toEqual([
+      { type: "body", parameters: ["Tariro Moyo", "Kudu Grill", "Fri 6 Nov", "19:30", "Bye."].map((text) => ({ type: "text", text })) },
+    ]);
+  });
+
   it("treats a non-2xx answer as a failed send, keeping Meta's error for last_error", async () => {
     answer = {
       status: 400,

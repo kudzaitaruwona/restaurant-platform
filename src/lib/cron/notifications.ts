@@ -3,7 +3,7 @@ import { and, asc, count, eq, exists, inArray, lt, lte, sql } from "drizzle-orm"
 import type { Database } from "@/db/client";
 import { notifications, notificationSends } from "@/db/schema";
 import type { SenderChoice, SendResult } from "@/lib/whatsapp/sender";
-import { bookingConfirmed, bookingReminder, type TemplateMessage } from "@/lib/whatsapp/templates";
+import { bookingCancelled, bookingConfirmed, bookingReminder, type TemplateMessage } from "@/lib/whatsapp/templates";
 
 /**
  * Spec 05's outbox, run by the scheduled job (S-35) as app_system. Claim, then
@@ -15,8 +15,8 @@ import { bookingConfirmed, bookingReminder, type TemplateMessage } from "@/lib/w
  * Before each send the booking is read again, through notification_sends, the
  * one place app_system may read a guest's details, and only for a row it has
  * claimed (migration 0034). A booking_confirmed or booking_reminder whose booking is no longer
- * confirmed, or whose guest has no number or no opt-in now, is marked cancelled
- * without sending.
+ * confirmed (a booking_cancelled's, no longer cancelled), or whose guest has no
+ * number or no opt-in now, is marked cancelled without sending.
  *
  * Retry (#47): a send that may work later (SendResult.retryable: a network
  * error, a timeout, a rate limit, a 5xx) goes back to pending with its error,
@@ -74,6 +74,7 @@ const MAX_RECOVERED = BATCH_SIZE * MAX_BATCHES;
 const sendable = {
   booking_confirmed: "confirmed",
   booking_reminder: "confirmed",
+  booking_cancelled: "cancelled",
 } as const;
 const sendableKinds = Object.keys(sendable) as (keyof typeof sendable)[];
 
@@ -250,13 +251,20 @@ async function sendOne(
   if (found.bookingStatus !== sendable[found.kind as keyof typeof sendable] || !found.whatsappOptIn || !found.guestPhone) {
     return finish(db, row, { status: "cancelled" });
   }
-  // Only the confirmation names the restaurant's phone ({{6}}); the reminder doesn't.
-  if (found.kind === "booking_confirmed" && !found.restaurantPhone) {
-    return finish(db, row, { status: "failed", lastError: "The restaurant has no contact phone for {{6}}." });
+  let message: TemplateMessage;
+  if (found.kind === "booking_cancelled") {
+    // Fine without a restaurant phone: {{5}} then has no number to give.
+    message = bookingCancelled({ ...found, guestPhone: found.guestPhone });
+  } else if (found.kind === "booking_reminder") {
+    // The reminder doesn't name the restaurant's phone.
+    message = bookingReminder({ ...found, guestPhone: found.guestPhone, restaurantPhone: found.restaurantPhone ?? "" });
+  } else {
+    // Only the confirmation names the restaurant's phone ({{6}}).
+    if (!found.restaurantPhone) {
+      return finish(db, row, { status: "failed", lastError: "The restaurant has no contact phone for {{6}}." });
+    }
+    message = bookingConfirmed({ ...found, guestPhone: found.guestPhone, restaurantPhone: found.restaurantPhone });
   }
-
-  const guest = { ...found, guestPhone: found.guestPhone, restaurantPhone: found.restaurantPhone ?? "" };
-  const message = found.kind === "booking_reminder" ? bookingReminder(guest) : bookingConfirmed(guest);
   let result: SendResult;
   try {
     result = await send(message);

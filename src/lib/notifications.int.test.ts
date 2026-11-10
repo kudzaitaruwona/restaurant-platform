@@ -4,7 +4,8 @@ import { bookings, notifications } from "@/db/schema";
 import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { addStaffBooking, type StaffRequest } from "./booking-staff";
-import { confirmBooking, type GuestRequest } from "./bookings";
+import { cancelBooking as staffCancelBooking } from "./booking-day";
+import { cancelBooking as guestCancelBooking, confirmBooking, type GuestRequest } from "./bookings";
 
 /**
  * Spec 05's outbox, the queueing half (#44): confirming a booking for a guest who
@@ -162,5 +163,89 @@ describe("the outbox table", () => {
         .insert(notifications)
         .values({ restaurantId: mine.restaurantId, bookingId, kind: "booking_confirmed", scheduledFor: now }),
     ).rejects.toMatchObject({ cause: { code: "23503" } });
+  });
+});
+
+/** A confirmed booking, as the owner role writes it, for the cancel paths to act on. */
+async function confirmedBooking(restaurantId: string, tableId: string, overrides: Partial<typeof bookings.$inferInsert> = {}) {
+  const [booking] = await owner.db
+    .insert(bookings)
+    .values({
+      ...aBooking(restaurantId, tableId, "2030-01-01T17:00:00Z", "2030-01-01T19:00:00Z"),
+      guestPhone: "+263771234567",
+      whatsappOptIn: true,
+      ...overrides,
+    })
+    .returning({ id: bookings.id, manageToken: bookings.manageToken });
+  return booking;
+}
+
+describe("a guest cancelling on the manage page", () => {
+  it("queues booking_cancelled, due now, in the cancelling transaction", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const { id, manageToken } = await confirmedBooking(restaurantId, tableIds[0]);
+
+    expect((await guestCancelBooking({ restaurantId }, manageToken)).outcome).toBe("cancelled");
+
+    expect(await queuedFor(restaurantId)).toMatchObject([
+      { bookingId: id, kind: "booking_cancelled", status: "pending", attempts: 0 },
+    ]);
+  });
+
+  it("queues nothing for a guest who didn't opt in or has no number", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const noOptIn = await confirmedBooking(restaurantId, tableIds[0], { whatsappOptIn: false });
+    const noPhone = await confirmedBooking(restaurantId, tableIds[1], { guestPhone: null });
+
+    expect((await guestCancelBooking({ restaurantId }, noOptIn.manageToken)).outcome).toBe("cancelled");
+    expect((await guestCancelBooking({ restaurantId }, noPhone.manageToken)).outcome).toBe("cancelled");
+
+    expect(await queuedFor(restaurantId)).toEqual([]);
+  });
+
+  it("queues nothing when the cancel changed nothing: too late, or already cancelled", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const started = await confirmedBooking(restaurantId, tableIds[0], { startsAt: new Date(Date.now() - 60_000), endsAt: new Date(Date.now() + 3_600_000), holdEndsAt: new Date(Date.now() + 3_600_000) });
+    const twice = await confirmedBooking(restaurantId, tableIds[1]);
+
+    expect((await guestCancelBooking({ restaurantId }, started.manageToken)).outcome).toBe("too_late");
+    await guestCancelBooking({ restaurantId }, twice.manageToken);
+    expect((await guestCancelBooking({ restaurantId }, twice.manageToken)).outcome).toBe("already_cancelled");
+
+    // Only the first cancel of `twice` queued one.
+    expect(await queuedFor(restaurantId)).toMatchObject([{ bookingId: twice.id, kind: "booking_cancelled" }]);
+  });
+});
+
+describe("staff cancelling a booking", () => {
+  it("queues booking_cancelled, due now, in the cancelling transaction", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const { id } = await confirmedBooking(restaurantId, tableIds[0]);
+
+    expect(await staffCancelBooking(actor(restaurantId), id)).toEqual({ outcome: "done" });
+
+    expect(await queuedFor(restaurantId)).toMatchObject([
+      { bookingId: id, kind: "booking_cancelled", status: "pending", attempts: 0 },
+    ]);
+  });
+
+  it("queues nothing for a guest who didn't opt in or has no number", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const noOptIn = await confirmedBooking(restaurantId, tableIds[0], { whatsappOptIn: false });
+    const noPhone = await confirmedBooking(restaurantId, tableIds[1], { guestPhone: null });
+
+    expect(await staffCancelBooking(actor(restaurantId), noOptIn.id)).toEqual({ outcome: "done" });
+    expect(await staffCancelBooking(actor(restaurantId), noPhone.id)).toEqual({ outcome: "done" });
+
+    expect(await queuedFor(restaurantId)).toEqual([]);
+  });
+
+  it("queues nothing for a booking that wasn't confirmed, so nothing is cancelled", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const { id } = await confirmedBooking(restaurantId, tableIds[0], { status: "seated" });
+
+    expect((await staffCancelBooking(actor(restaurantId), id)).outcome).toBe("wrong_status");
+
+    expect(await queuedFor(restaurantId)).toEqual([]);
   });
 });

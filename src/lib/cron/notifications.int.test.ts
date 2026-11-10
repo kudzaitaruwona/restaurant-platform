@@ -43,7 +43,7 @@ function recordingSender(answer?: (message: TemplateMessage) => Promise<SendResu
     async send(message) {
       sent.push(message);
       await new Promise((resolve) => setTimeout(resolve, 5));
-      return (await answer?.(message)) ?? { ok: true, providerMessageId: `wamid.${message.manageToken}` };
+      return (await answer?.(message)) ?? { ok: true, providerMessageId: `wamid.${message.manageToken ?? message.body[1]}` };
     },
   };
   return { sent, choice: { kind: "meta", sender } satisfies SenderChoice };
@@ -52,7 +52,7 @@ function recordingSender(answer?: (message: TemplateMessage) => Promise<SendResu
 /** The manage tokens sent, in order, among the given bookings only. */
 const sentAmong = (sent: TemplateMessage[], ...ours: { manageToken: string }[]) => {
   const tokens = new Set(ours.map(({ manageToken }) => manageToken));
-  return sent.map(({ manageToken }) => manageToken).filter((token) => tokens.has(token));
+  return sent.map(({ manageToken }) => manageToken).filter((token): token is string => token !== undefined && tokens.has(token));
 };
 
 type Status = typeof bookings.$inferSelect["status"];
@@ -67,6 +67,8 @@ async function queued(
     phone = GUEST_PHONE,
     optIn = true,
     table = 0,
+    kind = "booking_confirmed",
+    cancelledBy,
   }: {
     restaurant?: { restaurantId: string; tableIds: string[] };
     startsAt?: string;
@@ -74,6 +76,8 @@ async function queued(
     phone?: string | null;
     optIn?: boolean;
     table?: number;
+    kind?: typeof notifications.$inferInsert["kind"];
+    cancelledBy?: "guest" | "staff";
   } = {},
 ) {
   const { restaurantId, tableIds } = restaurant ?? (await bookableRestaurant(owner.db));
@@ -87,11 +91,12 @@ async function queued(
       whatsappOptIn: optIn,
       partySize: 4,
       status,
+      ...(cancelledBy ? { cancelledBy, cancelledAt: new Date(queuedAt) } : {}),
     })
     .returning({ id: bookings.id, manageToken: bookings.manageToken });
   const [notification] = await owner.db
     .insert(notifications)
-    .values({ restaurantId, bookingId: booking.id, kind: "booking_confirmed", scheduledFor: new Date(queuedAt) })
+    .values({ restaurantId, bookingId: booking.id, kind, scheduledFor: new Date(queuedAt) })
     .returning({ id: notifications.id });
   return { restaurantId, bookingId: booking.id, manageToken: booking.manageToken, id: notification.id };
 }
@@ -241,7 +246,7 @@ describe("the notification task", () => {
           .set({ status: "cancelled", cancelledBy: "guest", cancelledAt: new Date() })
           .where(eq(bookings.id, second.bookingId));
       }
-      return { ok: true, providerMessageId: `wamid.${message.manageToken}` };
+      return { ok: true, providerMessageId: `wamid.${message.manageToken ?? message.body[1]}` };
     });
 
     await sendDueNotifications(system.db, new Date("1996-02-01T10:00:00Z"), choice);
@@ -696,5 +701,103 @@ describe("the booking reminder", () => {
     }
     expect(sentAmong(sent, { manageToken })).toEqual([]);
     expect((await row(reminderId)).status).toBe("cancelled");
+  });
+});
+
+describe("booking_cancelled", () => {
+  const cancelledRow = (queuedAt: string, options: Parameters<typeof queued>[1] = {}) =>
+    queued(queuedAt, { status: "cancelled", kind: "booking_cancelled", cancelledBy: "guest", ...options });
+
+  it("sends a cancelled booking its cancellation, with the guest's own wording when the guest cancelled", async () => {
+    const { id, restaurantId } = await cancelledRow("1995-03-01T10:00:00Z");
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-01T10:05:00Z"), choice);
+
+    expect(sent.filter((message) => message.body[1] === `Restaurant ${restaurantId}`)).toEqual([
+      {
+        to: GUEST_PHONE,
+        template: "booking_cancelled",
+        language: "en",
+        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "Tue 1 Jan", "19:00", "We hope to see you another time."],
+      },
+    ]);
+    expect(await row(id)).toMatchObject({ status: "sent", attempts: 1 });
+  });
+
+  it("gives the restaurant's contact line when staff cancelled", async () => {
+    const { id, restaurantId } = await cancelledRow("1995-03-02T10:00:00Z", { cancelledBy: "staff" });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-02T10:05:00Z"), choice);
+
+    expect(sent.find((message) => message.body[1] === `Restaurant ${restaurantId}`)?.body[4]).toBe(
+      "If you have any questions, please call the restaurant on +263771234567.",
+    );
+    expect((await row(id)).status).toBe("sent");
+  });
+
+  it("requires status = cancelled: a booking that is confirmed again or still confirmed is marked cancelled, not sent", async () => {
+    const { id, restaurantId } = await cancelledRow("1995-03-03T10:00:00Z", { status: "confirmed" });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-03T10:05:00Z"), choice);
+
+    expect(sent.filter((message) => message.body[1] === `Restaurant ${restaurantId}`)).toEqual([]);
+    expect(await row(id)).toMatchObject({ status: "cancelled", providerMessageId: null });
+  });
+
+  it("doesn't send a booking_confirmed for a cancelled booking, as before", async () => {
+    const { id, manageToken } = await queued("1995-03-04T10:00:00Z", { status: "cancelled" });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-04T10:05:00Z"), choice);
+
+    expect(sentAmong(sent, { manageToken })).toEqual([]);
+    expect((await row(id)).status).toBe("cancelled");
+  });
+
+  it("sends the cancelled booking its cancellation and not a reminder", async () => {
+    const { id, bookingId, restaurantId } = await cancelledRow("1995-03-05T10:00:00Z");
+    // A reminder that is due too, as one would be if cancelling didn't cancel it (#45).
+    const [reminder] = await owner.db
+      .insert(notifications)
+      .values({ restaurantId, bookingId, kind: "booking_reminder", scheduledFor: new Date("1995-03-05T10:00:00Z") })
+      .returning({ id: notifications.id });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-05T10:05:00Z"), choice);
+
+    const ours = sent.filter((message) => message.body.includes(`Restaurant ${restaurantId}`));
+    expect(ours.map(({ template }) => template)).toEqual(["booking_cancelled"]);
+    expect((await row(id)).status).toBe("sent");
+    expect((await row(reminder.id)).status).not.toBe("sent");
+  });
+
+  it("is sent only to a guest who still has a number and the opt-in", async () => {
+    const noOptIn = await cancelledRow("1995-03-06T10:00:00Z", { optIn: false });
+    const noPhone = await cancelledRow("1995-03-06T10:00:00Z", { phone: null });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-06T10:05:00Z"), choice);
+
+    const ids = [noOptIn.restaurantId, noPhone.restaurantId].map((id) => `Restaurant ${id}`);
+    expect(sent.filter((message) => ids.includes(message.body[1]))).toEqual([]);
+    expect((await row(noOptIn.id)).status).toBe("cancelled");
+    expect((await row(noPhone.id)).status).toBe("cancelled");
+  });
+
+  it("sends a staff cancellation even when the restaurant has no phone, without a number in it", async () => {
+    const restaurant = await bookableRestaurant(owner.db);
+    await owner.db.update(restaurants).set({ contactPhone: null }).where(eq(restaurants.id, restaurant.restaurantId));
+    const { id } = await cancelledRow("1995-03-07T10:00:00Z", { restaurant, cancelledBy: "staff" });
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, new Date("1995-03-07T10:05:00Z"), choice);
+
+    expect(sent.find((message) => message.body[1] === `Restaurant ${restaurant.restaurantId}`)?.body[4]).toBe(
+      "If you have any questions, please contact the restaurant.",
+    );
+    expect((await row(id)).status).toBe("sent");
   });
 });

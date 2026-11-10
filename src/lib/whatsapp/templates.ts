@@ -11,7 +11,7 @@ import { dateLabel, localTime, localToday } from "@/lib/booking-engine";
 /** Every template is submitted to Meta in this one language. */
 export const TEMPLATE_LANGUAGE = "en";
 
-export type TemplateName = "booking_confirmed" | "booking_reminder";
+export type TemplateName = "booking_confirmed" | "booking_reminder" | "booking_cancelled";
 
 /** One template message, ready for a sender: who, which template, and the values. */
 export type TemplateMessage = {
@@ -21,8 +21,8 @@ export type TemplateMessage = {
   language: typeof TEMPLATE_LANGUAGE;
   /** {{1}}, {{2}}, ... in order. */
   body: string[];
-  /** The URL button's parameter: the manage page is /b/{manage_token}. */
-  manageToken: string;
+  /** The URL button's parameter: the manage page is /b/{manage_token}. Absent for a template with no button. */
+  manageToken?: string;
 };
 
 const templateText: Record<TemplateName, string> = {
@@ -32,6 +32,7 @@ const templateText: Record<TemplateName, string> = {
   booking_reminder:
     "Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}} people. " +
     "Can't make it? Please cancel so someone else can have the table.",
+  booking_cancelled: "Hi {{1}}, your booking at {{2}} on {{3}} at {{4}} has been cancelled. {{5}}",
 };
 
 export type ConfirmedBooking = {
@@ -84,11 +85,37 @@ export function bookingReminder(booking: ConfirmedBooking): TemplateMessage {
   };
 }
 
+export type CancelledBooking = Omit<ConfirmedBooking, "manageToken" | "partySize" | "restaurantPhone"> & {
+  /** Null when the restaurant has no contact phone. */
+  restaurantPhone: string | null;
+  cancelledBy: "guest" | "staff" | null;
+};
+
+/**
+ * booking_cancelled: guest, restaurant, date, time, and {{5}}: a goodbye when the
+ * guest cancelled, the restaurant's contact line when staff did (a closure's
+ * cancellations are staff's). No manage link: a cancelled booking has nothing to manage.
+ */
+export function bookingCancelled(booking: CancelledBooking): TemplateMessage {
+  const line =
+    booking.cancelledBy === "guest"
+      ? "We hope to see you another time."
+      : booking.restaurantPhone
+        ? `If you have any questions, please call the restaurant on ${booking.restaurantPhone}.`
+        : "If you have any questions, please contact the restaurant.";
+  return {
+    to: booking.guestPhone,
+    template: "booking_cancelled",
+    language: TEMPLATE_LANGUAGE,
+    body: [booking.guestName, booking.restaurantName, ...whenOf(booking.startsAt, booking.timezone), line],
+  };
+}
+
 /** The message as the guest reads it, for the development console. */
 export function renderText(message: TemplateMessage) {
   const text = templateText[message.template].replace(
     /\{\{(\d+)\}\}/g,
     (_, n: string) => message.body[Number(n) - 1] ?? "",
   );
-  return `${text}\n[Manage booking] /b/${message.manageToken}`;
+  return message.manageToken ? `${text}\n[Manage booking] /b/${message.manageToken}` : text;
 }
