@@ -1,5 +1,6 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
 import {
   openAdminDatabase,
   openOwnerDatabase,
@@ -12,14 +13,17 @@ import {
 } from "../../test/integration/database";
 import { SYSTEM_DATABASE_ROLE } from "../lib/env";
 import { provisionSystemRole } from "./app-role";
+import { bookings } from "./schema";
 
 /**
  * The scheduled job's login (spec 01, S-28, S-35), proved from Postgres itself.
  * It works across every tenant, so it has BYPASSRLS, and that is why it is
  * granted only the columns the job reads and writes: the job's status rules,
- * its audit entries, the sign-in code rows it prunes, and D-06's phone purge
- * (a guest's phone, which it may only read and null, and a restaurant's timezone).
- * No guest's name, no other tenant table, no credential.
+ * its audit entries, the sign-in code rows it prunes, and D-06's phone purge:
+ * whether a booking still holds a phone (guest_phone_set, never the number) and
+ * a restaurant's timezone to read, and guest_phone to write. A column grant can't
+ * say "only to null", so a trigger (migration 0033) refuses any other value it
+ * writes there. No guest's name or number, no other tenant table, no credential.
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -99,8 +103,8 @@ describe("app_system", () => {
       "booking_settings.restaurant_id: SELECT",
       "bookings.ends_at: SELECT",
       "bookings.ends_at: UPDATE",
-      "bookings.guest_phone: SELECT",
       "bookings.guest_phone: UPDATE",
+      "bookings.guest_phone_set: SELECT",
       "bookings.hold_ends_at: SELECT",
       "bookings.hold_ends_at: UPDATE",
       "bookings.id: SELECT",
@@ -116,9 +120,11 @@ describe("app_system", () => {
     ]);
   });
 
-  it("can't read a guest's name or a manage link, the restaurant's other columns, or any other tenant table", async () => {
+  it("can't read a guest's name, number or manage link, the restaurant's other columns, or any other tenant table", async () => {
     for (const query of [
       sql`select guest_name from bookings limit 1`,
+      sql`select guest_phone from bookings limit 1`,
+      sql`select id from bookings where guest_phone like '+263%' limit 1`,
       sql`select whatsapp_opt_in from bookings limit 1`,
       sql`select manage_token from bookings limit 1`,
       sql`select * from staff limit 1`,
@@ -147,8 +153,38 @@ describe("app_system", () => {
     }
   });
 
-  it("can null a guest's phone, the one personal column it may change (D-06)", async () => {
-    await expect(system.db.execute(sql`update bookings set guest_phone = null where false`)).resolves.toBeDefined();
+  describe("a guest's phone, the one personal column it may change (D-06)", () => {
+    const PHONE = "+263771234567";
+    /** A real upcoming booking with a phone, in a restaurant of its own. */
+    async function aBookingWithPhone() {
+      const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }] });
+      const [{ id }] = await owner.db
+        .insert(bookings)
+        .values({ ...aBooking(restaurantId, tableIds[0], "2099-05-02T17:00:00Z", "2099-05-02T19:00:00Z"), guestPhone: PHONE })
+        .returning({ id: bookings.id });
+      return { restaurantId, id };
+    }
+    const phoneOf = async (id: string) =>
+      (await owner.db.select({ phone: bookings.guestPhone }).from(bookings).where(eq(bookings.id, id)))[0].phone;
+
+    it("can be nulled, found by guest_phone_set without reading the number", async () => {
+      const { restaurantId, id } = await aBookingWithPhone();
+      const { rowCount } = await system.db.execute(
+        sql`update bookings set guest_phone = null where restaurant_id = ${restaurantId} and id = ${id} and guest_phone_set`,
+      );
+      expect(rowCount).toBe(1);
+      expect(await phoneOf(id)).toBeNull();
+    });
+
+    it("can't be set to another number: the trigger refuses it, though the column grant allows it", async () => {
+      const { restaurantId, id } = await aBookingWithPhone();
+      await expect(
+        system.db.execute(
+          sql`update bookings set guest_phone = '+263779999999' where restaurant_id = ${restaurantId} and id = ${id}`,
+        ),
+      ).rejects.toMatchObject(refused);
+      expect(await phoneOf(id)).toBe(PHONE);
+    });
   });
 
   it("can run no function that bypasses RLS", async () => {

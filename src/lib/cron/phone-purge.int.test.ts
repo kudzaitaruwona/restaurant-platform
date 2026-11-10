@@ -57,7 +57,7 @@ describe("a booking's phone number", () => {
 
     expect(await purgeGuestPhones(system.db, at("1991-06-05T12:00:00Z"))).toBeGreaterThanOrEqual(1);
 
-    expect(await row(id)).toEqual({ ...before, guestPhone: null });
+    expect(await row(id)).toEqual({ ...before, guestPhone: null, guestPhoneSet: false });
     expect(before.guestPhone).toBe(PHONE);
   });
 

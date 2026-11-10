@@ -211,6 +211,8 @@ bookings
   table_id              → tables
   guest_name            text not null CHECK (trim(guest_name) <> '')
   guest_phone           text null           -- E.164; nulled by retention job (D-06)
+  guest_phone_set       bool not null       -- (proposed, migration 0033) GENERATED ALWAYS AS (guest_phone IS NOT NULL) STORED,
+                                            -- so the job finds rows to purge without reading the number (D-06, S-28)
   whatsapp_opt_in       bool not null
   party_size            int CHECK (> 0)
   starts_at             timestamptz
@@ -247,6 +249,12 @@ bookings
   -- saw, but nothing reopens one (spec 04: nothing leads out of cancelled): whatever adds that must decide whether the limit applies.
   -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
   -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
+  -- (proposed) Partial indexes for the scheduled job (S-35), which looks across every restaurant and so can't use the
+  -- day list's: ends_at WHERE status = 'confirmed' and hold_ends_at WHERE status = 'seated' (migration 0031) for spec 04's
+  -- automatic status changes, and starts_at WHERE guest_phone_set (migration 0033, replacing 0032's starts_at WHERE
+  -- guest_phone IS NOT NULL) for D-06's phone purge. Each holds only the rows still due, so it shrinks as the job runs.
+  -- (proposed) bookings_system_phone_null_only (migration 0033): BEFORE INSERT OR UPDATE OF guest_phone, refuses a non-null
+  -- guest_phone written while current_user is app_system, which may only null it (D-06, S-28).
   -- (proposed) CHECKs: guest_name up to 100 characters; guest_phone is E.164 (8 to 15 digits);
   -- manage_token is at least 22 base62 characters, the same as a table's QR token.
 ```

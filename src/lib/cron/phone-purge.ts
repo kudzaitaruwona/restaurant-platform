@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, isNotNull, lte, sql } from "drizzle-orm";
+import { and, asc, lte, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { bookings, restaurants } from "@/db/schema";
 
@@ -23,8 +23,12 @@ import { bookings, restaurants } from "@/db/schema";
  *
  * Idempotent and safe to overlap, like the other tasks: only rows still holding
  * a number are taken, in batches locked with FOR UPDATE SKIP LOCKED, and the
- * UPDATE names each row by (restaurant_id, id) and repeats `guest_phone is not
- * null`, so a repeat or an overlapping run changes nothing a second time.
+ * UPDATE names each row by (restaurant_id, id) and repeats `guest_phone_set`, so
+ * a repeat or an overlapping run changes nothing a second time.
+ *
+ * It finds those rows by `guest_phone_set`, a generated column, because
+ * app_system may not read the number itself (migration 0033); it may only null
+ * it, and a trigger refuses it any other value.
  *
  * `now` is a parameter so a test can pick the moment.
  */
@@ -41,7 +45,7 @@ export async function purgeGuestPhones(db: Database, now: Date): Promise<number>
   // is safe. It lets the partial index on starts_at do the narrowing.
   const recent = new Date(now.getTime() - 28 * 86_400_000);
   const due = and(
-    isNotNull(bookings.guestPhone),
+    bookings.guestPhoneSet,
     lte(bookings.startsAt, recent),
     sql`${purgeFrom} <= ${now.toISOString()}::timestamptz`,
   )!;
@@ -62,7 +66,7 @@ export async function purgeGuestPhones(db: Database, now: Date): Promise<number>
         .set({ guestPhone: null })
         .where(
           and(
-            isNotNull(bookings.guestPhone),
+            bookings.guestPhoneSet,
             sql`(${bookings.restaurantId}, ${bookings.id}) in (${sql.join(
               rows.map(({ restaurantId, id }) => sql`(${restaurantId}::uuid, ${id}::uuid)`),
               sql`, `,
