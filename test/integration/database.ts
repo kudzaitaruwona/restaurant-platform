@@ -34,6 +34,14 @@ export function staffAuthDatabaseSettings() {
   return settingsFor("TEST_DATABASE_URL_STAFF_AUTH");
 }
 
+/**
+ * The scheduled job's role, app_system: BYPASSRLS, granted only what the job
+ * touches (S-35).
+ */
+export function systemDatabaseSettings() {
+  return settingsFor("TEST_DATABASE_URL_SYSTEM");
+}
+
 export function openOwnerDatabase() {
   return createDatabase(ownerDatabaseSettings());
 }
@@ -48,4 +56,8 @@ export function openAdminDatabase() {
 
 export function openStaffAuthDatabase() {
   return createDatabase(staffAuthDatabaseSettings());
+}
+
+export function openSystemDatabase() {
+  return createDatabase(systemDatabaseSettings());
 }

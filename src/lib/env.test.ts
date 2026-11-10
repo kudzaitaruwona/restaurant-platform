@@ -78,6 +78,29 @@ describe("parseEnv", () => {
     expect(error.message).not.toContain("secret");
   });
 
+  it("doesn't need the scheduled job's login or secret outside production, or in it (S-35)", () => {
+    const env = parseEnv({ ...valid, ...auth, NODE_ENV: "production" });
+    expect(env.DATABASE_URL_SYSTEM).toBeUndefined();
+    expect(env.CRON_SECRET).toBeUndefined();
+  });
+
+  it.each([
+    ["the app's role", "postgres://app_tenant:secret@host/db"],
+    ["the admin's role", "postgres://app_admin:secret@host/db"],
+    ["staff sign-in's role", "postgres://app_staff_auth:secret@host/db"],
+    ["the role that owns the tables", "postgres://neondb_owner:secret@host/db"],
+    ["no URL at all", "app_system"],
+  ])("refuses a system login that connects as %s", (_name, url) => {
+    const error = errorFrom({ ...valid, DATABASE_URL_SYSTEM: url });
+    expect(error.message).toMatch(/DATABASE_URL_SYSTEM must connect as app_system/);
+    expect(error.message).not.toContain("secret");
+  });
+
+  it("accepts a system login that connects as app_system", () => {
+    const url = "postgres://app_system:pw@localhost:5499/restaurant_dev";
+    expect(parseEnv({ ...valid, DATABASE_URL_SYSTEM: url }).DATABASE_URL_SYSTEM).toBe(url);
+  });
+
   it("fails with a message naming a missing required variable", () => {
     const error = errorFrom({ ...valid, DATABASE_URL: undefined });
     expect(error).toBeInstanceOf(EnvValidationError);

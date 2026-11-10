@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { APP_DATABASE_ROLE } from "../lib/env";
+import { APP_DATABASE_ROLE, SYSTEM_DATABASE_ROLE } from "../lib/env";
 import { createDatabase, type Database, type DatabaseSettings } from "./client";
 
 /**
@@ -20,8 +20,44 @@ export async function provisionAppRole(
   appConnectionString: string,
   role = APP_DATABASE_ROLE,
 ) {
+  const exemptions = await enableLogin(ownerSettings, appConnectionString, role, findRlsExemptions);
+  if (exemptions.length > 0) {
+    throw new Error(
+      `Row-level security would not apply to ${role}: ${exemptions.join("; ")}. Create it with SQL, as the migrations do.`,
+    );
+  }
+}
+
+/**
+ * The same for the scheduled job's role, app_system (S-35), which is the
+ * opposite case: it must bypass RLS, because the job works across every tenant,
+ * or it would quietly see no rows and change nothing. What it must not be is
+ * anything more: a superuser, a role that can make roles or databases, the
+ * owner of a table, or a member of another role, whose grants it would carry
+ * past the narrow ones the migration gives it.
+ */
+export async function provisionSystemRole(
+  ownerSettings: DatabaseSettings,
+  systemConnectionString: string,
+  role = SYSTEM_DATABASE_ROLE,
+) {
+  const problems = await enableLogin(ownerSettings, systemConnectionString, role, findSystemRoleProblems);
+  if (problems.length > 0) {
+    throw new Error(
+      `${role} isn't the narrow role the scheduled job needs: ${problems.join("; ")}. Create it with SQL, as the migrations do.`,
+    );
+  }
+}
+
+/** Turns on LOGIN with the URL's password, then asks `check` what's wrong. */
+async function enableLogin(
+  ownerSettings: DatabaseSettings,
+  connectionString: string,
+  role: string,
+  check: (db: Database, role: string) => Promise<string[]>,
+) {
   // URL.parse, because a failed `new URL` keeps the whole URL on the error.
-  const url = URL.parse(appConnectionString);
+  const url = URL.parse(connectionString);
   if (url?.username !== role || !url.password) {
     throw new Error(
       `The app's connection URL must log in as ${role}, with a password.`,
@@ -29,14 +65,13 @@ export async function provisionAppRole(
   }
 
   const { db, pool } = createDatabase(ownerSettings);
-  let exemptions: string[];
   try {
     // ALTER ROLE takes no bind parameters, so have Postgres quote the password.
     const { rows } = await db.execute(
       sql`select format('alter role %I login password %L', ${role}::text, ${decodeURIComponent(url.password)}::text) as statement`,
     );
     await db.execute(sql.raw(String(rows[0].statement)));
-    exemptions = await findRlsExemptions(db, role);
+    return await check(db, role);
   } catch (error) {
     // Drizzle's error quotes the statement and its parameters, and both hold
     // the password. Pass on only the code, and not as `cause`: Node prints that.
@@ -46,12 +81,38 @@ export async function provisionAppRole(
   } finally {
     await pool.end();
   }
+}
 
-  if (exemptions.length > 0) {
-    throw new Error(
-      `Row-level security would not apply to ${role}: ${exemptions.join("; ")}. Create it with SQL, as the migrations do.`,
-    );
-  }
+async function findSystemRoleProblems(db: Database, role: string) {
+  const { rows } = await db.execute(sql`
+    select r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication,
+      exists (
+        select from pg_class c where c.relowner = r.oid and c.relkind in ('r', 'p')
+      ) as owns_table,
+      array(
+        select g.rolname::text from pg_auth_members m join pg_roles g on g.oid = m.roleid
+        where m.member = r.oid order by g.rolname
+      ) as member_of
+    from pg_roles r where r.rolname = ${role}
+  `);
+  const [found] = rows as {
+    rolsuper: boolean;
+    rolbypassrls: boolean;
+    rolcreaterole: boolean;
+    rolcreatedb: boolean;
+    rolreplication: boolean;
+    owns_table: boolean;
+    member_of: string[];
+  }[];
+  return [
+    found.rolsuper && "superuser",
+    !found.rolbypassrls && "no BYPASSRLS",
+    found.rolcreaterole && "CREATEROLE",
+    found.rolcreatedb && "CREATEDB",
+    found.rolreplication && "REPLICATION",
+    found.owns_table && "owns a table",
+    found.member_of.length > 0 && `member of ${found.member_of.join(", ")}`,
+  ].filter((problem): problem is string => typeof problem === "string");
 }
 
 /**

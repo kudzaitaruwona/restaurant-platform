@@ -1053,6 +1053,9 @@ const outsideTheHarness = [
   // Sign-in itself, before any tenant: src/lib/auth/auth.int.test.ts.
   "GET /api/auth/[audience]/[...all]",
   "POST /api/auth/[audience]/[...all]",
+  // The scheduled job (S-35): no session at all, only CRON_SECRET, and it takes
+  // no input that could name a tenant: src/app/api/cron/tick/route.test.ts.
+  "GET /api/cron/tick",
 ];
 
 const [aOwner, aStaff, bOwner, bStaff] = devIdentities;

@@ -38,6 +38,14 @@ export const ADMIN_DATABASE_ROLE = "app_admin";
  */
 export const STAFF_AUTH_DATABASE_ROLE = "app_staff_auth";
 
+/**
+ * The role the scheduled job connects as (spec 01, S-28, S-35). Unlike the
+ * others it has BYPASSRLS, because the job works across every tenant, so it is
+ * granted only the columns the job touches, and provisionSystemRole holds it to
+ * that: no superuser, no table of its own.
+ */
+export const SYSTEM_DATABASE_ROLE = "app_system";
+
 const blankToUndefined = (value: unknown) => (value === "" ? undefined : value);
 
 const text = () =>
@@ -94,12 +102,19 @@ const staffAuthDatabaseUrl = connectsAs(
   "the role only staff sign-in uses",
 );
 
+// Any other role here would either see nothing (RLS) or far too much.
+const systemDatabaseUrl = connectsAs(
+  SYSTEM_DATABASE_ROLE,
+  "the role only the scheduled job and the Meta webhook use",
+);
+
 const configShape = {
   // Postgres (Neon) through the WebSocket Pool driver (D-07). The app's role;
   // DATABASE_URL_UNPOOLED is the role that owns the tables, for migrations.
   DATABASE_URL: required(appDatabaseUrl),
   DATABASE_URL_UNPOOLED: optional(postgresUrl()),
-  DATABASE_URL_SYSTEM: optional(postgresUrl()),
+  // The scheduled job's role (S-35), with BYPASSRLS. Only its route opens it.
+  DATABASE_URL_SYSTEM: optional(systemDatabaseUrl),
   // The admin path's role (S-28). Only src/db/admin.ts opens it.
   DATABASE_URL_ADMIN: optional(adminDatabaseUrl),
   // Staff sign-in's role (S-28, S-30). Only src/db/staff-auth.ts opens it.

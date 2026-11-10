@@ -25,6 +25,7 @@ describe(".env.example", () => {
       "TEST_DATABASE_URL_APP",
       "TEST_DATABASE_URL_ADMIN",
       "TEST_DATABASE_URL_STAFF_AUTH",
+      "TEST_DATABASE_URL_SYSTEM",
     ];
     const unknown = exampleKeys.filter(
       (key) => !(envKeys as string[]).includes(key) && !testOnly.includes(key),
