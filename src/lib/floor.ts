@@ -10,8 +10,9 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
 /**
  * Front-of-house's view of the floor (spec 06, Staff: floor view), for owner and
  * staff alike (S-26): every live table with the state of its open session, a
- * table's orders and items, and mark delivered. Voiding and rejecting are in
- * src/lib/voids.ts (#73); clearing, force-closing and reopening come later.
+ * table's orders and items, mark delivered, and dismissing a waiter call (#77).
+ * Voiding and rejecting are in src/lib/voids.ts (#73); clearing, force-closing
+ * and reopening come later.
  */
 
 type Tenant = Pick<TenantContext, "restaurantId">;
