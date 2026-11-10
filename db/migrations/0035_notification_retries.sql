@@ -1,0 +1,12 @@
+-- Spec 05's retry and crash recovery (#47), for the scheduled job (app_system).
+--
+-- SELECT (claimed_at): recovery finds rows left in sending for over 10 minutes
+-- by when they were claimed, and every step after a claim names the claim it
+-- belongs to (claimed_at = the run's own), so a run whose row was recovered and
+-- claimed again by a later run can't send it or write over it. A claim time is
+-- no guest's detail.
+--
+-- UPDATE (scheduled_for): a send that may work later goes back to pending, due
+-- again after its backoff. The job still can't insert a row or move one to
+-- another booking.
+GRANT SELECT (claimed_at), UPDATE (scheduled_for) ON notifications TO app_system;

@@ -262,9 +262,13 @@ describe("the notification task", () => {
     expect(await row(optedOut.id)).toMatchObject({ status: "cancelled" });
   });
 
-  it("marks a send Meta refused failed, with its error, and never sent", async () => {
+  it("marks a send Meta refused for good failed at once, with its error, and never sent", async () => {
     const { id } = await queued("1996-04-01T10:00:00Z");
-    const { choice } = recordingSender(() => ({ ok: false, error: "Meta 400 (131030): Recipient phone number not in allowed list" }));
+    const { choice } = recordingSender(() => ({
+      ok: false,
+      error: "Meta 400 (131030): Recipient phone number not in allowed list",
+      retryable: false,
+    }));
 
     await sendDueNotifications(system.db, new Date("1996-04-01T10:00:00Z"), choice);
 
@@ -343,6 +347,212 @@ describe("the notification task", () => {
     await sendDueNotifications(system.db, now, choice);
     expect(sentAmong(sent, { manageToken })).toEqual([manageToken]);
     expect((await row(id)).status).toBe("sent");
+  });
+});
+
+describe("retries and recovery (#47)", () => {
+  const at = (iso: string, minutes = 0) => new Date(new Date(iso).getTime() + minutes * 60_000);
+  const busy = (): SendResult => ({ ok: false, error: "Meta 503", retryable: true });
+
+  it("retries a send that may work later up to 3 attempts, 5 then 10 minutes apart, then marks it failed", async () => {
+    const start = "1997-05-01T10:00:00Z";
+    const { id, manageToken } = await queued(start);
+    const { sent, choice } = recordingSender(busy);
+    const mine = () => sentAmong(sent, { manageToken });
+
+    await sendDueNotifications(system.db, at(start), choice);
+    expect(mine()).toHaveLength(1);
+    expect(await row(id)).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      lastError: "Meta 503",
+      claimedAt: null,
+      scheduledFor: at(start, 5),
+    });
+
+    // Not before its backoff.
+    await sendDueNotifications(system.db, at(start, 4), choice);
+    expect(mine()).toHaveLength(1);
+
+    await sendDueNotifications(system.db, at(start, 5), choice);
+    expect(mine()).toHaveLength(2);
+    expect(await row(id)).toMatchObject({ status: "pending", attempts: 2, scheduledFor: at(start, 15) });
+
+    await sendDueNotifications(system.db, at(start, 14), choice);
+    expect(mine()).toHaveLength(2);
+    await sendDueNotifications(system.db, at(start, 15), choice);
+    expect(mine()).toHaveLength(3);
+    expect(await row(id)).toMatchObject({ status: "failed", attempts: 3, lastError: "Meta 503", providerMessageId: null });
+
+    // Failed is final: no fourth attempt.
+    await sendDueNotifications(system.db, at(start, 60), choice);
+    expect(mine()).toHaveLength(3);
+  });
+
+  it("marks a retried send that goes through sent, keeping the attempts it took", async () => {
+    const start = "1997-05-02T10:00:00Z";
+    const { id, manageToken } = await queued(start);
+    let tried = false;
+    // Only this row's first send fails: the run may send other rows due by then.
+    const { choice } = recordingSender((message) => {
+      if (message.manageToken !== manageToken || tried) return;
+      tried = true;
+      return busy();
+    });
+
+    await sendDueNotifications(system.db, at(start), choice);
+    await sendDueNotifications(system.db, at(start, 5), choice);
+
+    expect(await row(id)).toMatchObject({ status: "sent", attempts: 2, providerMessageId: `wamid.${manageToken}` });
+  });
+
+  it("retries a sender that throws, as it can't say whether the message went", async () => {
+    const start = "1997-05-03T10:00:00Z";
+    const { id } = await queued(start);
+    const { choice } = recordingSender(() => {
+      throw new TypeError("boom");
+    });
+
+    await sendDueNotifications(system.db, at(start), choice);
+
+    expect(await row(id)).toMatchObject({ status: "pending", attempts: 1, lastError: "Sender failed: TypeError" });
+  });
+
+  /** Puts a row in sending as a run that claimed it `minutesAgo` minutes ago and then died would leave it. */
+  async function stuck(id: string, minutesAgo: number, attempts = 1) {
+    await owner.db.execute(
+      sql`update notifications set status = 'sending', attempts = ${attempts},
+          claimed_at = now() - make_interval(mins => ${minutesAgo}) where id = ${id}`,
+    );
+  }
+
+  it("returns a row stuck in sending for more than 10 minutes to pending, and the same run sends it again", async () => {
+    const start = "1997-06-01T10:00:00Z";
+    const restaurant = await bookableRestaurant(owner.db, { tables: [{ capacity: 4 }, { capacity: 4 }] });
+    const crashed = await queued(start, { restaurant, table: 0 });
+    const recent = await queued(start, { restaurant, table: 1 });
+    await stuck(crashed.id, 11);
+    await stuck(recent.id, 9);
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, at(start), choice);
+
+    // At least once: the crashed run may have got it to Meta, and the guest may get it twice.
+    expect(sentAmong(sent, crashed, recent)).toEqual([crashed.manageToken]);
+    expect(await row(crashed.id)).toMatchObject({ status: "sent", attempts: 2 });
+    // Under 10 minutes it may still be in a live run's hands: left alone.
+    expect(await row(recent.id)).toMatchObject({ status: "sending", attempts: 1 });
+  });
+
+  it("returns a stuck row to pending even while WhatsApp is held", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { id } = await queued("1997-06-02T10:00:00Z");
+    await stuck(id, 11);
+
+    await sendDueNotifications(system.db, at("1997-06-02T10:00:00Z"), { kind: "hold", missing: ["WHATSAPP_ACCESS_TOKEN"] });
+
+    expect(await row(id)).toMatchObject({ status: "pending", claimedAt: null, attempts: 1 });
+    vi.restoreAllMocks();
+  });
+
+  it("marks a stuck row failed instead when it has used its 3 attempts", async () => {
+    const { id, manageToken } = await queued("1997-06-03T10:00:00Z");
+    await stuck(id, 11, 3);
+    const { sent, choice } = recordingSender();
+
+    await sendDueNotifications(system.db, at("1997-06-03T10:00:00Z"), choice);
+
+    expect(sentAmong(sent, { manageToken })).toEqual([]);
+    expect(await row(id)).toMatchObject({ status: "failed", attempts: 3, lastError: expect.stringMatching(/sending/) });
+  });
+
+  it("a run whose rows were recovered and claimed again by another doesn't send or write them over", async () => {
+    const start = "1997-07-01T10:00:00Z";
+    const restaurant = await bookableRestaurant(owner.db, { tables: [{ capacity: 4 }, { capacity: 4 }] });
+    const x = await queued(at(start, -1).toISOString(), { restaurant, table: 0 });
+    const y = await queued(start, { restaurant, table: 1 });
+    const now = at(start);
+
+    // B: a later run. Its send of x waits until the test lets it go.
+    let letBGo!: () => void;
+    const bMayFinish = new Promise<void>((resolve) => (letBGo = resolve));
+    let bSendingX!: () => void;
+    const bIsSendingX = new Promise<void>((resolve) => (bSendingX = resolve));
+    const b = recordingSender(async (message) => {
+      if (message.manageToken === x.manageToken) {
+        bSendingX();
+        await bMayFinish;
+      }
+      return { ok: true, providerMessageId: `wamid.B.${message.manageToken}` };
+    });
+    let bRun: Promise<number> | undefined;
+
+    // A: claims x and y, and stalls on x for over 10 minutes (made to look so by
+    // ageing its claim). Meanwhile B recovers both, claims them, and is sending x.
+    const a = recordingSender(async (message) => {
+      if (message.manageToken === x.manageToken && !bRun) {
+        await owner.db.execute(
+          sql`update notifications set claimed_at = claimed_at - interval '11 minutes' where id in (${x.id}, ${y.id})`,
+        );
+        bRun = sendDueNotifications(system.db, now, b.choice);
+        await bIsSendingX;
+      }
+      return { ok: true, providerMessageId: `wamid.A.${message.manageToken}` };
+    });
+
+    await sendDueNotifications(system.db, now, a.choice);
+    letBGo();
+    await bRun;
+
+    // x went twice, the accepted at-least-once duplicate; y, which A hadn't started, once.
+    expect(sentAmong(a.sent, x, y)).toEqual([x.manageToken]);
+    expect(sentAmong(b.sent, x, y)).toEqual([x.manageToken, y.manageToken]);
+    // A's late answer for x didn't overwrite B's claim: B's own send settled it.
+    expect(await row(x.id)).toMatchObject({ status: "sent", attempts: 2, providerMessageId: `wamid.B.${x.manageToken}` });
+    expect(await row(y.id)).toMatchObject({ status: "sent", attempts: 2, providerMessageId: `wamid.B.${y.manageToken}` });
+  });
+
+  it("a run out of time doesn't put back a row recovered from it that another run is sending", async () => {
+    const start = "1997-07-02T10:00:00Z";
+    const restaurant = await bookableRestaurant(owner.db, { tables: [{ capacity: 4 }, { capacity: 4 }] });
+    const x = await queued(at(start, -1).toISOString(), { restaurant, table: 0 });
+    const y = await queued(start, { restaurant, table: 1 });
+    const now = at(start);
+
+    let letBGo!: () => void;
+    const bMayFinish = new Promise<void>((resolve) => (letBGo = resolve));
+    let bSendingY!: () => void;
+    const bIsSendingY = new Promise<void>((resolve) => (bSendingY = resolve));
+    const b = recordingSender(async (message) => {
+      if (message.manageToken === y.manageToken) {
+        bSendingY();
+        await bMayFinish;
+      }
+    });
+    let bRun: Promise<number> | undefined;
+
+    // A stalls on x past its budget, so it never starts y and releases it on the way
+    // out; by then y was recovered and B is sending it.
+    const a = recordingSender(async (message) => {
+      if (message.manageToken === x.manageToken && !bRun) {
+        await owner.db.execute(
+          sql`update notifications set claimed_at = claimed_at - interval '11 minutes' where id in (${x.id}, ${y.id})`,
+        );
+        bRun = sendDueNotifications(system.db, now, b.choice);
+        await bIsSendingY;
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+      }
+    });
+
+    await sendDueNotifications(system.db, now, a.choice, { budgetMs: 1_000 });
+    expect(sentAmong(a.sent, x, y)).toEqual([x.manageToken]);
+    // Still B's: A's release left it alone.
+    expect(await row(y.id)).toMatchObject({ status: "sending", attempts: 2 });
+    letBGo();
+    await bRun;
+
+    expect(sentAmong(b.sent, x, y)).toEqual([x.manageToken, y.manageToken]);
+    expect(await row(y.id)).toMatchObject({ status: "sent", attempts: 2, providerMessageId: `wamid.${y.manageToken}` });
   });
 });
 

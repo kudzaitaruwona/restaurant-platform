@@ -26,7 +26,8 @@ import { bookings, notifications } from "./schema";
  * writes there. No guest's name or number, no other tenant table, no credential.
  * Spec 05's outbox: it claims and finishes notifications, and reads a guest's
  * name, number and manage link only through notification_sends, for a
- * notification it has claimed (migration 0034).
+ * notification it has claimed (migration 0034). For retries and crash recovery
+ * (#47) it also reads claimed_at and moves scheduled_for (migration 0035).
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -119,6 +120,7 @@ describe("app_system", () => {
       "notification_sends: SELECT",
       "notifications.attempts: SELECT",
       "notifications.attempts: UPDATE",
+      "notifications.claimed_at: SELECT",
       "notifications.claimed_at: UPDATE",
       "notifications.id: SELECT",
       "notifications.kind: SELECT",
@@ -126,6 +128,7 @@ describe("app_system", () => {
       "notifications.provider_message_id: UPDATE",
       "notifications.restaurant_id: SELECT",
       "notifications.scheduled_for: SELECT",
+      "notifications.scheduled_for: UPDATE",
       "notifications.status: SELECT",
       "notifications.status: UPDATE",
       "restaurants.id: SELECT",
@@ -241,7 +244,8 @@ describe("app_system", () => {
       for (const query of [
         sql`insert into notifications (restaurant_id, booking_id, kind, scheduled_for) values (${restaurantId}, ${bookingId}, 'booking_reminder', now())`,
         sql`update notifications set booking_id = booking_id where id = ${id}`,
-        sql`update notifications set scheduled_for = now() where id = ${id}`,
+        // scheduled_for it may move (migration 0035): a retry's backoff. Not its kind.
+        sql`update notifications set kind = 'booking_reminder' where id = ${id}`,
         sql`delete from notifications where id = ${id}`,
       ]) {
         await expect(system.db.execute(query)).rejects.toMatchObject(refused);
