@@ -8,8 +8,13 @@ const NOW = new Date("2026-11-10T18:00:00Z");
 afterEach(() => vi.restoreAllMocks());
 
 describe("runTick", () => {
-  it("runs spec 04's status rules first, then S-30's pruning, in that order", () => {
-    expect(tickTasks.map(({ name }) => name)).toEqual(["noShows", "completed", "codeLimitsPruned"]);
+  it("runs spec 04's status rules first, then D-06's phone purge, then S-30's pruning, in that order", () => {
+    expect(tickTasks.map(({ name }) => name)).toEqual([
+      "noShows",
+      "completed",
+      "phonesPurged",
+      "codeLimitsPruned",
+    ]);
   });
 
   it("runs every task, in order, with the one database and the one moment, and reports what each did", async () => {

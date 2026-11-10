@@ -225,6 +225,13 @@
       "when": 1794303963184,
       "tag": "0031_system_job",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794305533138,
+      "tag": "0032_booking_phone_purge",
+      "breakpoints": true
     }
   ]
 }

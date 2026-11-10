@@ -17,8 +17,9 @@ import { provisionSystemRole } from "./app-role";
  * The scheduled job's login (spec 01, S-28, S-35), proved from Postgres itself.
  * It works across every tenant, so it has BYPASSRLS, and that is why it is
  * granted only the columns the job reads and writes: the job's status rules,
- * its audit entries and the sign-in code rows it prunes. No guest's name or
- * phone, no other tenant table, no credential.
+ * its audit entries, the sign-in code rows it prunes, and D-06's phone purge
+ * (a guest's phone, which it may only read and null, and a restaurant's timezone).
+ * No guest's name, no other tenant table, no credential.
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -98,6 +99,8 @@ describe("app_system", () => {
       "booking_settings.restaurant_id: SELECT",
       "bookings.ends_at: SELECT",
       "bookings.ends_at: UPDATE",
+      "bookings.guest_phone: SELECT",
+      "bookings.guest_phone: UPDATE",
       "bookings.hold_ends_at: SELECT",
       "bookings.hold_ends_at: UPDATE",
       "bookings.id: SELECT",
@@ -106,18 +109,22 @@ describe("app_system", () => {
       "bookings.status: SELECT",
       "bookings.status: UPDATE",
       "bookings.table_id: SELECT",
+      "restaurants.id: SELECT",
+      "restaurants.timezone: SELECT",
       "staff_auth_code_limit.window_started_at: SELECT",
       "staff_auth_code_limit: DELETE",
     ]);
   });
 
-  it("can't read a guest's name or phone, a manage link, or any other tenant table", async () => {
+  it("can't read a guest's name or a manage link, the restaurant's other columns, or any other tenant table", async () => {
     for (const query of [
       sql`select guest_name from bookings limit 1`,
-      sql`select guest_phone from bookings limit 1`,
+      sql`select whatsapp_opt_in from bookings limit 1`,
       sql`select manage_token from bookings limit 1`,
       sql`select * from staff limit 1`,
       sql`select * from restaurants limit 1`,
+      sql`select wifi_password from restaurants limit 1`,
+      sql`select contact_phone from restaurants limit 1`,
       sql`select action from audit_log limit 1`,
       sql`select email from staff_auth_code_limit limit 1`,
       sql`select * from staff_auth_verification limit 1`,
@@ -129,13 +136,19 @@ describe("app_system", () => {
   it("can't rewrite or erase history", async () => {
     for (const query of [
       sql`update bookings set table_id = table_id where false`,
-      sql`update bookings set guest_phone = null where false`,
+      sql`update bookings set guest_name = '' where false`,
+      sql`update bookings set manage_token = '' where false`,
+      sql`update restaurants set timezone = timezone where false`,
       sql`delete from bookings where false`,
       sql`update audit_log set action = action where false`,
       sql`delete from audit_log where false`,
     ]) {
       await expect(system.db.execute(query)).rejects.toMatchObject(refused);
     }
+  });
+
+  it("can null a guest's phone, the one personal column it may change (D-06)", async () => {
+    await expect(system.db.execute(sql`update bookings set guest_phone = null where false`)).resolves.toBeDefined();
   });
 
   it("can run no function that bypasses RLS", async () => {

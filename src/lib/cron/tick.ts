@@ -2,6 +2,7 @@ import "server-only";
 import type { Database } from "@/db/client";
 import { completeOverdueSittings, markNoShows } from "./booking-status";
 import { pruneCodeLimits } from "./code-limits";
+import { purgeGuestPhones } from "./phone-purge";
 
 /**
  * One run of the 5-minute scheduled job (S-35): every task specs 04, 05 and 06
@@ -19,6 +20,7 @@ export type TickTask = {
 export const tickTasks: readonly TickTask[] = [
   { name: "noShows", run: markNoShows },
   { name: "completed", run: completeOverdueSittings },
+  { name: "phonesPurged", run: purgeGuestPhones },
   { name: "codeLimitsPruned", run: pruneCodeLimits },
 ];
 

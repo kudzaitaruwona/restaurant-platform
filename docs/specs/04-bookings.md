@@ -180,7 +180,7 @@ These run on the same scheduled job as notifications (spec 05).
 
 ## Data and privacy
 - Data collected: name, WhatsApp number, party size, and optional note. Nothing else.
-- *(Proposed, D-06)* The phone number is nulled 30 days after the booking date. The name and outcome stay, for no-show stats.
+- *(Proposed, D-06)* The phone number is nulled 30 days after the booking date. The name and outcome stay, for no-show stats. Built in ticket #43: the scheduled job nulls it at the local midnight that starts day booking date + 30, in `restaurants.timezone`, whatever the booking's status (see D-06).
 - Consent to WhatsApp messages is stored in `whatsapp_opt_in`. Meta requires it.
 
 ## Success metrics (the proof for the pitch)

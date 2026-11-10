@@ -649,6 +649,12 @@ export const bookings = pgTable(
     index("bookings_seated_hold_ends_at_index")
       .on(table.holdEndsAt)
       .where(sql`${table.status} = 'seated'`),
+    // The job's phone purge (D-06) looks across every restaurant for old bookings
+    // that still hold a number. Partial, so it holds only those, and shrinks as
+    // the purge runs.
+    index("bookings_phone_starts_at_index")
+      .on(table.startsAt)
+      .where(sql`${table.guestPhone} is not null`),
     check("bookings_guest_name", sql`trim(${table.guestName}) <> '' and length(${table.guestName}) <= 100`),
     check("bookings_guest_phone_e164", sql`${table.guestPhone} ~ '^[+][1-9][0-9]{7,14}$'`),
     check("bookings_party_size_positive", sql`${table.partySize} > 0`),
