@@ -24,6 +24,7 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 - *(Proposed, #74)* Clear table and force-close are `POST /api/floor/{tableId}/clear` and `POST /api/floor/{tableId}/force-close` (with `reason`), from the table's detail. Each form names the session the page showed, as a precondition: if the table's open session isn't that one (it has closed, or a new party has sat down), it is a 409 and nothing closes, so an old page can't close the next party's session. Clear table refused by undelivered items is a 409 listing them and pointing to force-close. Force-close also closes a session with nothing outstanding, voiding nothing.
 - **Reopen:** staff only, within 15 minutes of closing, and only if no session has opened on that table since this one closed, even one that has itself closed again. Reopening resets `last_activity_at`. After that window, a scan starts a fresh session.
 - Idle expiry skips sessions that still have undelivered items, because the gate would reject the close. Those sessions are flagged in the staff UI instead.
+- *(Proposed, #75)* Idle expiry is the scheduled job's last task (S-35), `idleSessionsClosed`: a guarded `UPDATE … WHERE status = 'open' AND last_activity_at <= now − 90 min AND` no line in play, as `app_system`, with `close_reason = idle_expiry`, `closed_by` null and `closed_at` the job's now. It isn't audited. See S-40 in detail.
 
 ### Orders
 - Customers enter **only a name** ("Name for the waiter"). It must not be empty, and anything else is accepted. The name is remembered on that phone for the session. *(Proposed, S-40: up to 100 characters, like a booking's guest name, as a CHECK in Postgres. The remembered name, the "Pay at the table" line and the note input landed in ticket #69, ahead of #70.)*
@@ -76,7 +77,7 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 - A grid of tables showing status (free, open, flagged), time open, and item counts by status.
 - A table whose customers pressed "Call a waiter" *(proposed)* is marked "Calling a waiter since HH:MM" on the grid and in its detail until staff dismiss it (one tap, either place) or the session closes. Pressing it again while one is pending changes nothing.
 - Table detail: every order and item, plus mark delivered, void (with a reason), reject an order (with a reason, S-36), clear table, force-close, and reopen (within the window).
-- Idle sessions that are blocked by undelivered items are shown as flagged.
+- Idle sessions that are blocked by undelivered items are shown as flagged. *(Proposed, #75)* On the grid: an open session with no activity for 90 minutes (on the database's clock) and at least one line placed, cooking or done is `flagged` instead of `open`, marked "Flagged: No activity for 90 minutes, and items not delivered". It stops being flagged when staff deliver or void the lines (idle expiry then closes it on its next run), or when the customers do something that counts as activity.
 
 ## Out of scope (v1)
 - In-app payment and splitting bills

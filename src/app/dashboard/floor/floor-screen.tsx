@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ActionForm } from "@/app/dashboard/action-form";
 import { localTime } from "@/lib/booking-engine";
 import { type ItemCounts, getFloor } from "@/lib/floor";
+import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
 import { getTenantContext } from "@/lib/tenant";
 
 const countLabels: [keyof ItemCounts, string][] = [
@@ -20,7 +21,8 @@ export const openFor = (opened: Date, now: Date) => {
 /**
  * The floor (spec 06, at /dashboard/floor per D-10), for anyone on the team
  * (S-26): every live table, free or open, how long it has been open and its
- * item counts, and a call to a waiter (proposed) with its dismiss. Server-rendered, so React escapes every label. It stays current
+ * item counts, a flag on one idle expiry can't close (spec 06), and a call to a
+ * waiter (proposed) with its dismiss. Server-rendered, so React escapes every label. It stays current
  * by reloading: no polling yet. `now` is for tests.
  */
 export async function FloorScreen({ now }: { now?: Date } = {}) {
@@ -59,6 +61,11 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                   </span>
                 ) : (
                   <span className="text-muted-foreground">Free</span>
+                )}
+                {table.status === "flagged" && (
+                  <span className="rounded-md border border-red-600 bg-red-50 p-2 text-red-950">
+                    <strong>Flagged:</strong> No activity for {IDLE_EXPIRY_MINUTES} minutes, and items not delivered
+                  </span>
                 )}
                 {table.openedAt && (
                   <span className="flex flex-wrap gap-x-4 text-sm">

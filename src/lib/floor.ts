@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
 import { moveItem } from "@/lib/kitchen";
+import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
 import { recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -43,6 +44,8 @@ export const floorTables = (tx: TenantTransaction, ctx: Tenant) =>
       sessionId: tableSessions.id,
       openedAt: tableSessions.openedAt,
       waiterRequestedAt: tableSessions.waiterRequestedAt,
+      // Idle expiry's test (spec 06), on the clock last_activity_at is written by.
+      idle: sql<boolean | null>`${tableSessions.lastActivityAt} <= now() - make_interval(mins => ${IDLE_EXPIRY_MINUTES})`,
     })
     .from(diningTables)
     .leftJoin(
@@ -82,7 +85,12 @@ export const floorCounts = (tx: TenantTransaction, ctx: Tenant, sessionIds: stri
     )
     .groupBy(orders.sessionId, orderItems.status);
 
-/** The live tables in sort order, each free or open, with its open session's item counts. */
+/**
+ * The live tables in sort order, each free, open or flagged, with its open
+ * session's item counts. Flagged (spec 06) is an open session idle long enough
+ * for idle expiry that the job can't close, because a line is still placed,
+ * cooking or done: staff need to deliver, void or force-close it.
+ */
 export function getFloor(ctx: Tenant) {
   return withTenant(ctx, async (tx) => {
     const [{ timezone }] = await tx
@@ -96,14 +104,19 @@ export function getFloor(ctx: Tenant) {
 
     return {
       timezone,
-      tables: tables.map(({ sessionId, openedAt, waiterRequestedAt, ...table }) => {
+      tables: tables.map(({ sessionId, openedAt, waiterRequestedAt, idle, ...table }) => {
         const counts = noCounts();
         for (const row of grouped) {
           if (row.sessionId === sessionId) counts[row.status as keyof ItemCounts] = row.lines;
         }
+        const inPlay = counts.placed + counts.cooking + counts.done > 0;
         return {
           ...table,
-          status: sessionId ? ("open" as const) : ("free" as const),
+          status: !sessionId
+            ? ("free" as const)
+            : idle && inPlay
+              ? ("flagged" as const)
+              : ("open" as const),
           openedAt: openedAt ?? null,
           /** Since when the open session has been calling a waiter (spec 06, proposed), if it is. */
           waiterRequestedAt: waiterRequestedAt ?? null,

@@ -30,6 +30,11 @@ import { bookings, notifications } from "./schema";
  * (#47) it also reads claimed_at and moves scheduled_for (migration 0035). The
  * Meta webhook, on the same login, finds a notification by provider_message_id,
  * so it reads that column too, and writes only status and last_error (#48).
+ * Spec 06's idle expiry (#75, migration idle_expiry_grants) reads an open
+ * session's status and last activity and closes it (status, closed_at,
+ * close_reason), and to skip a session with lines in play it reads only which
+ * orders belong to the session and whether each line is in play: no customer
+ * name, note, item or price.
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -134,10 +139,23 @@ describe("app_system", () => {
       "notifications.scheduled_for: UPDATE",
       "notifications.status: SELECT",
       "notifications.status: UPDATE",
+      "order_items.in_play: SELECT",
+      "order_items.order_id: SELECT",
+      "order_items.restaurant_id: SELECT",
+      "orders.id: SELECT",
+      "orders.restaurant_id: SELECT",
+      "orders.session_id: SELECT",
       "restaurants.id: SELECT",
       "restaurants.timezone: SELECT",
       "staff_auth_code_limit.window_started_at: SELECT",
       "staff_auth_code_limit: DELETE",
+      "table_sessions.close_reason: UPDATE",
+      "table_sessions.closed_at: UPDATE",
+      "table_sessions.id: SELECT",
+      "table_sessions.last_activity_at: SELECT",
+      "table_sessions.restaurant_id: SELECT",
+      "table_sessions.status: SELECT",
+      "table_sessions.status: UPDATE",
     ]);
   });
 
@@ -155,6 +173,14 @@ describe("app_system", () => {
       sql`select action from audit_log limit 1`,
       sql`select email from staff_auth_code_limit limit 1`,
       sql`select * from staff_auth_verification limit 1`,
+      // Idle expiry (#75) reads which lines of a session are in play, never what or whose.
+      sql`select customer_name from orders limit 1`,
+      sql`select note from order_items limit 1`,
+      sql`select name_snapshot from order_items limit 1`,
+      sql`select status from order_items limit 1`,
+      sql`select * from orders limit 1`,
+      sql`select table_id from table_sessions limit 1`,
+      sql`select waiter_requested_at from table_sessions limit 1`,
     ]) {
       await expect(system.db.execute(query)).rejects.toMatchObject(refused);
     }
@@ -169,6 +195,14 @@ describe("app_system", () => {
       sql`delete from bookings where false`,
       sql`update audit_log set action = action where false`,
       sql`delete from audit_log where false`,
+      // It may close a session, not reopen one onto another table or pin it on staff.
+      sql`update table_sessions set table_id = table_id where false`,
+      sql`update table_sessions set closed_by = null where false`,
+      sql`update table_sessions set last_activity_at = now() where false`,
+      sql`insert into table_sessions (restaurant_id, table_id) values (gen_random_uuid(), gen_random_uuid())`,
+      sql`delete from table_sessions where false`,
+      sql`update orders set customer_name = customer_name where false`,
+      sql`update order_items set status = status where false`,
     ]) {
       await expect(system.db.execute(query)).rejects.toMatchObject(refused);
     }

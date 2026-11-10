@@ -1,7 +1,7 @@
 import type { PoolClient } from "@neondatabase/serverless";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { openOwnerDatabase, openTestDatabase } from "../../test/integration/database";
+import { openOwnerDatabase, openSystemDatabase, openTestDatabase } from "../../test/integration/database";
 import { orderingRestaurant } from "../../test/integration/ordering";
 import { orderItems, orders, tableSessions } from "./schema";
 
@@ -14,7 +14,8 @@ import { orderItems, orders, tableSessions } from "./schema";
  */
 const app = openTestDatabase();
 const owner = openOwnerDatabase();
-afterAll(() => Promise.all([app.pool.end(), owner.pool.end()]));
+const system = openSystemDatabase();
+afterAll(() => Promise.all([app.pool.end(), owner.pool.end(), system.pool.end()]));
 
 type Restaurant = Awaited<ReturnType<typeof orderingRestaurant>>;
 type Status = (typeof orderItems.$inferSelect)["status"];
@@ -122,6 +123,22 @@ describe("the closure gate", () => {
     }
     expect(await statusOf(sessionId)).toBe("open");
   });
+
+  it.each(["placed", "cooking", "done"] as const)(
+    "refuses a direct close as app_system, the job's login, which bypasses RLS and can't read the lines, while an item is %s (6.8)",
+    async (status) => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId } = await sessionWith(r, ["delivered", status]);
+      expect(
+        await outcome(
+          system.db.execute(sql`
+            update table_sessions set status = 'closed', closed_at = now(), close_reason = 'idle_expiry'
+            where restaurant_id = ${r.restaurantId} and id = ${sessionId} and status = 'open'`),
+        ),
+      ).toBe(GATE);
+      expect(await statusOf(sessionId)).toBe("open");
+    },
+  );
 
   it("lets a session close once every item is delivered or voided, or when it has none", async () => {
     const r = await orderingRestaurant(owner.db);

@@ -158,6 +158,48 @@ describe("the floor grid", () => {
   });
 });
 
+describe("a flagged table (spec 06: idle, but blocked by undelivered items)", () => {
+  // Idle is judged on the database's clock, the one last_activity_at is written by.
+  const idleFor = (sessionId: string, minutes: number) =>
+    owner.db
+      .update(tableSessions)
+      .set({ lastActivityAt: sql`now() - make_interval(mins => ${minutes})` })
+      .where(eq(tableSessions.id, sessionId));
+
+  it.each(["placed", "cooking", "done"] as const)(
+    "is flagged once its session has had no activity for 90 minutes with an item still %s",
+    async (status) => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId } = await order(r, [{ status: "delivered" }, { status }]);
+      await idleFor(sessionId, 95);
+
+      const [table] = (await getFloor(ctx(r))).tables;
+
+      expect(table.status).toBe("flagged");
+      expect(table.openedAt).not.toBeNull();
+    },
+  );
+
+  it("isn't flagged while the session has had activity in the last 90 minutes", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(r, [{ status: "placed" }]);
+    await idleFor(sessionId, 80);
+
+    expect((await getFloor(ctx(r))).tables[0].status).toBe("open");
+  });
+
+  it("isn't flagged when everything is delivered or voided: idle expiry closes that one", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(r, [
+      { status: "delivered" },
+      { status: "voided", voidReason: "Wrong table", voidedBy: r.staffId },
+    ]);
+    await idleFor(sessionId, 120);
+
+    expect((await getFloor(ctx(r))).tables[0].status).toBe("open");
+  });
+});
+
 type Transaction = Parameters<Parameters<typeof owner.db.transaction>[0]>[0];
 
 /**

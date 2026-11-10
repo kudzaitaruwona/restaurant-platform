@@ -76,6 +76,7 @@ Write an entry for: exchange rate changes, staff created, deactivated or role-ch
 - *(proposed, #73)* a void as `order_item.void` per voided item (its order, the status it left and the reason), and a reject as `order.reject` (the reason and the items it voided) besides each item's `order_item.void`. An entered platform admin is recorded as one (S-29); the item's `voided_by` is their shadow staff row.
 - *(proposed, #74)* force-close as `session.force_close` on the session (the reason and the items it voided), besides each item's `order_item.void`. Clear table isn't on the list, so a staff member's isn't audited; an entered platform admin's is, as `session.clear`, like every admin write (S-28).
 - *(proposed, #77)* dismissing a table's "Call a waiter" (`session.waiter_dismiss`, on the session), only when a call was pending; a dismissal with nothing pending writes no entry.
+- *(proposed, #75)* idle expiry isn't on the list and isn't audited: no one acted, and the session's `close_reason = idle_expiry` with `closed_by` null records it.
 
 ## Stack (decided, D-07)
 - Next.js App Router, TypeScript, Tailwind, shadcn/ui, deployed on Vercel

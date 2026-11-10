@@ -110,6 +110,31 @@ describe("the floor screen", () => {
   });
 });
 
+describe("a flagged table", () => {
+  it("is marked on the grid as idle with items not delivered", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [{ status: "cooking" }]);
+    await owner.db
+      .update(tableSessions)
+      .set({ lastActivityAt: new Date(Date.now() - 100 * 60_000) })
+      .where(eq(tableSessions.tableId, r.tableId));
+
+    const html = renderToStaticMarkup(await FloorScreen());
+
+    expect(html).toContain("Flagged");
+    expect(html).toContain("No activity for 90 minutes, and items not delivered");
+  });
+
+  it("isn't marked on a table with recent activity", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    await openTable(r, [{ status: "cooking" }]);
+
+    expect(renderToStaticMarkup(await FloorScreen())).not.toContain("Flagged");
+  });
+});
+
 describe("a table calling a waiter", () => {
   const calling = async (r: Restaurant) => {
     await openTable(r, [{ status: "placed" }]);

@@ -323,6 +323,13 @@
       "when": 1794339541508,
       "tag": "0045_session_closure_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794341267120,
+      "tag": "0046_idle_expiry_grants",
+      "breakpoints": true
     }
   ]
 }
