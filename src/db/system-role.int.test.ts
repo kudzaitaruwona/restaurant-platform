@@ -26,7 +26,9 @@ import { bookings, notifications } from "./schema";
  * writes there. No guest's name or number, no other tenant table, no credential.
  * Spec 05's outbox: it claims and finishes notifications, and reads a guest's
  * name, number and manage link only through notification_sends, for a
- * notification it has claimed (migration 0034).
+ * notification it has claimed (migration 0034). The Meta webhook, on the same
+ * login, finds a notification by provider_message_id, so it reads that column
+ * too, and writes only status and last_error (#48).
  */
 const system = openSystemDatabase();
 const owner = openOwnerDatabase();
@@ -123,6 +125,7 @@ describe("app_system", () => {
       "notifications.id: SELECT",
       "notifications.kind: SELECT",
       "notifications.last_error: UPDATE",
+      "notifications.provider_message_id: SELECT",
       "notifications.provider_message_id: UPDATE",
       "notifications.restaurant_id: SELECT",
       "notifications.scheduled_for: SELECT",

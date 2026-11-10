@@ -10,8 +10,8 @@ import { getEnv } from "@/lib/env";
  *
  * It takes no input: nothing in the query or body chooses what runs or for which
  * restaurant. It is the only route that opens the system login
- * (DATABASE_URL_SYSTEM, BYPASSRLS), besides the Meta webhook once that exists,
- * and only after the secret checks out. Reading the header first also keeps the
+ * (DATABASE_URL_SYSTEM, BYPASSRLS), besides the Meta webhook, and only after
+ * the secret checks out. Reading the header first also keeps the
  * route dynamic: nothing here may be prerendered.
  */
 export async function GET(request: Request) {

@@ -1,3 +1,4 @@
+import { TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { getDayView } from "@/lib/booking-day";
@@ -130,6 +131,16 @@ function BookingRow({ row, moves }: { row: DayRow; moves: Move[] }) {
         <span className="text-sm">
           {statusLabels[row.status]}
           {row.late && <strong className="ml-2 text-destructive">Late</strong>}
+          {row.confirmationFailed && (
+            <span
+              role="img"
+              aria-label="WhatsApp confirmation failed: call the guest"
+              title="WhatsApp confirmation failed: call the guest"
+              className="ml-2 inline-flex align-middle text-amber-600 dark:text-amber-400"
+            >
+              <TriangleAlert aria-hidden="true" className="size-4" />
+            </span>
+          )}
         </span>
       </div>
       <div className="flex flex-wrap items-start gap-2">

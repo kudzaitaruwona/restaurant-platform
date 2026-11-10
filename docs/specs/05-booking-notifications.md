@@ -65,6 +65,9 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 ## Delivery status
 - A Meta webhook receives `sent`, `delivered`, `read` and `failed` statuses and updates `notifications.status`. Verify the webhook signature with the app secret.
 - **Staff day view:** show a small warning icon on a booking whose confirmation `failed`, for example when the number isn't on WhatsApp. Staff can then call the guest. The booking itself stays valid.
+- *(Proposed, S-37, #48)* The webhook is `GET`/`POST /api/webhooks/whatsapp`. `GET` is Meta's subscription handshake, checked against `WHATSAPP_WEBHOOK_VERIFY_TOKEN`. `POST` is refused (401) unless `X-Hub-Signature-256` is the HMAC-SHA256 of the raw body under `WHATSAPP_APP_SECRET`, compared in constant time, and refused always while the secret is unset. Each status finds its row by `provider_message_id`, then writes it by `(restaurant_id, id)`.
+- *(Proposed, S-37, #48)* **Out of order.** A status only moves forward: `delivered` and `read` replace `sent` and `failed`, `read` replaces `delivered`, `failed` replaces only `sent`, and `sent` changes nothing. A row in `pending`, `sending` or `cancelled` is never touched. A `failed` status keeps Meta's first error in `last_error`. A message id the app doesn't know is ignored.
+- *(Proposed, S-37, #48)* The warning shows only while the booking is `confirmed`: once the guest is seated there is no one to call.
 
 ## Data and privacy
 - Only send when `whatsapp_opt_in = true` and `guest_phone` is set. *(Proposed, S-37)* Checked when queueing (nothing is queued without both) and again at send time (a booking that has lost its number, e.g. to the D-06 purge, gets its row marked `cancelled`).
