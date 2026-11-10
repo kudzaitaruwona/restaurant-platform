@@ -411,6 +411,49 @@ const itemParams = ({ itemId }: Target) => ({ params: Promise.resolve({ itemId }
 const request = (path: string, init?: ConstructorParameters<typeof NextRequest>[1]) =>
   new NextRequest(new URL(path, "http://localhost:3000"), init);
 
+/**
+ * A done line in the target's restaurant, on its fixture table (in the open
+ * session, or one opened for it), for the deliver route: a line can be delivered
+ * once, so each call plants its own.
+ */
+const plantDoneItem = async (target: Target) => {
+  const [open] = await owner.db
+    .select({ id: tableSessions.id })
+    .from(tableSessions)
+    .where(and(eq(tableSessions.tableId, target.tableId), eq(tableSessions.status, "open")));
+  const sessionId =
+    open?.id ??
+    (
+      await owner.db
+        .insert(tableSessions)
+        .values({ restaurantId: target.restaurantId, tableId: target.tableId })
+        .returning({ id: tableSessions.id })
+    )[0].id;
+  const [{ id: orderId }] = await owner.db
+    .insert(orders)
+    // An hour old, so these don't count toward the session's order rate limit.
+    .values({
+      restaurantId: target.restaurantId,
+      sessionId,
+      customerName: "Harness diner",
+      placedAt: new Date(Date.now() - 3_600_000),
+    })
+    .returning({ id: orders.id });
+  const [{ id }] = await owner.db
+    .insert(orderItems)
+    .values({
+      restaurantId: target.restaurantId,
+      orderId,
+      menuItemId: target.itemId,
+      nameSnapshot: "Harness dish",
+      quantity: 1,
+      unitPriceUsd: "1",
+      status: "done",
+    })
+    .returning({ id: orderItems.id });
+  return id;
+};
+
 const routes: TenantRoute[] = [
   {
     name: "GET /api/staff/[staffId]",
@@ -722,6 +765,27 @@ const routes: TenantRoute[] = [
         request(`/api/bookings/closures/${closureId}/delete`, { method: "POST" }),
         closureParams(closureId),
       );
+    },
+  },
+  {
+    name: "POST /api/order-items/[itemId]/deliver",
+    ownerOnly: false,
+    call: async (target) => {
+      const itemId = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantDoneItem(target)
+        : target.tableId;
+      return (await import("@/app/api/order-items/[itemId]/deliver/route")).POST(
+        request(`/api/order-items/${itemId}/deliver`, { method: "POST" }),
+        { params: Promise.resolve({ itemId }) },
+      );
+    },
+  },
+  {
+    name: "PAGE /dashboard/floor/[tableId]",
+    ownerOnly: false,
+    call: async (target) => {
+      const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+      return new Response(renderToStaticMarkup(await TableDetailScreen({ tableId: target.tableId })));
     },
   },
   bookingAction("seat", "confirmed"),
@@ -2698,7 +2762,7 @@ describe("the platform admin on tenant routes", () => {
 });
 
 describe("a platform admin inside restaurant A", () => {
-  const writes = routes.filter((route) => !route.name.startsWith("GET "));
+  const writes = routes.filter((route) => !/^(GET|PAGE) /.test(route.name));
 
   const inside = async () => {
     session.identity = devPlatformAdmin.key;
@@ -3458,6 +3522,99 @@ describe("the table page's ordering", () => {
   });
 });
 
+describe("the floor view", () => {
+  const anOrder = (itemId: string, joined: string, name: string) => ({
+    item: itemId,
+    quantity: "1",
+    name,
+    session: joined,
+  });
+  /** A line ordered at a fixture restaurant's table, set to `status` as the owner role. */
+  const orderedAt = async (who: "a" | "b", name: string, status: "placed" | "done") => {
+    session.identity = "";
+    const token = fixtureTableToken(who);
+    const joined = await scannedSession(token);
+    await postOrder(token, anOrder(fixtures[who].itemId, joined, name));
+    const [{ line }] = (await linesOf(owner.db, fixtures[who].restaurantId)).filter(
+      ({ order }) => order.customerName === name,
+    );
+    await owner.db.update(orderItems).set({ status }).where(eq(orderItems.id, line.id));
+    return line.id;
+  };
+  const deliver = async (itemId: string) =>
+    (await import("@/app/api/order-items/[itemId]/deliver/route")).POST(
+      request(`/api/order-items/${itemId}/deliver`, { method: "POST" }),
+      { params: Promise.resolve({ itemId }) },
+    );
+  const statusOfLine = async (id: string) =>
+    (await owner.db.select().from(orderItems).where(eq(orderItems.id, id)))[0].status;
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: the grid and a table's detail show restaurant A's orders and never B's",
+    async (_key, who) => {
+      await orderedAt("a", "Floor A guest", "placed");
+      await orderedAt("b", "Floor B guest", "placed");
+
+      session.identity = who.key;
+      const { FloorScreen } = await import("@/app/dashboard/floor/floor-screen");
+      const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+      const grid = renderToStaticMarkup(await FloorScreen());
+      const detail = renderToStaticMarkup(await TableDetailScreen({ tableId: fixtures.a.tableId }));
+
+      expect(grid).toContain(`/dashboard/floor/${fixtures.a.tableId}`);
+      expect(grid).not.toContain(fixtures.b.tableId);
+      expect(detail).toContain("Floor A guest");
+      expect(detail).not.toContain("Floor B guest");
+      expect(await statusOf(() => TableDetailScreen({ tableId: fixtures.b.tableId }))).toBe(404);
+    },
+  );
+
+  it("the grid and the detail are a 401 with no session", async () => {
+    session.identity = "";
+    const { FloorScreen } = await import("@/app/dashboard/floor/floor-screen");
+    const { TableDetailScreen } = await import("@/app/dashboard/floor/table-detail-screen");
+    expect(await statusOf(() => FloorScreen())).toBe(401);
+    expect(await statusOf(() => TableDetailScreen({ tableId: fixtures.a.tableId }))).toBe(401);
+  });
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: an owner or staff marks a done item of restaurant A delivered, and B's is a 404 left alone",
+    async (_key, who) => {
+      const mine = await orderedAt("a", `Deliver A ${who.key}`, "done");
+      const theirs = await orderedAt("b", `Deliver B ${who.key}`, "done");
+
+      session.identity = who.key;
+      expect((await deliver(mine)).status).toBeLessThan(400);
+      expect(await statusOfLine(mine)).toBe("delivered");
+
+      expect(await statusOf(() => deliver(theirs))).toBe(404);
+      expect(await statusOfLine(theirs)).toBe("done");
+    },
+  );
+
+  it("refuses an item that isn't done with a 409, and a malformed or unknown id with a 404", async () => {
+    const placed = await orderedAt("a", "Not done yet", "placed");
+    session.identity = aStaff.key;
+
+    const refused = await deliver(placed);
+
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/still placed/);
+    expect(await statusOfLine(placed)).toBe("placed");
+    for (const id of ["not-a-uuid", "'; drop table order_items; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => deliver(id))).toBe(404);
+    }
+  });
+
+  it("marking delivered is a 401 with no session, and changes nothing", async () => {
+    const done = await orderedAt("a", "Unauthenticated", "done");
+    session.identity = "";
+
+    expect(await statusOf(() => deliver(done))).toBe(401);
+    expect(await statusOfLine(done)).toBe("done");
+  });
+});
+
 describe("the guest's cancel", () => {
   const MINUTE = 60_000;
   /** A booking far enough ahead to cancel, on a restaurant of its own. */
@@ -3713,9 +3870,10 @@ describe("harness coverage", () => {
 
   it("no page takes an id but a public one and no Server Function exists that the harness doesn't know about", () => {
     // The only pages with params so far are public, in `publicRoutes`, and take a
-    // slug. The first to take an id needs a way in: add a TenantRoute that calls it.
+    // slug. The first to take an id needs a way in: add a TenantRoute that calls it (the floor's detail page is one).
     const pagesWithIds = pagesWithParams.filter(
-      (file) => !publicRoutes.some((route) => route.name === `PAGE ${routePath(file)}`),
+      (file) =>
+        ![...publicRoutes, ...routes].some((route) => route.name === `PAGE ${routePath(file)}`),
     );
     const serverFunctions = appFiles.filter(
       (file) =>
