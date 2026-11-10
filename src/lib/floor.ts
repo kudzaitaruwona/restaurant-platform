@@ -1,0 +1,226 @@
+import "server-only";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { notFound } from "next/navigation";
+import { z } from "zod";
+import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
+import { recordAdminAction } from "@/lib/tenant/audit";
+import { type TenantContext, withTenant } from "@/lib/tenant/scope";
+
+/**
+ * Front-of-house's view of the floor (spec 06, Staff: floor view), for owner and
+ * staff alike (S-26): every live table with the state of its open session, a
+ * table's orders and items, and mark delivered. Voiding, rejecting, clearing,
+ * force-closing and reopening come with #73 to #77.
+ */
+
+type Tenant = Pick<TenantContext, "restaurantId">;
+type Actor = Pick<TenantContext, "restaurantId" | "platformAdminId">;
+
+type ItemStatus = (typeof orderItems.$inferSelect)["status"];
+
+/** The statuses the grid counts. A voided line was never served or owed, so it isn't one of them. */
+const counted = ["placed", "cooking", "done", "delivered"] as const;
+export type ItemCounts = Record<(typeof counted)[number], number>;
+
+const noCounts = (): ItemCounts => ({ placed: 0, cooking: 0, done: 0, delivered: 0 });
+
+/** The live tables in sort order, each free or open, with its open session's item counts. */
+export function getFloor(ctx: Tenant) {
+  return withTenant(ctx, async (tx) => {
+    const [{ timezone }] = await tx
+      .select({ timezone: restaurants.timezone })
+      .from(restaurants)
+      .where(eq(restaurants.id, ctx.restaurantId));
+    const tables = await tx
+      .select({ id: diningTables.id, label: diningTables.label, capacity: diningTables.capacity })
+      .from(diningTables)
+      .where(and(eq(diningTables.restaurantId, ctx.restaurantId), isNull(diningTables.archivedAt)))
+      .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
+    const open = await tx
+      .select({
+        id: tableSessions.id,
+        tableId: tableSessions.tableId,
+        openedAt: tableSessions.openedAt,
+      })
+      .from(tableSessions)
+      .where(and(eq(tableSessions.restaurantId, ctx.restaurantId), eq(tableSessions.status, "open")));
+    // One grouped read of the open sessions' lines (spec 06: counts by status).
+    const grouped = await tx
+      .select({
+        sessionId: orders.sessionId,
+        status: orderItems.status,
+        lines: sql<number>`count(*)::int`,
+      })
+      .from(orderItems)
+      .innerJoin(
+        orders,
+        and(eq(orders.restaurantId, orderItems.restaurantId), eq(orders.id, orderItems.orderId)),
+      )
+      .innerJoin(
+        tableSessions,
+        and(
+          eq(tableSessions.restaurantId, orders.restaurantId),
+          eq(tableSessions.id, orders.sessionId),
+        ),
+      )
+      .where(
+        and(
+          eq(orderItems.restaurantId, ctx.restaurantId),
+          eq(tableSessions.status, "open"),
+          inArray(orderItems.status, [...counted]),
+        ),
+      )
+      .groupBy(orders.sessionId, orderItems.status);
+
+    return {
+      timezone,
+      tables: tables.map((table) => {
+        const session = open.find((s) => s.tableId === table.id);
+        const counts = noCounts();
+        for (const row of grouped) {
+          if (row.sessionId === session?.id) counts[row.status as keyof ItemCounts] = row.lines;
+        }
+        return {
+          ...table,
+          status: session ? ("open" as const) : ("free" as const),
+          openedAt: session?.openedAt ?? null,
+          counts,
+        };
+      }),
+    };
+  });
+}
+
+/**
+ * One live table with every order and line of its open session, oldest first, or
+ * null when there is no such live table here. A free table has no session and no
+ * orders: a closed session's belong to a bill nobody is serving any more.
+ */
+export function getTableDetail(ctx: Tenant, tableId: string) {
+  return withTenant(ctx, async (tx) => {
+    const [{ timezone }] = await tx
+      .select({ timezone: restaurants.timezone })
+      .from(restaurants)
+      .where(eq(restaurants.id, ctx.restaurantId));
+    const [table] = await tx
+      .select({ id: diningTables.id, label: diningTables.label, capacity: diningTables.capacity })
+      .from(diningTables)
+      .where(
+        and(
+          eq(diningTables.restaurantId, ctx.restaurantId),
+          eq(diningTables.id, tableId),
+          isNull(diningTables.archivedAt),
+        ),
+      );
+    if (!table) return null;
+
+    const [session] = await tx
+      .select({ id: tableSessions.id, openedAt: tableSessions.openedAt })
+      .from(tableSessions)
+      .where(
+        and(
+          eq(tableSessions.restaurantId, ctx.restaurantId),
+          eq(tableSessions.tableId, table.id),
+          eq(tableSessions.status, "open"),
+        ),
+      );
+    if (!session) return { timezone, table, session: null, orders: [] };
+
+    const rows = await tx
+      .select({
+        orderId: orders.id,
+        customerName: orders.customerName,
+        placedAt: orders.placedAt,
+        itemId: orderItems.id,
+        name: orderItems.nameSnapshot,
+        quantity: orderItems.quantity,
+        note: orderItems.note,
+        status: orderItems.status,
+      })
+      .from(orders)
+      .innerJoin(
+        orderItems,
+        and(eq(orderItems.restaurantId, orders.restaurantId), eq(orderItems.orderId, orders.id)),
+      )
+      .where(and(eq(orders.restaurantId, ctx.restaurantId), eq(orders.sessionId, session.id)))
+      .orderBy(asc(orders.placedAt), asc(orders.id), asc(orderItems.id));
+
+    const byOrder = new Map<
+      string,
+      { id: string; customerName: string; placedAt: Date; items: { id: string; name: string; quantity: number; note: string | null; status: ItemStatus }[] }
+    >();
+    for (const row of rows) {
+      const order =
+        byOrder.get(row.orderId) ??
+        { id: row.orderId, customerName: row.customerName, placedAt: row.placedAt, items: [] };
+      order.items.push({
+        id: row.itemId,
+        name: row.name,
+        quantity: row.quantity,
+        note: row.note,
+        status: row.status,
+      });
+      byOrder.set(row.orderId, order);
+    }
+    return { timezone, table, session, orders: [...byOrder.values()] };
+  });
+}
+
+export type DeliverOutcome =
+  | { outcome: "done" }
+  | { outcome: "not_found" }
+  /** Someone else got there first, or the line was never done. */
+  | { outcome: "wrong_status"; status: ItemStatus };
+
+/** The id in an order item route. A malformed one is a 404, like an unknown one. */
+export async function orderItemIdFrom(params: Promise<{ itemId: string }>) {
+  const parsed = z.uuid().safeParse((await params).itemId);
+  if (!parsed.success) notFound();
+  return parsed.data;
+}
+
+/**
+ * Front-of-house hands a finished line over (spec 07: Delivered is set by them):
+ * `done → delivered`, in the one statement, `WHERE status = 'done'`, so two taps
+ * at once have one winner. The session's last activity moves in the same
+ * transaction, so idle expiry counts from now. Delivering the last line leaves the
+ * session open: only clearing the table closes it (spec 06, Sessions). Spec 01's
+ * audit list doesn't include it, so only a platform admin's is audited.
+ */
+export function markItemDelivered(actor: Actor, itemId: string): Promise<DeliverOutcome> {
+  return withTenant(actor, async (tx) => {
+    const where = and(eq(orderItems.restaurantId, actor.restaurantId), eq(orderItems.id, itemId));
+    const changed = await tx
+      .update(orderItems)
+      .set({ status: "delivered", statusChangedAt: sql`now()` })
+      .where(and(where, eq(orderItems.status, "done")))
+      .returning({ orderId: orderItems.orderId });
+    if (changed.length === 0) {
+      const [current] = await tx.select({ status: orderItems.status }).from(orderItems).where(where);
+      return current
+        ? { outcome: "wrong_status", status: current.status }
+        : { outcome: "not_found" };
+    }
+    await tx
+      .update(tableSessions)
+      .set({ lastActivityAt: sql`now()` })
+      .where(
+        and(
+          eq(tableSessions.restaurantId, actor.restaurantId),
+          eq(
+            tableSessions.id,
+            tx
+              .select({ id: orders.sessionId })
+              .from(orders)
+              .where(and(eq(orders.restaurantId, actor.restaurantId), eq(orders.id, changed[0].orderId))),
+          ),
+        ),
+      );
+    await recordAdminAction(tx, actor, {
+      action: "order_item.deliver",
+      entityType: "order_item",
+      entityId: itemId,
+    });
+    return { outcome: "done" };
+  });
+}
