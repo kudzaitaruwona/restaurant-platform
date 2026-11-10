@@ -98,6 +98,24 @@ describe("the Meta Cloud API sender", () => {
     expect(await unreachable.send(message)).toMatchObject({ ok: false, error: expect.stringMatching(/^Meta request failed/) });
   });
 
+  it("gives up on a Meta that never answers, as a failed send, once its timeout passes", async () => {
+    // A stand-in that takes the request and never responds.
+    const silent = createServer(() => {});
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    try {
+      const hanging = metaSender({
+        phoneNumberId: "1",
+        accessToken: "t",
+        baseUrl: `http://127.0.0.1:${(silent.address() as AddressInfo).port}`,
+        timeoutMs: 50,
+      });
+      expect(await hanging.send(message)).toEqual({ ok: false, error: expect.stringMatching(/TimeoutError/) });
+    } finally {
+      silent.closeAllConnections();
+      await new Promise((resolve) => silent.close(resolve));
+    }
+  });
+
   it("keeps last_error within the column's 500 characters", async () => {
     answer = { status: 400, body: JSON.stringify({ error: { message: "x".repeat(2000), code: 1 } }) };
     const result = await sender().send(message);

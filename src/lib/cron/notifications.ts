@@ -22,15 +22,24 @@ import { bookingConfirmed, type TemplateMessage } from "@/lib/whatsapp/templates
  * In production without WhatsApp's keys (`hold`) nothing is claimed: due rows
  * wait as pending and go on the first run after the keys are set.
  *
+ * A run has a time budget, so a slow or silent Meta can't hold the job past
+ * its function's 300-second limit and starve the tasks after this one. The
+ * deadline is checked before each claim and each send; once it passes, the
+ * rows this run claimed but hasn't started are put back to pending for the
+ * next run. Worst case: the budget plus one send's 10-second timeout.
+ *
  * Every write names the row by (restaurant_id, id) and requires the status it
  * expects, so a repeat or an overlapping run changes nothing a second time.
- * `now` decides what is due, so a test can pick the moment.
+ * `now` decides what is due, so a test can pick the moment; the budget runs on
+ * the real clock.
  */
 
 /** Small batches: a claimed row is sent within seconds of its claim. */
 const BATCH_SIZE = 20;
-/** At most 100 sends a run, well inside the function's time limit (S-35); the next run takes the rest. */
+/** At most 100 sends a run; the next run takes the rest. */
 const MAX_BATCHES = 5;
+/** 75 seconds of a 300-second function (S-37 in detail): room for the tasks after this one. */
+const TIME_BUDGET_MS = 75_000;
 
 /** The kinds this task can send, and the booking status each needs at send time. */
 const sendable = {
@@ -40,7 +49,15 @@ const sendableKinds = Object.keys(sendable) as (keyof typeof sendable)[];
 
 type Claimed = { restaurantId: string; id: string };
 
-export async function sendDueNotifications(db: Database, now: Date, choice: SenderChoice): Promise<number> {
+export async function sendDueNotifications(
+  db: Database,
+  now: Date,
+  choice: SenderChoice,
+  { budgetMs = TIME_BUDGET_MS }: { budgetMs?: number } = {},
+): Promise<number> {
+  const deadline = Date.now() + budgetMs;
+  const outOfTime = () => Date.now() >= deadline;
+
   const due = and(
     eq(notifications.status, "pending"),
     inArray(notifications.kind, sendableKinds),
@@ -57,13 +74,23 @@ export async function sendDueNotifications(db: Database, now: Date, choice: Send
     return 0;
   }
 
+  const send = choice.sender.send.bind(choice.sender);
   let finished = 0;
-  for (let batch = 0; batch < MAX_BATCHES; batch++) {
+  for (let batch = 0; batch < MAX_BATCHES && !outOfTime(); batch++) {
     const claimed = await claim(db, due);
-    for (const row of claimed) {
-      if (await sendOne(db, row, choice.sender.send.bind(choice.sender))) finished++;
+    // Rows before `started` have begun their send; the rest haven't. Whatever
+    // ends the batch (the deadline or an error), the ones not started go back
+    // to pending. One whose send began stays in sending, since Meta may have
+    // taken it: that is #47's to recover, never this run's to send again.
+    let started = 0;
+    try {
+      while (started < claimed.length && !outOfTime()) {
+        if (await sendOne(db, claimed[started++], send)) finished++;
+      }
+    } finally {
+      await release(db, claimed.slice(started));
     }
-    if (claimed.length < BATCH_SIZE) break;
+    if (started < claimed.length || claimed.length < BATCH_SIZE) break;
   }
   return finished;
 }
@@ -88,6 +115,20 @@ function claim(db: Database, due: ReturnType<typeof and>): Promise<Claimed[]> {
     const ids = new Set(updated.map(({ id }) => id));
     return rows.filter(({ id }) => ids.has(id));
   });
+}
+
+/**
+ * sending -> pending for rows this run claimed and never started to send. The
+ * claim's attempt is given back, since no send was tried, and claimed_at
+ * cleared. Only this run's own claimed rows, by (restaurant_id, id), and only
+ * while still in sending: a row anything else has moved since is left alone.
+ */
+async function release(db: Database, rows: Claimed[]) {
+  if (rows.length === 0) return;
+  await db
+    .update(notifications)
+    .set({ status: "pending", claimedAt: null, attempts: sql`${notifications.attempts} - 1` })
+    .where(and(eq(notifications.status, "sending"), byKeys(rows)));
 }
 
 const byKeys = (rows: Claimed[]) =>

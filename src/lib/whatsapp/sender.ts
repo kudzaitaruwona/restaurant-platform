@@ -11,6 +11,7 @@ import { renderText, type TemplateMessage } from "./templates";
 export const GRAPH_API_VERSION = "v23.0";
 
 const GRAPH_API_BASE_URL = "https://graph.facebook.com";
+/** How long one send may wait for Meta. The job's time budget allows for one send this long past it. */
 const REQUEST_TIMEOUT_MS = 10_000;
 /** notifications.last_error holds at most this many characters. */
 const MAX_ERROR_LENGTH = 500;
@@ -33,10 +34,12 @@ export function metaSender({
   phoneNumberId,
   accessToken,
   baseUrl = GRAPH_API_BASE_URL,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 }: {
   phoneNumberId: string;
   accessToken: string;
   baseUrl?: string;
+  timeoutMs?: number;
 }): WhatsAppSender {
   const url = `${baseUrl}/${GRAPH_API_VERSION}/${encodeURIComponent(phoneNumberId)}/messages`;
   return {
@@ -47,7 +50,7 @@ export function metaSender({
           method: "POST",
           headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
           body: JSON.stringify(requestBody(message)),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {
         return failed(`Meta request failed: ${error instanceof Error ? error.name : "unknown"}`);

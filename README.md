@@ -94,7 +94,7 @@ Environment variables are validated with zod when the server starts (`src/instru
 
 ### Turning on WhatsApp
 
-Booking confirmations are queued in `notifications` when a booking is confirmed and sent by the scheduled job (spec 05, S-36). Until WhatsApp's keys are set, production holds them as `pending`, and development prints each message to the server console instead. Holding is safe: the job re-checks each booking before sending, so a held confirmation for a booking cancelled since is dropped, not sent.
+Booking confirmations are queued in `notifications` when a booking is confirmed and sent by the scheduled job (spec 05, S-37). Until WhatsApp's keys are set, production holds them as `pending`, and development prints each message to the server console instead, but only when the job runs: nothing schedules it locally, so call it by hand with `curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/tick`. Holding is safe: the job re-checks each booking before sending, so a held confirmation for a booking cancelled since is dropped, not sent.
 
 To turn it on, once Meta has approved the account and the `booking_confirmed` template (in language `en`, with a URL button to `{NEXT_PUBLIC_APP_URL}/b/{{1}}`):
 

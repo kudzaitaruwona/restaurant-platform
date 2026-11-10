@@ -19,7 +19,7 @@ WhatsApp Business messaging requires Meta Business verification, a WhatsApp Busi
 - **One platform-owned WhatsApp number** sends for every restaurant. Messages name the restaurant in the body.
 - Per-restaurant numbers would make each venue go through Meta verification, which defeats "effortless first yes." Revisit only if a venue insists on its own number.
 - Direct integration with the **WhatsApp Cloud API** (Meta-hosted), with no third-party provider markup. Twilio and similar providers are a fallback if Meta onboarding stalls.
-- **Before Meta approves the account — Decided (S-36):** the app runs without WhatsApp's keys. In production the job holds queued messages as `pending` and sends them once `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` are set; outside production a console sender prints them. Turning WhatsApp on needs no code change. Templates are in language `en`, defined in one place (`src/lib/whatsapp/templates.ts`).
+- **Before Meta approves the account — Decided (S-37):** the app runs without WhatsApp's keys. In production the job holds queued messages as `pending` and sends them once `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` are set; outside production a console sender prints them. Turning WhatsApp on needs no code change. Templates are in language `en`, defined in one place (`src/lib/whatsapp/templates.ts`).
 
 ## Templates (utility category)
 
@@ -54,8 +54,8 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 - `UNIQUE (booking_id, kind)` only prevents duplicate *rows*. Duplicate *sends* are prevented by the claim.
 - **Crash recovery is at-least-once:** a row stuck in `sending` for more than 10 minutes returns to `pending`. If the crash happened after Meta accepted the message, the guest gets it twice. That's accepted, because a rare duplicate is better than a lost reminder.
 - Retry: up to 3 attempts with backoff, then `failed`.
-- *(Proposed, S-36)* A send Meta doesn't accept (a non-2xx, a network error, or no message ID) marks the row `failed` with the error in `last_error`; the retry rule above turns that into a retry (#47). A `booking_confirmed` for a restaurant with no contact phone is marked `failed` without sending, since {{6}} would be empty.
-- The job reads a guest's name, number and manage link only through the `notification_sends` view, which shows them only for a row it has claimed (spec 00, 5).
+- *(Proposed, S-37)* A send Meta doesn't accept (a non-2xx, a network error, or no message ID) marks the row `failed` with the error in `last_error`; the retry rule above turns that into a retry (#47). A run stops sending after 75 seconds, so a slow Meta can't hold the job past its function's limit; the rows it claimed but didn't start go back to `pending`, with the claim's attempt given back, for the next run. A `booking_confirmed` for a restaurant with no contact phone is marked `failed` without sending, since {{6}} would be empty.
+- *(Proposed, S-37)* The job reads a guest's name, number and manage link only through the `notification_sends` view, which shows them only for a row it has claimed (spec 00, 5).
 - **Before sending, re-check the booking's status for that message kind.** `booking_confirmed` and `booking_reminder` require `status = confirmed`. `booking_cancelled` requires `status = cancelled`. On a mismatch, mark the row `cancelled` without sending. A reminder for a cancelled booking is worse than no reminder.
 - The same job runs the booking auto-status rules from spec 04 and the phone retention purge *(proposed, D-06; built as the `phonesPurged` task, which runs after the status rules and needs nothing from the outbox: a booking 30 days past has nothing left to send)*.
 - This job and the Meta webhook work across all tenants, so they use the privileged database role described in spec 01.
@@ -67,7 +67,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 - **Staff day view:** show a small warning icon on a booking whose confirmation `failed`, for example when the number isn't on WhatsApp. Staff can then call the guest. The booking itself stays valid.
 
 ## Data and privacy
-- Only send when `whatsapp_opt_in = true` and `guest_phone` is set. Checked when queueing (nothing is queued without both) and again at send time (a booking that has lost its number, e.g. to the D-06 purge, gets its row marked `cancelled`).
+- Only send when `whatsapp_opt_in = true` and `guest_phone` is set. *(Proposed, S-37)* Checked when queueing (nothing is queued without both) and again at send time (a booking that has lost its number, e.g. to the D-06 purge, gets its row marked `cancelled`).
 - Never send marketing messages through these templates. Utility-category templates must stay strictly transactional, or Meta can reclassify or block them.
 
 ## Cost

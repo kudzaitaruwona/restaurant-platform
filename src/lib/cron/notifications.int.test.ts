@@ -289,6 +289,41 @@ describe("the notification task", () => {
     expect(await row(id)).toMatchObject({ status: "failed", lastError: expect.stringMatching(/contact phone/) });
   });
 
+  it("stops sending when its time budget runs out, and puts the rows it claimed but didn't send back to pending", async () => {
+    const rows = await manyQueued(5, "1996-07-01T10:00:00Z");
+    const now = new Date("1996-07-01T10:00:00Z");
+    // Meta is slow: every send takes three times the run's whole budget.
+    const slow = recordingSender(() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
+    const started = Date.now();
+
+    await sendDueNotifications(system.db, now, slow.choice, { budgetMs: 100 });
+
+    // One send past the deadline, then it stops: not five sends' worth.
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(slow.sent.length).toBe(1);
+    const after = await Promise.all(rows.map(({ id }) => row(id)));
+    expect(after.filter(({ status }) => status === "sending")).toEqual([]);
+    const released = after.filter(({ status }) => status === "pending");
+    expect(released.length).toBeGreaterThanOrEqual(rows.length - 1);
+    // Released unsent: no claim time, and the claim's attempt given back.
+    for (const found of released) expect(found).toMatchObject({ claimedAt: null, attempts: 0 });
+
+    // The next run sends them, each on its first attempt.
+    const next = recordingSender();
+    await sendDueNotifications(system.db, now, next.choice);
+    for (const found of released) expect(await row(found.id)).toMatchObject({ status: "sent", attempts: 1 });
+  });
+
+  it("claims nothing once its time budget has run out", async () => {
+    const { id } = await queued("1996-08-01T10:00:00Z");
+    const { sent, choice } = recordingSender();
+
+    expect(await sendDueNotifications(system.db, new Date("1996-08-01T10:00:00Z"), choice, { budgetMs: 0 })).toBe(0);
+
+    expect(sent).toEqual([]);
+    expect(await row(id)).toMatchObject({ status: "pending", claimedAt: null, attempts: 0 });
+  });
+
   it("holds due rows as pending when WhatsApp isn't configured in production, and sends them once it is", async () => {
     const log = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { id, manageToken } = await queued("1996-06-01T10:00:00Z");
