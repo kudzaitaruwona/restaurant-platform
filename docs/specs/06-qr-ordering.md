@@ -25,15 +25,15 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 - Idle expiry skips sessions that still have undelivered items, because the gate would reject the close. Those sessions are flagged in the staff UI instead.
 
 ### Orders
-- Customers enter **only a name** ("Name for the waiter"). It must not be empty, and anything else is accepted. The name is remembered on that phone for the session. *(Proposed, S-37: up to 100 characters, like a booking's guest name, as a CHECK in Postgres.)*
+- Customers enter **only a name** ("Name for the waiter"). It must not be empty, and anything else is accepted. The name is remembered on that phone for the session. *(Proposed, S-40: up to 100 characters, like a booking's guest name, as a CHECK in Postgres. The remembered name, the "Pay at the table" line and the note input landed in ticket #69, ahead of #70.)*
 - Each order line **freezes its prices** (USD, ZiG, and whether the ZiG price was fixed or calculated), plus the exchange rate used.
 - Status is tracked **per item**: placed → cooking → done → delivered, with `voided` for cancellations.
-- Each item can have a note ("no onions"). *(Proposed, S-37: a note is up to 200 characters, and a quantity is 1 to 20, both as CHECKs in Postgres.)*
+- Each item can have a note ("no onions"). *(Proposed, S-40: a note is up to 200 characters, and a quantity is 1 to 20, both as CHECKs in Postgres.)*
 - If an item has an active special, the line records `special_id`.
-- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name. A currency that can't be worked out yet (no rate) is stored null, as the menu shows it.
-- Only an item a customer could order now can be ordered: not archived, not sold out, and a bundle only inside its special's window. Anything else is refused and nothing is written.
-- *(Proposed, S-37)* **Order rate limit:** at most 10 orders per table session in any 5 minutes. Past it the order is refused (429) and nothing is written. A photographed code could otherwise flood a kitchen.
-- *(Proposed, S-37)* **A stale tab can't order into a new party's session.** The page sends back the session it joined; if that is no longer the table's open session, the order is refused (409) and the page joins the table's session again before the customer retries.
+- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name. A currency that can't be worked out yet (no rate) is stored null, as the menu shows it. (ticket #69)
+- Only an item a customer could order now can be ordered: not archived, not sold out, and a bundle only inside its special's window. Anything else is refused and nothing is written. (ticket #69)
+- *(Proposed, S-40)* **Order rate limit:** at most 10 orders per table session in any 5 minutes. Past it the order is refused (429) and nothing is written. A photographed code could otherwise flood a kitchen.
+- *(Proposed, S-40)* **A stale tab can't order into a new party's session.** The page sends back the session it joined; if that is no longer the table's open session, the order is refused (409) and the page joins the table's session again before the customer retries.
 
 ### Access
 - Customers stay anonymous, and orders attach to the session.
@@ -58,7 +58,7 @@ Someone could photograph a table's QR code and order from anywhere. v1 accepts t
 
 The page must keep the spec 02 performance budget. The cart and tracker are the only client-side JavaScript. `/t/{qr_token}` stays the hand-written Route Handler that serves the menu (S-32), and ordering adds one small standalone script to it for the cart, the name and the tracker. *(Proposed: the menu HTML stays cached; the script talks to uncached endpoints of its own.)* `/m/{menu_token}` gets no script and never takes an order (spec 03).
 
-*(Proposed, S-37, ticket #69.)* How that is built:
+*(Proposed, S-40, ticket #69.)* How that is built:
 - The script is inline in the page, so the page is still one response and the budget test measures all of it. It reads the token from the address; the page carries no session data.
 - On load it scans: `POST /api/t/{qr_token}/session` opens the table's session or joins the open one, and bumps `last_activity_at`. Only then does it show the Add buttons, which are in the page but hidden, so without JavaScript, or with a code that no longer works, the page is the plain menu.
 - An order is `POST /api/t/{qr_token}/orders` with the item, quantity, note and name, plus the session the page joined. The order goes into the session found by the token, never by that id, which is only compared with it.

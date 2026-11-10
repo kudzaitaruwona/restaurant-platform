@@ -70,7 +70,7 @@ export async function joinTableSession(qrToken: string) {
 // --- placing an order ---------------------------------------------------------
 
 /**
- * The order rate limit *(proposed, S-37)*: a photographed code could otherwise
+ * The order rate limit *(proposed, S-40)*: a photographed code could otherwise
  * flood a kitchen. Per session, so a busy table of real customers is the only
  * thing it can slow down.
  */

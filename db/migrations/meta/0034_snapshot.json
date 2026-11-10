@@ -1985,6 +1985,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "order_items_in_play": {
+          "name": "order_items_in_play",
+          "columns": [
+            {
+              "expression": "restaurant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"order_items\".\"status\" not in ('delivered', 'voided')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {

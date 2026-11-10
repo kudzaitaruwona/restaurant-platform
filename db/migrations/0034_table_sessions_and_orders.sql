@@ -71,6 +71,7 @@ ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_restaurant_id_restau
 ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_table_fk" FOREIGN KEY ("restaurant_id","table_id") REFERENCES "public"."tables"("restaurant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "table_sessions" ADD CONSTRAINT "table_sessions_closed_by_fk" FOREIGN KEY ("restaurant_id","closed_by") REFERENCES "public"."staff"("restaurant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "order_items_restaurant_id_order_id_index" ON "order_items" USING btree ("restaurant_id","order_id");--> statement-breakpoint
+CREATE INDEX "order_items_in_play" ON "order_items" USING btree ("restaurant_id","status") WHERE "order_items"."status" not in ('delivered', 'voided');--> statement-breakpoint
 CREATE INDEX "orders_restaurant_id_session_id_placed_at_index" ON "orders" USING btree ("restaurant_id","session_id","placed_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "table_sessions_one_open_per_table" ON "table_sessions" USING btree ("table_id") WHERE "table_sessions"."status" = 'open';--> statement-breakpoint
 CREATE POLICY "tenant_isolation" ON "order_items" AS PERMISSIVE FOR ALL TO public USING ("restaurant_id" = nullif(current_setting('app.restaurant_id', true), '')::uuid) WITH CHECK ("restaurant_id" = nullif(current_setting('app.restaurant_id', true), '')::uuid);--> statement-breakpoint
@@ -149,15 +150,19 @@ CREATE TRIGGER order_items_session_open
   FOR EACH ROW EXECUTE FUNCTION order_items_session_open();
 --> statement-breakpoint
 -- FROZEN PRICES (spec 06). What a line was sold as, and at what price, never
--- changes once it is written, whoever asks: the owner role too. Its status, and
--- a void's reason and who voided it, still move. The constraint to name comes
--- from the trigger, so one function serves both tables.
+-- changes once it is written, whoever asks: the owner role too. Nor does the bill
+-- it is on (proposed, S-40): a line can't move to another order, nor an order to
+-- another session, a closed one included, so money can't shift between bills.
+-- The open-session triggers above fire on INSERT only, so this is what holds a
+-- written row in place. Its status, and a void's reason and who voided it, still
+-- move. The constraint to name comes from the trigger, so one function serves
+-- both tables.
 CREATE FUNCTION refuse_frozen_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-  RAISE EXCEPTION 'a placed order''s prices can''t change'
+  RAISE EXCEPTION 'a placed order''s prices, and the bill they are on, can''t change'
     USING ERRCODE = 'check_violation', CONSTRAINT = TG_ARGV[0];
 END;
 $$;
@@ -167,7 +172,8 @@ REVOKE ALL ON FUNCTION refuse_frozen_change() FROM PUBLIC;
 CREATE TRIGGER order_items_frozen
   BEFORE UPDATE ON order_items
   FOR EACH ROW WHEN (
-    OLD.menu_item_id IS DISTINCT FROM NEW.menu_item_id
+    OLD.order_id IS DISTINCT FROM NEW.order_id
+    OR OLD.menu_item_id IS DISTINCT FROM NEW.menu_item_id
     OR OLD.special_id IS DISTINCT FROM NEW.special_id
     OR OLD.name_snapshot IS DISTINCT FROM NEW.name_snapshot
     OR OLD.quantity IS DISTINCT FROM NEW.quantity
@@ -177,7 +183,10 @@ CREATE TRIGGER order_items_frozen
   )
   EXECUTE FUNCTION refuse_frozen_change('order_items_frozen');
 --> statement-breakpoint
-CREATE TRIGGER orders_rate_used_frozen
+CREATE TRIGGER orders_frozen
   BEFORE UPDATE ON orders
-  FOR EACH ROW WHEN (OLD.rate_used IS DISTINCT FROM NEW.rate_used)
-  EXECUTE FUNCTION refuse_frozen_change('orders_rate_used_frozen');
+  FOR EACH ROW WHEN (
+    OLD.session_id IS DISTINCT FROM NEW.session_id
+    OR OLD.rate_used IS DISTINCT FROM NEW.rate_used
+  )
+  EXECUTE FUNCTION refuse_frozen_change('orders_frozen');

@@ -752,7 +752,8 @@ export const closures = pgTable(
  * model triggers: an order or a line can only be written while its session is
  * open (orders_session_open, order_items_session_open), and a line's prices and
  * an order's rate can't change once written (order_items_frozen,
- * orders_rate_used_frozen). app_tenant can't delete from any of the three
+ * orders_frozen), nor can a line move to another order or an order to another
+ * session (proposed, S-40), so money can't shift between bills. app_tenant can't delete from any of the three
  * (proposed): nothing customer-facing is hard-deleted, and a void is a status.
  */
 export const tableSessions = pgTable(
@@ -898,6 +899,12 @@ export const orderItems = pgTable(
     }),
     unique().on(table.restaurantId, table.id),
     index().on(table.restaurantId, table.orderId),
+    // The kitchen's lines (spec 07): only those still in play, so a load doesn't
+    // read the restaurant's whole history (lines are never deleted). Placed for
+    // now; #71's board filters on placed, cooking and done.
+    index("order_items_in_play")
+      .on(table.restaurantId, table.status)
+      .where(sql`${table.status} not in ('delivered', 'voided')`),
     // 1 to 20 (proposed): the spec says only "> 0".
     check("order_items_quantity", sql`${table.quantity} between 1 and 20`),
     // Up to 200 characters (proposed), like a booking's note; blank is stored as null.

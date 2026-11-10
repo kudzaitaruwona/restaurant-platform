@@ -150,7 +150,7 @@ describe("frozen prices", () => {
         .values(aLine(restaurantId, orderId, menuItemId))
         .returning({ id: orderItems.id }),
     );
-    return { restaurantId, orderId, lineId: id, menuItemId };
+    return { restaurantId, tableId, sessionId, orderId, lineId: id, menuItemId };
   }
 
   it.each([
@@ -187,7 +187,33 @@ describe("frozen prices", () => {
 
     await expect(
       owner.db.update(orders).set({ rateUsed: "1" }).where(eq(orders.id, orderId)),
-    ).rejects.toMatchObject(check("orders_rate_used_frozen"));
+    ).rejects.toMatchObject(check("orders_frozen"));
+  });
+
+  // Proposed, S-40: money can't shift between bills.
+  it("refuses moving a line onto another order, even one of the same session", async () => {
+    const { restaurantId, lineId, sessionId } = await line();
+    const otherOrderId = await placeOrder(restaurantId, sessionId);
+
+    await expect(
+      asTenant(app.db, restaurantId, (tx) =>
+        tx.update(orderItems).set({ orderId: otherOrderId }).where(eq(orderItems.id, lineId)),
+      ),
+    ).rejects.toMatchObject(check("order_items_frozen"));
+  });
+
+  it("refuses moving an order onto another session, open or closed", async () => {
+    const { restaurantId, tableId, orderId: earlierOrderId, sessionId: closedId } = await line();
+    await closeSession(closedId);
+    const openId = await openSession(restaurantId, tableId);
+    const laterOrderId = await placeOrder(restaurantId, openId);
+    const move = (orderId: string, sessionId: string) =>
+      asTenant(app.db, restaurantId, (tx) =>
+        tx.update(orders).set({ sessionId }).where(eq(orders.id, orderId)),
+      );
+
+    await expect(move(earlierOrderId, openId)).rejects.toMatchObject(check("orders_frozen"));
+    await expect(move(laterOrderId, closedId)).rejects.toMatchObject(check("orders_frozen"));
   });
 
   it("can't be deleted by the app: nothing customer-facing is hard-deleted", async () => {
@@ -199,6 +225,30 @@ describe("frozen prices", () => {
     await expect(
       asTenant(app.db, restaurantId, (tx) => tx.delete(orders).where(eq(orders.id, orderId))),
     ).rejects.toMatchObject({ cause: { code: "42501" } });
+  });
+});
+
+describe("the kitchen's index", () => {
+  // Lines are never deleted, so a filter on restaurant_id alone would read the
+  // restaurant's whole history on every load (spec 07 polls every 5 seconds).
+  // The partial index holds only the lines still in play.
+  it.each([
+    ["the list of placed lines", sql`status = 'placed'`],
+    ["the board's three columns (#71)", sql`status in ('placed', 'cooking', 'done')`],
+  ])("serves %s", async (_what, filter) => {
+    const { restaurantId } = await restaurantWithItem();
+
+    const plan = await asTenant(app.db, restaurantId, async (tx) => {
+      // An empty table would be read whole whatever the indexes; this asks
+      // which index the planner can use.
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const { rows } = await tx.execute(
+        sql`explain select id from order_items where restaurant_id = ${restaurantId} and ${filter}`,
+      );
+      return rows.map((row) => Object.values(row).join("")).join("\n");
+    });
+
+    expect(plan).toContain("order_items_in_play");
   });
 });
 

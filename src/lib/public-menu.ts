@@ -89,9 +89,11 @@ const orderStyles = trusted(`[hidden]{display:none!important}
  * Plain DOM, no framework, so it costs about 2KB on the page (spec 02's budget).
  * The token comes from the address, the session from the scan it makes on load:
  * the page itself carries neither. Everything a customer typed or a menu says is
- * put on the page as text, never as markup.
+ * put on the page as text, never as markup. The name is remembered on the phone
+ * per session, so the next party at the table starts blank (spec 06; built here
+ * ahead of #70, proposed, S-40).
  */
-const orderScript = trusted(`(() => {
+export const ORDER_SCRIPT = `(() => {
   const api = (path) => "/api/t/" + encodeURIComponent(location.pathname.split("/")[2]) + path;
   const form = document.getElementById("order");
   const fields = form.elements;
@@ -141,7 +143,9 @@ const orderScript = trusted(`(() => {
       fields.place.disabled = false;
     }
   });
-})();`);
+})();`;
+
+const orderScript = trusted(ORDER_SCRIPT);
 
 const orderBlock = html`
 <style>${orderStyles}</style>
