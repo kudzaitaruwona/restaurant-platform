@@ -260,23 +260,44 @@ describe("marking an item delivered", () => {
     expect(outcomes.map((o) => o.outcome).sort()).toEqual(["done", "wrong_status"]);
   });
 
-  it("is audited only for a platform admin, like the other actions spec 01 leaves off its list", async () => {
+  it("is audited like every other status change, for staff and platform admin alike", async () => {
     const r = await orderingRestaurant(owner.db);
     const { ids } = await order(r, [{ status: "done" }, { status: "done" }]);
     const platformAdminId = crypto.randomUUID();
 
     await markItemDelivered(ctx(r), ids[0]);
-    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([]);
-
     await markItemDelivered({ ...ctx(r), platformAdminId }, ids[1]);
-    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([
-      expect.objectContaining({
-        action: "order_item.deliver",
-        entityType: "order_item",
-        entityId: ids[1],
-        actorType: "platform_admin",
-        actorId: platformAdminId,
-      }),
-    ]);
+
+    const entries = await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId));
+    expect(entries).toHaveLength(2);
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "order_item.status",
+          entityType: "order_item",
+          entityId: ids[0],
+          actorType: "staff",
+          actorId: r.staffId,
+          details: { from: "done", to: "delivered" },
+        }),
+        expect.objectContaining({
+          action: "order_item.status",
+          entityType: "order_item",
+          entityId: ids[1],
+          actorType: "platform_admin",
+          actorId: platformAdminId,
+          details: { from: "done", to: "delivered" },
+        }),
+      ]),
+    );
+  });
+
+  it("writes no audit entry for a refused delivery", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { ids } = await order(r, [{ status: "cooking" }]);
+
+    expect(await markItemDelivered(ctx(r), ids[0])).toEqual({ outcome: "wrong_status", status: "cooking" });
+
+    expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([]);
   });
 });

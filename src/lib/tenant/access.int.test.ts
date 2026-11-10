@@ -2605,15 +2605,17 @@ describe("public routes", () => {
 });
 
 describe("the example routes", () => {
+  const byName = (name: string) => routes.find((route) => route.name === name)!;
+
   it("an owner can rename a colleague", async () => {
     session.identity = aOwner.key;
-    await routes[1].call(fixtures.a);
+    await byName("POST /api/staff/[staffId]").call(fixtures.a);
     expect(await displayName(fixtures.a.staffId)).toBe("Renamed by the harness");
   });
 
   it("any staff member can read a colleague", async () => {
     session.identity = aStaff.key;
-    const response = await routes[0].call(fixtures.a);
+    const response = await byName("GET /api/staff/[staffId]").call(fixtures.a);
     expect(await response.json()).toEqual({
       id: fixtures.a.staffId,
       displayName: fixtureName,

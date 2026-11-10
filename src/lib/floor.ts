@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
-import { recordAdminAction } from "@/lib/tenant/audit";
+import { moveItem } from "@/lib/kitchen";
 import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 /**
@@ -14,7 +14,7 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
  */
 
 type Tenant = Pick<TenantContext, "restaurantId">;
-type Actor = Pick<TenantContext, "restaurantId" | "platformAdminId">;
+type Actor = Pick<TenantContext, "restaurantId" | "staffId" | "platformAdminId">;
 
 type ItemStatus = (typeof orderItems.$inferSelect)["status"];
 
@@ -180,47 +180,15 @@ export async function orderItemIdFrom(params: Promise<{ itemId: string }>) {
 }
 
 /**
- * Front-of-house hands a finished line over (spec 07: Delivered is set by them):
- * `done → delivered`, in the one statement, `WHERE status = 'done'`, so two taps
- * at once have one winner. The session's last activity moves in the same
- * transaction, so idle expiry counts from now. Delivering the last line leaves the
- * session open: only clearing the table closes it (spec 06, Sessions). Spec 01's
- * audit list doesn't include it, so only a platform admin's is audited.
+ * Front-of-house hands a finished line over (spec 07: Delivered is set by them).
+ * This is the kitchen board's own `done → delivered` move (moveItem), so the two
+ * ways to deliver are one behaviour: `WHERE status = 'done'` gives two taps at
+ * once one winner, the open session's last activity moves in the same
+ * transaction, and the change is audited as `order_item.status` for owner and
+ * staff alike. Delivering the last line leaves the session open: only clearing
+ * the table closes it (spec 06, Sessions).
  */
-export function markItemDelivered(actor: Actor, itemId: string): Promise<DeliverOutcome> {
-  return withTenant(actor, async (tx) => {
-    const where = and(eq(orderItems.restaurantId, actor.restaurantId), eq(orderItems.id, itemId));
-    const changed = await tx
-      .update(orderItems)
-      .set({ status: "delivered", statusChangedAt: sql`now()` })
-      .where(and(where, eq(orderItems.status, "done")))
-      .returning({ orderId: orderItems.orderId });
-    if (changed.length === 0) {
-      const [current] = await tx.select({ status: orderItems.status }).from(orderItems).where(where);
-      return current
-        ? { outcome: "wrong_status", status: current.status }
-        : { outcome: "not_found" };
-    }
-    await tx
-      .update(tableSessions)
-      .set({ lastActivityAt: sql`now()` })
-      .where(
-        and(
-          eq(tableSessions.restaurantId, actor.restaurantId),
-          eq(
-            tableSessions.id,
-            tx
-              .select({ id: orders.sessionId })
-              .from(orders)
-              .where(and(eq(orders.restaurantId, actor.restaurantId), eq(orders.id, changed[0].orderId))),
-          ),
-        ),
-      );
-    await recordAdminAction(tx, actor, {
-      action: "order_item.deliver",
-      entityType: "order_item",
-      entityId: itemId,
-    });
-    return { outcome: "done" };
-  });
+export async function markItemDelivered(actor: Actor, itemId: string): Promise<DeliverOutcome> {
+  const moved = await moveItem(actor, itemId, "done", "delivered");
+  return moved.outcome === "done" ? { outcome: "done" } : moved;
 }
