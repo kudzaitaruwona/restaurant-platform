@@ -45,7 +45,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 
 | Event | Queued |
 |-------|--------|
-| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` *(proposed, D-03)*. The reminder is skipped if that time has already passed. |
+| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). The reminder is skipped if that time has already passed. |
 | Booking cancelled (by guest or staff) | Pending reminder → `cancelled`. `booking_cancelled` now. |
 | Booking marked no-show or completed | Pending reminder → `cancelled` |
 

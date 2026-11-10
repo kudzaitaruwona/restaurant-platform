@@ -253,6 +253,13 @@
       "when": 1794323196307,
       "tag": "0035_notification_retries",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794324368953,
+      "tag": "0036_booking_reminder_cancel",
+      "breakpoints": true
     }
   ]
 }

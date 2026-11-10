@@ -76,7 +76,8 @@ describe("confirming a booking online", () => {
     expect((await confirmBooking({ restaurantId }, guest(), now)).outcome).toBe("confirmed");
 
     const [bookingId] = await bookingIdsOf(restaurantId);
-    expect(await queuedFor(restaurantId)).toEqual([
+    // The reminder (#45) is queued beside it: see booking-reminder.int.test.ts.
+    expect((await queuedFor(restaurantId)).filter(({ kind }) => kind === "booking_confirmed")).toEqual([
       {
         bookingId,
         kind: "booking_confirmed",
@@ -115,7 +116,7 @@ describe("staff adding a booking", () => {
     expect((await addStaffBooking(actor(restaurantId), staffRequest(), now)).outcome).toBe("added");
 
     const [bookingId] = await bookingIdsOf(restaurantId);
-    expect(await queuedFor(restaurantId)).toMatchObject([
+    expect((await queuedFor(restaurantId)).filter(({ kind }) => kind === "booking_confirmed")).toMatchObject([
       { bookingId, kind: "booking_confirmed", status: "pending", scheduledFor: now },
     ]);
   });
