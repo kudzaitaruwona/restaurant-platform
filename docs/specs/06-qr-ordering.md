@@ -30,7 +30,7 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 - Status is tracked **per item**: placed → cooking → done → delivered, with `voided` for cancellations.
 - Each item can have a note ("no onions"). *(Proposed, S-40: a note is up to 200 characters, and a quantity is 1 to 20, both as CHECKs in Postgres.)*
 - If an item has an active special, the line records `special_id`.
-- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name. A currency that can't be worked out yet (no rate) is stored null, as the menu shows it. (ticket #69)
+- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name. *(Proposed, S-40)* A currency that can't be worked out yet (no rate) is stored null, as the menu shows it. (ticket #69)
 - Only an item a customer could order now can be ordered: not archived, not sold out, and a bundle only inside its special's window. Anything else is refused and nothing is written. (ticket #69)
 - *(Proposed, S-40)* **Order rate limit:** at most 10 orders per table session in any 5 minutes. Past it the order is refused (429) and nothing is written. A photographed code could otherwise flood a kitchen.
 - *(Proposed, S-40)* **A stale tab can't order into a new party's session.** The page sends back the session it joined; if that is no longer the table's open session, the order is refused (409) and the page joins the table's session again before the customer retries.

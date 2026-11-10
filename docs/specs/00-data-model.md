@@ -309,7 +309,7 @@ order_items
   special_id            → specials null    -- for "how many did the special sell"
   name_snapshot         text
   quantity              int CHECK (between 1 and 20)  -- (proposed, S-40) the upper bound
-  unit_price_usd, unit_price_zig  numeric null  -- frozen; null for a currency that couldn't be worked out when ordered (no rate yet), as the menu showed it
+  unit_price_usd, unit_price_zig  numeric null  -- frozen; (proposed, S-40) null for a currency that couldn't be worked out when ordered (no rate yet), as the menu showed it
   CHECK (unit_price_usd >= 0 AND unit_price_zig >= 0)  -- (proposed) lower bound, so a frozen price cannot make a negative bill
   CHECK (unit_price_usd < 'Infinity' AND unit_price_zig < 'Infinity')  -- order_items_prices_finite: finite only together with the >= 0 above
   zig_source            enum(fixed, calculated)
