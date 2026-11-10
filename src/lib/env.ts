@@ -161,6 +161,8 @@ const configShape = {
   WHATSAPP_ACCESS_TOKEN: optional(
     text().regex(/^\S+$/, { message: "must be the token alone, with no spaces or \"Bearer\"" }),
   ),
+  // Meta's webhook (#48). Optional like the sender's keys; the webhook fails
+  // closed without them: no secret, no status taken; no token, no subscription.
   WHATSAPP_APP_SECRET: optional(text()),
   WHATSAPP_WEBHOOK_VERIFY_TOKEN: optional(text()),
 

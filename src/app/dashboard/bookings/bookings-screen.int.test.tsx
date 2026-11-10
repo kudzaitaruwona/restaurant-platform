@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { bookings, diningTables } from "@/db/schema";
+import { bookings, diningTables, notifications } from "@/db/schema";
 import { addDays, localToday } from "@/lib/booking-engine";
 import type { TenantContext } from "@/lib/tenant";
 import { aBooking, bookableRestaurant } from "../../../../test/integration/bookings";
@@ -127,6 +127,58 @@ describe("the day view", () => {
     const html = await render(day);
     expect(html).toContain("No other table is free");
     expect(html).not.toContain('name="tableId"');
+  });
+});
+
+describe("a confirmation that failed to deliver (spec 05, Delivery status)", () => {
+  type NotificationStatus = (typeof notifications.$inferSelect)["status"];
+
+  /** One booking per entry, each with its booking_confirmed in the given status (or none). */
+  async function dayWithConfirmations(rows: { guestName: string; status?: "confirmed" | "seated"; confirmation?: NotificationStatus }[]) {
+    // A number each: one number may hold only so many upcoming bookings.
+    await dayWith(rows.map(({ guestName, status = "confirmed" }, index) => ({ guestName, status, guestPhone: `+26377123456${index}` })));
+    const restaurantId = (session.tenant as TenantContext).restaurantId;
+    const ours = await owner.db.select({ id: bookings.id, guestName: bookings.guestName }).from(bookings).where(eq(bookings.restaurantId, restaurantId));
+    const queued = rows.flatMap(({ guestName, confirmation }) => {
+      const booking = ours.find((row) => row.guestName === guestName)!;
+      return confirmation
+        ? [{ restaurantId, bookingId: booking.id, kind: "booking_confirmed" as const, scheduledFor: new Date(), status: confirmation, claimedAt: new Date() }]
+        : [];
+    });
+    if (queued.length > 0) await owner.db.insert(notifications).values(queued);
+  }
+  const rowOf = (html: string, name: string) => html.split("<li").find((part) => part.includes(name)) ?? "";
+  const WARNING = "WhatsApp confirmation failed";
+
+  it("shows a warning on the booking, which stays confirmed with every action", async () => {
+    await dayWithConfirmations([{ guestName: "Unreached", confirmation: "failed" }]);
+
+    const row = rowOf(await render(day), "Unreached");
+
+    expect(row).toContain(WARNING);
+    expect(row).toMatch(/role="img"[^>]*aria-label="WhatsApp confirmation failed: call the guest"/);
+    expect(row).toContain("Confirmed");
+    expect(row).toContain("/seat");
+    expect(row).toContain('href="tel:+263771234560"');
+  });
+
+  it("shows none for a confirmation sent, delivered, read, still queued, or never queued", async () => {
+    await dayWithConfirmations([
+      { guestName: "Sent", confirmation: "sent" },
+      { guestName: "Delivered", confirmation: "delivered" },
+      { guestName: "Read", confirmation: "read" },
+      { guestName: "Queued", confirmation: "pending" },
+      { guestName: "Cancelled", confirmation: "cancelled" },
+      { guestName: "Nothing" },
+    ]);
+
+    expect(await render(day)).not.toContain(WARNING);
+  });
+
+  it("shows none once the guest is seated: they are here", async () => {
+    await dayWithConfirmations([{ guestName: "Arrived", status: "seated", confirmation: "failed" }]);
+
+    expect(await render(day)).not.toContain(WARNING);
   });
 });
 

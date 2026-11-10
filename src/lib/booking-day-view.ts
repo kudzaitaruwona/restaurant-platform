@@ -27,6 +27,11 @@ export type DayRow = {
   phone: string | null;
   /** Confirmed and not seated 30 minutes after its start: staff decide (spec 04). */
   late: boolean;
+  /**
+   * Still confirmed, and its WhatsApp confirmation failed (spec 05, Delivery
+   * status): staff call the guest. The booking itself stays valid.
+   */
+  confirmationFailed: boolean;
 };
 
 export type DayPeriod = { name: string; opensAt: string; closesAt: string };

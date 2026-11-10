@@ -786,6 +786,10 @@ export const notifications = pgTable(
     index("notifications_pending_scheduled_for_index")
       .on(table.scheduledFor)
       .where(sql`${table.status} = 'pending'`),
+    // The Meta webhook finds a message by its id, across every restaurant (#48).
+    index("notifications_provider_message_id_index")
+      .on(table.providerMessageId)
+      .where(sql`${table.providerMessageId} is not null`),
     check("notifications_attempts_non_negative", sql`${table.attempts} >= 0`),
     check(
       "notifications_sending_claimed",

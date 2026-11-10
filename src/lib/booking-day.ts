@@ -3,7 +3,7 @@ import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { notFound } from "next/navigation";
 import { z } from "zod";
-import { bookings, diningTables, restaurants, servicePeriods } from "@/db/schema";
+import { bookings, diningTables, notifications, restaurants, servicePeriods } from "@/db/schema";
 import {
   addDays,
   dateLabel,
@@ -72,6 +72,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         status: bookings.status,
         note: bookings.guestNote,
         phone: bookings.guestPhone,
+        confirmationStatus: notifications.status,
       })
       .from(bookings)
       .innerJoin(
@@ -79,6 +80,16 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         and(
           eq(diningTables.restaurantId, bookings.restaurantId),
           eq(diningTables.id, bookings.tableId),
+        ),
+      )
+      // The booking's WhatsApp confirmation, if one was queued (spec 05): at most
+      // one, by UNIQUE (booking_id, kind).
+      .leftJoin(
+        notifications,
+        and(
+          eq(notifications.restaurantId, bookings.restaurantId),
+          eq(notifications.bookingId, bookings.id),
+          eq(notifications.kind, "booking_confirmed"),
         ),
       )
       .where(
@@ -91,10 +102,12 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       .orderBy(asc(bookings.startsAt), asc(diningTables.label));
 
     const lateBefore = now.getTime() - LATE_AFTER_MINUTES * MINUTE;
-    const dayRows: DayRow[] = rows.map(({ startsAt, ...row }) => ({
+    const dayRows: DayRow[] = rows.map(({ startsAt, confirmationStatus, ...row }) => ({
       ...row,
       time: localTime(startsAt, timezone),
       late: row.status === "confirmed" && startsAt.getTime() <= lateBefore,
+      // Staff should call a guest still to arrive; once seated, they are here.
+      confirmationFailed: row.status === "confirmed" && confirmationStatus === "failed",
     }));
 
     return {
