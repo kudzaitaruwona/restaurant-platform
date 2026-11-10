@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
 import { moveItem } from "@/lib/kitchen";
-import { type TenantContext, withTenant } from "@/lib/tenant/scope";
+import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
 /**
  * Front-of-house's view of the floor (spec 06, Staff: floor view), for owner and
@@ -24,6 +24,61 @@ export type ItemCounts = Record<(typeof counted)[number], number>;
 
 const noCounts = (): ItemCounts => ({ placed: 0, cooking: 0, done: 0, delivered: 0 });
 
+/**
+ * The live tables in sort order, each with its open session, if any, found
+ * from the table on table_sessions_one_open_per_table. Not a read of the
+ * restaurant's sessions filtered on status: as app_tenant, under RLS, Postgres
+ * can't use status's statistics (the enum's comparisons aren't leakproof), so
+ * it would read every session the restaurant ever had to find the open ones.
+ * Exported, with floorCounts, so a test can EXPLAIN exactly what the grid sends.
+ */
+export const floorTables = (tx: TenantTransaction, ctx: Tenant) =>
+  tx
+    .select({
+      id: diningTables.id,
+      label: diningTables.label,
+      capacity: diningTables.capacity,
+      sessionId: tableSessions.id,
+      openedAt: tableSessions.openedAt,
+    })
+    .from(diningTables)
+    .leftJoin(
+      tableSessions,
+      and(
+        eq(tableSessions.restaurantId, diningTables.restaurantId),
+        eq(tableSessions.tableId, diningTables.id),
+        eq(tableSessions.status, "open"),
+      ),
+    )
+    .where(and(eq(diningTables.restaurantId, ctx.restaurantId), isNull(diningTables.archivedAt)))
+    .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
+
+/**
+ * The counted lines of the given sessions by session and status, read from
+ * their orders (orders_restaurant_id_session_id_placed_at_index) and those
+ * orders' lines, so none of the restaurant's history is read.
+ */
+export const floorCounts = (tx: TenantTransaction, ctx: Tenant, sessionIds: string[]) =>
+  tx
+    .select({
+      sessionId: orders.sessionId,
+      status: orderItems.status,
+      lines: sql<number>`count(*)::int`,
+    })
+    .from(orders)
+    .innerJoin(
+      orderItems,
+      and(eq(orderItems.restaurantId, orders.restaurantId), eq(orderItems.orderId, orders.id)),
+    )
+    .where(
+      and(
+        eq(orders.restaurantId, ctx.restaurantId),
+        inArray(orders.sessionId, sessionIds),
+        inArray(orderItems.status, [...counted]),
+      ),
+    )
+    .groupBy(orders.sessionId, orderItems.status);
+
 /** The live tables in sort order, each free or open, with its open session's item counts. */
 export function getFloor(ctx: Tenant) {
   return withTenant(ctx, async (tx) => {
@@ -31,59 +86,22 @@ export function getFloor(ctx: Tenant) {
       .select({ timezone: restaurants.timezone })
       .from(restaurants)
       .where(eq(restaurants.id, ctx.restaurantId));
-    const tables = await tx
-      .select({ id: diningTables.id, label: diningTables.label, capacity: diningTables.capacity })
-      .from(diningTables)
-      .where(and(eq(diningTables.restaurantId, ctx.restaurantId), isNull(diningTables.archivedAt)))
-      .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
-    const open = await tx
-      .select({
-        id: tableSessions.id,
-        tableId: tableSessions.tableId,
-        openedAt: tableSessions.openedAt,
-      })
-      .from(tableSessions)
-      .where(and(eq(tableSessions.restaurantId, ctx.restaurantId), eq(tableSessions.status, "open")));
+    const tables = await floorTables(tx, ctx);
+    const sessionIds = tables.flatMap((table) => (table.sessionId ? [table.sessionId] : []));
     // One grouped read of the open sessions' lines (spec 06: counts by status).
-    const grouped = await tx
-      .select({
-        sessionId: orders.sessionId,
-        status: orderItems.status,
-        lines: sql<number>`count(*)::int`,
-      })
-      .from(orderItems)
-      .innerJoin(
-        orders,
-        and(eq(orders.restaurantId, orderItems.restaurantId), eq(orders.id, orderItems.orderId)),
-      )
-      .innerJoin(
-        tableSessions,
-        and(
-          eq(tableSessions.restaurantId, orders.restaurantId),
-          eq(tableSessions.id, orders.sessionId),
-        ),
-      )
-      .where(
-        and(
-          eq(orderItems.restaurantId, ctx.restaurantId),
-          eq(tableSessions.status, "open"),
-          inArray(orderItems.status, [...counted]),
-        ),
-      )
-      .groupBy(orders.sessionId, orderItems.status);
+    const grouped = sessionIds.length === 0 ? [] : await floorCounts(tx, ctx, sessionIds);
 
     return {
       timezone,
-      tables: tables.map((table) => {
-        const session = open.find((s) => s.tableId === table.id);
+      tables: tables.map(({ sessionId, openedAt, ...table }) => {
         const counts = noCounts();
         for (const row of grouped) {
-          if (row.sessionId === session?.id) counts[row.status as keyof ItemCounts] = row.lines;
+          if (row.sessionId === sessionId) counts[row.status as keyof ItemCounts] = row.lines;
         }
         return {
           ...table,
-          status: session ? ("open" as const) : ("free" as const),
-          openedAt: session?.openedAt ?? null,
+          status: sessionId ? ("open" as const) : ("free" as const),
+          openedAt: openedAt ?? null,
           counts,
         };
       }),

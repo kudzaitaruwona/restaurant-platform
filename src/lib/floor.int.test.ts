@@ -1,9 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql, type SQLWrapper } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, diningTables, orderItems, orders, tableSessions } from "@/db/schema";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { orderingRestaurant } from "../../test/integration/ordering";
-import { getFloor, getTableDetail, markItemDelivered } from "./floor";
+import { floorCounts, floorTables, getFloor, getTableDetail, markItemDelivered } from "./floor";
 
 const owner = openOwnerDatabase();
 beforeAll(() => {
@@ -148,6 +148,118 @@ describe("the floor grid", () => {
     const { tables } = await getFloor(ctx(mine));
 
     expect(tables.map((t) => t.label)).toEqual(["Table 7"]);
+  });
+});
+
+type Transaction = Parameters<Parameters<typeof owner.db.transaction>[0]>[0];
+
+/**
+ * `sessions` closed sessions of history on the restaurant's table, each of 3
+ * orders of `linesPerOrder` delivered lines, as kitchen.int.test.ts writes it.
+ * Triggers are off for it (session_replication_role): every row is written
+ * already closed, as months of service would have left it.
+ */
+async function history(
+  tx: Transaction,
+  restaurant: Restaurant,
+  { sessions, linesPerOrder }: { sessions: number; linesPerOrder: number },
+) {
+  await tx.execute(sql`set local session_replication_role = replica`);
+  await tx.execute(sql`
+    with s as (
+      insert into table_sessions (restaurant_id, table_id, status, closed_at, close_reason)
+      select ${restaurant.restaurantId}, ${restaurant.tableId}, 'closed', now(), 'idle_expiry'
+      from generate_series(1, ${sessions})
+      returning restaurant_id, id
+    ), o as (
+      insert into orders (restaurant_id, session_id, customer_name)
+      select s.restaurant_id, s.id, 'Guest' from s, generate_series(1, 3)
+      returning restaurant_id, id
+    )
+    insert into order_items (restaurant_id, order_id, menu_item_id, name_snapshot, quantity, unit_price_usd, status)
+    select o.restaurant_id, o.id, ${restaurant.itemId}, 'Beef stew', 1, 8, 'delivered'
+    from o, generate_series(1, ${linesPerOrder})`);
+  await tx.execute(sql`set local session_replication_role = origin`);
+}
+
+type PlanNode = {
+  "Relation Name"?: string;
+  "Actual Rows": number;
+  "Actual Loops": number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Index Recheck"?: number;
+  Plans?: PlanNode[];
+};
+const nodesOf = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodesOf)];
+/** The rows a plan's nodes read from a table, kept or filtered out, over every loop. */
+const rowsRead = (plan: PlanNode, table: string) =>
+  nodesOf(plan)
+    .filter((node) => node["Relation Name"] === table)
+    .reduce(
+      (sum, node) =>
+        sum +
+        node["Actual Loops"] *
+          (node["Actual Rows"] +
+            (node["Rows Removed by Filter"] ?? 0) +
+            (node["Rows Removed by Index Recheck"] ?? 0)),
+      0,
+    );
+const explain = async (tx: Transaction, query: SQLWrapper) => {
+  const { rows } = await tx.execute<{ "QUERY PLAN": [{ Plan: PlanNode }] }>(
+    sql`explain (analyze, format json) ${query}`,
+  );
+  return rows[0]["QUERY PLAN"][0].Plan;
+};
+const tablesIn = ["tables", "table_sessions", "orders", "order_items"] as const;
+const readsOf = (plan: PlanNode) =>
+  Object.fromEntries(tablesIn.map((table) => [table, rowsRead(plan, table)]));
+
+describe("the floor grid, at a restaurant with months of history", () => {
+  // Sessions, orders and lines are never deleted, so the grid must find the few
+  // open sessions and their lines without reading the restaurant's history, as
+  // app_tenant, under RLS, once Postgres has statistics. This EXPLAINs the two
+  // reads getFloor sends, built by getFloor's own builders, in a transaction
+  // that is rolled back. The rollback takes the history and pg_statistic with
+  // it, but not the row counts ANALYZE writes to pg_class (those are updated in
+  // place), so later plans see this table as larger than it is; the same
+  // holds for kitchen.int.test.ts, which this mirrors.
+  it("reads the live tables, their open sessions and those sessions' orders, and none of the history", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    const neighbour = await orderingRestaurant(owner.db);
+    // Every live table is open and every order has two lines: EXPLAIN gives a
+    // scan's rows as a rounded mean per loop, so one session found over two
+    // lookups would read as none, and uneven orders would miscount their lines.
+    const bar = await addTable(restaurant, "Bar 1", 1);
+    const live = await order(restaurant, [{ status: "placed" }, { status: "cooking" }]);
+    await order(restaurant, [{ status: "done" }, { status: "delivered" }]);
+    const atBar = await order(restaurant, [{ status: "placed" }, { status: "placed" }], { tableId: bar });
+
+    let plans: { tables: PlanNode; counts: PlanNode; sessionIds: string[] } | undefined;
+    await owner.db
+      .transaction(async (tx) => {
+        await history(tx, restaurant, { sessions: 1000, linesPerOrder: 1 });
+        // Other restaurants have history too: this one is a tenth of the table.
+        await history(tx, neighbour, { sessions: 1000, linesPerOrder: 9 });
+        await tx.execute(sql`analyze order_items, orders, table_sessions, tables`);
+        await tx.execute(sql`set local role app_tenant`);
+        await tx.execute(sql`select set_config('app.restaurant_id', ${restaurant.restaurantId}, true)`);
+        const sessionIds = [live.sessionId, atBar.sessionId];
+        plans = {
+          sessionIds,
+          tables: await explain(tx, floorTables(tx, restaurant)),
+          counts: await explain(tx, floorCounts(tx, restaurant, sessionIds)),
+        };
+        tx.rollback();
+      })
+      .catch((error: unknown) => {
+        if (plans === undefined) throw error;
+      });
+
+    // Two live tables, each with one open session; those have three orders of six lines.
+    expect(readsOf(plans!.tables)).toEqual({ tables: 2, table_sessions: 2, orders: 0, order_items: 0 });
+    // One group per session and status: placed, cooking, done and delivered, and placed at the bar.
+    expect(plans!.counts["Actual Rows"]).toBe(5);
+    expect(readsOf(plans!.counts)).toEqual({ tables: 0, table_sessions: 0, orders: 3, order_items: 6 });
   });
 });
 
