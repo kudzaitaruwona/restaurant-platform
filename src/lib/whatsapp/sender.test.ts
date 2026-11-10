@@ -80,22 +80,28 @@ describe("the Meta Cloud API sender", () => {
     expect(await sender().send(message)).toEqual({
       ok: false,
       error: "Meta 400 (132001): Template name does not exist in the translation",
+      retryable: false,
     });
   });
 
   it("keeps the status alone when the error body isn't Meta's JSON", async () => {
     answer = { status: 502, body: "<html>Bad gateway</html>" };
-    expect(await sender().send(message)).toEqual({ ok: false, error: "Meta 502" });
+    expect(await sender().send(message)).toEqual({ ok: false, error: "Meta 502", retryable: true });
   });
 
   it("doesn't call it sent when Meta answers 2xx without a message id", async () => {
     answer = { status: 200, body: JSON.stringify({}) };
-    expect(await sender().send(message)).toMatchObject({ ok: false });
+    // Meta may have taken it: trying again could message the guest twice on every attempt.
+    expect(await sender().send(message)).toMatchObject({ ok: false, retryable: false });
   });
 
   it("turns a network failure into a failed send rather than throwing", async () => {
     const unreachable = metaSender({ phoneNumberId: "1", accessToken: "t", baseUrl: "http://127.0.0.1:1" });
-    expect(await unreachable.send(message)).toMatchObject({ ok: false, error: expect.stringMatching(/^Meta request failed/) });
+    expect(await unreachable.send(message)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^Meta request failed/),
+      retryable: true,
+    });
   });
 
   it("gives up on a Meta that never answers, as a failed send, once its timeout passes", async () => {
@@ -109,11 +115,37 @@ describe("the Meta Cloud API sender", () => {
         baseUrl: `http://127.0.0.1:${(silent.address() as AddressInfo).port}`,
         timeoutMs: 50,
       });
-      expect(await hanging.send(message)).toEqual({ ok: false, error: expect.stringMatching(/TimeoutError/) });
+      expect(await hanging.send(message)).toEqual({ ok: false, error: expect.stringMatching(/TimeoutError/), retryable: true });
     } finally {
       silent.closeAllConnections();
       await new Promise((resolve) => silent.close(resolve));
     }
+  });
+
+  it.each([
+    [500, 131000],
+    [503, undefined],
+    [429, 130429],
+    [408, undefined],
+    // Meta's throttling codes, whatever the HTTP status they come with.
+    [400, 4],
+    [400, 80007],
+    [400, 130429],
+    [400, 131056],
+  ])("calls a %i (code %s) worth trying again: Meta or the network may be fine in a few minutes", async (status, code) => {
+    answer = { status, body: JSON.stringify(code === undefined ? {} : { error: { message: "Try later", code } }) };
+    expect(await sender().send(message)).toMatchObject({ ok: false, retryable: true });
+  });
+
+  it.each([
+    [400, 131026], // message undeliverable, e.g. the number isn't on WhatsApp
+    [400, 100], // invalid parameter
+    [401, 190], // access token expired
+    [403, 10], // permission denied
+    [404, undefined],
+  ])("calls a %i (code %s) final: the same message would be refused again", async (status, code) => {
+    answer = { status, body: JSON.stringify(code === undefined ? {} : { error: { message: "No", code } }) };
+    expect(await sender().send(message)).toMatchObject({ ok: false, retryable: false });
   });
 
   it("keeps last_error within the column's 500 characters", async () => {

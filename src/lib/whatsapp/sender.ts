@@ -16,19 +16,46 @@ const REQUEST_TIMEOUT_MS = 10_000;
 /** notifications.last_error holds at most this many characters. */
 const MAX_ERROR_LENGTH = 500;
 
-export type SendResult = { ok: true; providerMessageId: string } | { ok: false; error: string };
+/**
+ * `retryable` says whether the same message might go through in a few minutes
+ * (#47): the job tries it again, up to 3 attempts in all, if so.
+ */
+export type SendResult =
+  | { ok: true; providerMessageId: string }
+  | { ok: false; error: string; retryable: boolean };
 
 export interface WhatsAppSender {
   /** Never throws: a failure is a result, with text for notifications.last_error. */
   send(message: TemplateMessage): Promise<SendResult>;
 }
 
-const failed = (error: string): SendResult => ({ ok: false, error: error.slice(0, MAX_ERROR_LENGTH) });
+const failed = (error: string, retryable: boolean): SendResult => ({
+  ok: false,
+  error: error.slice(0, MAX_ERROR_LENGTH),
+  retryable,
+});
+
+/**
+ * Meta's throttling error codes (Graph API error codes): app or account rate
+ * limits, throughput, and too many messages to one number. Waiting is the fix.
+ */
+const META_THROTTLING_CODES = new Set([4, 80007, 130429, 131056]);
+
+/**
+ * Worth trying again (#47): a request timeout, a rate limit, a 5xx, or one of
+ * Meta's throttling codes. Any other 4xx is about the message, the number or our
+ * credentials (an invalid number, a template that doesn't exist, an expired
+ * token), and the same request would be refused again.
+ */
+const retryableAnswer = (status: number, code: unknown) =>
+  status === 408 || status === 429 || status >= 500 || (typeof code === "number" && META_THROTTLING_CODES.has(code));
 
 /**
  * The WhatsApp Cloud API: POST /{phone number id}/messages. Accepted means a 2xx
  * with `messages[0].id`, which becomes provider_message_id; anything else is a
- * failed send. Retrying one is #47's.
+ * failed send, marked retryable or not (retryableAnswer). A network error or a
+ * timeout is retryable, although Meta may have taken the message: delivery is
+ * at least once (src/lib/cron/notifications.ts).
  */
 export function metaSender({
   phoneNumberId,
@@ -53,15 +80,20 @@ export function metaSender({
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {
-        return failed(`Meta request failed: ${error instanceof Error ? error.name : "unknown"}`);
+        return failed(`Meta request failed: ${error instanceof Error ? error.name : "unknown"}`, true);
       }
       const body = (await response.json().catch(() => undefined)) as MetaResponse | undefined;
       if (!response.ok) {
         const { message: text, code } = body?.error ?? {};
-        return failed(typeof text === "string" ? `Meta ${response.status} (${code}): ${text}` : `Meta ${response.status}`);
+        return failed(
+          typeof text === "string" ? `Meta ${response.status} (${code}): ${text}` : `Meta ${response.status}`,
+          retryableAnswer(response.status, code),
+        );
       }
       const id = body?.messages?.[0]?.id;
-      if (typeof id !== "string" || id === "") return failed(`Meta ${response.status} without a message id`);
+      // Not retried: Meta answered success, so it may have taken the message, and
+      // an answer it keeps giving would message the guest on every attempt.
+      if (typeof id !== "string" || id === "") return failed(`Meta ${response.status} without a message id`, false);
       return { ok: true, providerMessageId: id };
     },
   };
