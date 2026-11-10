@@ -330,6 +330,20 @@
       "when": 1794341267120,
       "tag": "0046_idle_expiry_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794343293955,
+      "tag": "0047_table_sessions_table_opened",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794343294636,
+      "tag": "0048_session_reopen",
+      "breakpoints": true
     }
   ]
 }

@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { OutstandingItem } from "@/lib/closing";
 
 /**
- * The parts the clear-table and force-close routes share (#74): the session the
- * page showed, read from the form, and the answers both give.
+ * The parts the clear-table, force-close and reopen routes share (#74, #76): the session the
+ * page showed, read from the form, and the answers they give.
  */
 export const headers = { "cache-control": "no-store" };
 
@@ -40,3 +40,14 @@ export const blockedBy = (items: OutstandingItem[]) =>
     },
     { status: 409, headers },
   );
+
+const reopenWords = {
+  too_late:
+    "It's more than 15 minutes since this session closed, so it can't be reopened. The next scan at the table starts a new session.",
+  superseded: "A new party has opened this table since, so this session can't be reopened. Reload the table.",
+  session_changed: "This session has changed since the page loaded: it's open again, or isn't this table's. Reload the table.",
+};
+
+/** A reopen Postgres or the page's precondition refused (#76): a 409 that says why. */
+export const reopenRefused = (outcome: keyof typeof reopenWords) =>
+  Response.json({ error: reopenWords[outcome] }, { status: 409, headers });

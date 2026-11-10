@@ -1,0 +1,1 @@
+CREATE INDEX "table_sessions_table_opened" ON "table_sessions" USING btree ("restaurant_id","table_id","opened_at");

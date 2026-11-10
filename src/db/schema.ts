@@ -916,6 +916,11 @@ export const tableSessions = pgTable(
     uniqueIndex("table_sessions_one_open_per_table")
       .on(table.tableId)
       .where(sql`${table.status} = 'open'`),
+    // (Proposed, #76) A table's sessions by when they opened: the reopen rule's
+    // "has a session opened on this table since" (trigger table_sessions_reopen)
+    // and the table detail's latest session, each a probe at the newest end, so
+    // neither reads the table's history.
+    index("table_sessions_table_opened").on(table.restaurantId, table.tableId, table.openedAt),
     tenantPolicy("restaurant_id"),
   ],
 );

@@ -429,6 +429,40 @@ const postForceClose = async (tableId: string, fields: Record<string, string>) =
     request(`/api/floor/${tableId}/force-close`, { method: "POST", body: form(fields) }),
     { params: Promise.resolve({ tableId }) },
   );
+/**
+ * A table planted in the target's restaurant with a session closed `closedMinutesAgo`
+ * minutes ago, for the reopen route (#76): a session reopens once, so each call
+ * plants its own.
+ */
+const plantedClosedSessions: { id: string; restaurantId: string }[] = [];
+const plantClosedTable = async (target: Target, closedMinutesAgo = 1) => {
+  const tableId = await plantTable(target.restaurantId);
+  const { rows } = await owner.db.execute<{ id: string }>(sql`
+    insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason, closed_by)
+    values (${target.restaurantId}, ${tableId}, 'closed', now() - interval '1 hour',
+      now() - make_interval(mins => ${closedMinutesAgo}), 'staff_clear', ${target.staffId})
+    returning id`);
+  plantedClosedSessions.push({ id: rows[0].id, restaurantId: target.restaurantId });
+  return { tableId, sessionId: rows[0].id };
+};
+const postReopen = async (tableId: string, fields: Record<string, string>) =>
+  (await import("@/app/api/floor/[tableId]/reopen/route")).POST(
+    request(`/api/floor/${tableId}/reopen`, { method: "POST", body: form(fields) }),
+    { params: Promise.resolve({ tableId }) },
+  );
+/** Whether the closed sessions planted since `mark` in a restaurant are all still closed. */
+const sessionsStillClosed = async (restaurantId: string, mark: number) => {
+  const ids = plantedClosedSessions
+    .slice(mark)
+    .filter((planted) => planted.restaurantId === restaurantId)
+    .map(({ id }) => id);
+  if (ids.length === 0) return true;
+  const rows = await owner.db
+    .select({ status: tableSessions.status })
+    .from(tableSessions)
+    .where(inArray(tableSessions.id, ids));
+  return rows.length === ids.length && rows.every((row) => row.status === "closed");
+};
 /** Whether the sessions planted since `mark` in a restaurant are all still open. */
 const sessionsStillOpen = async (restaurantId: string, mark: number) => {
   const ids = plantedSessions
@@ -981,6 +1015,18 @@ const routes: TenantRoute[] = [
         ? await plantOpenTable(target, true)
         : { tableId: target.tableId, sessionId: crypto.randomUUID() };
       return postForceClose(tableId, { session: sessionId, reason: "Harness force-close" });
+    },
+  },
+  {
+    // Reopen (#76), owners and staff alike (S-26). Each call reopens a session
+    // planted closed a minute ago on a table of its own.
+    name: "POST /api/floor/[tableId]/reopen",
+    ownerOnly: false,
+    call: async (target) => {
+      const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
+        ? await plantClosedTable(target)
+        : { tableId: target.tableId, sessionId: crypto.randomUUID() };
+      return postReopen(tableId, { session: sessionId });
     },
   },
   {
@@ -1915,6 +1961,7 @@ describe("cross-tenant access", () => {
       const closuresInB = (await closuresIn(fixtures.b.restaurantId, addedClosureReason)).length;
       const kitchenMark = plantedKitchenItems.length;
       const sessionMark = plantedSessions.length;
+      const closedSessionMark = plantedClosedSessions.length;
 
       const status = await statusOf(() => route.call(fixtures.b));
 
@@ -1935,6 +1982,7 @@ describe("cross-tenant access", () => {
       expect(await closuresIn(fixtures.b.restaurantId, addedClosureReason)).toHaveLength(closuresInB);
       expect(await kitchenItemsAsPlanted(fixtures.b.restaurantId, kitchenMark)).toBe(true);
       expect(await sessionsStillOpen(fixtures.b.restaurantId, sessionMark)).toBe(true);
+      expect(await sessionsStillClosed(fixtures.b.restaurantId, closedSessionMark)).toBe(true);
     },
   );
 
@@ -4058,6 +4106,74 @@ describe("the floor view", () => {
     expect(await statusOf(() => postClear(tableId, { session: sessionId }))).toBe(401);
     expect(await statusOf(() => postForceClose(tableId, { session: sessionId, reason: "No one" }))).toBe(401);
     expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+});
+
+describe("reopening a table's session (#76)", () => {
+  const sessionRow = async (id: string) =>
+    (await owner.db.select().from(tableSessions).where(eq(tableSessions.id, id)))[0];
+
+  it.each(restaurantAIdentities.map((who) => [who.key, who] as const))(
+    "%s: reopens restaurant A's session closed a minute ago, audited with who; B's is a 404 left closed",
+    async (_key, who) => {
+      const mine = await plantClosedTable(fixtures.a);
+      const theirs = await plantClosedTable(fixtures.b);
+
+      session.identity = who.key;
+      expect((await postReopen(mine.tableId, { session: mine.sessionId })).status).toBeLessThan(400);
+
+      expect(await sessionRow(mine.sessionId)).toMatchObject({ status: "open", closedAt: null, closedBy: null });
+      const [entry] = await owner.db
+        .select()
+        .from(auditLog)
+        .where(and(eq(auditLog.entityId, mine.sessionId), eq(auditLog.action, "session.reopen")));
+      expect(entry).toMatchObject({
+        actorType: "staff",
+        actorId: who.staffId,
+        entityType: "table_session",
+        details: { closeReason: "staff_clear" },
+      });
+
+      expect(await statusOf(() => postReopen(theirs.tableId, { session: theirs.sessionId }))).toBe(404);
+      expect(await statusOf(() => postReopen(mine.tableId, { session: theirs.sessionId }))).toBe(409);
+      expect((await sessionRow(theirs.sessionId)).status).toBe("closed");
+    },
+  );
+
+  it("is a 409 that says why once the 15 minutes have passed or a new party has opened the table", async () => {
+    session.identity = aStaff.key;
+    const late = await plantClosedTable(fixtures.a, 16);
+    const refused = await postReopen(late.tableId, { session: late.sessionId });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/15 minutes/);
+    expect((await sessionRow(late.sessionId)).status).toBe("closed");
+
+    const taken = await plantClosedTable(fixtures.a, 5);
+    await owner.db.insert(tableSessions).values({ restaurantId: fixtures.a.restaurantId, tableId: taken.tableId });
+    const superseded = await postReopen(taken.tableId, { session: taken.sessionId });
+    expect(superseded.status).toBe(409);
+    expect((await superseded.json()).error).toMatch(/new party/);
+    expect((await sessionRow(taken.sessionId)).status).toBe("closed");
+
+    const twice = await plantClosedTable(fixtures.a);
+    expect((await postReopen(twice.tableId, { session: twice.sessionId })).status).toBeLessThan(400);
+    const again = await postReopen(twice.tableId, { session: twice.sessionId });
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toMatch(/changed/);
+  });
+
+  it("is a 400 without a session, a 404 for a malformed or unknown table, and a 401 signed out, changing nothing", async () => {
+    const { tableId, sessionId } = await plantClosedTable(fixtures.a);
+    session.identity = aStaff.key;
+    expect((await postReopen(tableId, {})).status).toBe(400);
+    expect((await postReopen(tableId, { session: "not-a-uuid" })).status).toBe(400);
+    for (const id of ["not-a-uuid", "'; drop table table_sessions; --", crypto.randomUUID()]) {
+      expect(await statusOf(() => postReopen(id, { session: sessionId }))).toBe(404);
+    }
+
+    session.identity = "";
+    expect(await statusOf(() => postReopen(tableId, { session: sessionId }))).toBe(401);
+    expect((await sessionRow(sessionId)).status).toBe("closed");
   });
 });
 

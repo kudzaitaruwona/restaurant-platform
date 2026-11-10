@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
+import { lastSessionOf } from "@/lib/closing";
 import { moveItem } from "@/lib/kitchen";
 import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
 import { recordAudit } from "@/lib/tenant/audit";
@@ -13,7 +14,7 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
  * staff alike (S-26): every live table with the state of its open session, a
  * table's orders and items, mark delivered, and dismissing a waiter call (#77).
  * Voiding and rejecting are in src/lib/voids.ts (#73), clearing and
- * force-closing in src/lib/closing.ts (#74); reopening comes later.
+ * force-closing and reopening in src/lib/closing.ts (#74, #76).
  */
 
 type Tenant = Pick<TenantContext, "restaurantId">;
@@ -130,7 +131,9 @@ export function getFloor(ctx: Tenant) {
 /**
  * One live table with every order and line of its open session, oldest first, or
  * null when there is no such live table here. A free table has no session and no
- * orders: a closed session's belong to a bill nobody is serving any more.
+ * orders: a closed session's belong to a bill nobody is serving any more. It has
+ * `reopenable`, its last session, when that closed within the reopen window and
+ * no party has opened the table since (#76).
  */
 export function getTableDetail(ctx: Tenant, tableId: string) {
   return withTenant(ctx, async (tx) => {
@@ -164,7 +167,15 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
           eq(tableSessions.status, "open"),
         ),
       );
-    if (!session) return { timezone, table, session: null, orders: [] };
+    if (!session) {
+      // A free table offers its last party's session back within the reopen window (#76).
+      const [last] = await lastSessionOf(tx, ctx, table.id);
+      const reopenable =
+        last?.status === "closed" && last.inWindow && last.closedAt
+          ? { id: last.id, closedAt: last.closedAt, closeReason: last.closeReason }
+          : null;
+      return { timezone, table, session: null, orders: [], reopenable };
+    }
 
     const rows = await tx
       .select({
@@ -202,7 +213,7 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
       });
       byOrder.set(row.orderId, order);
     }
-    return { timezone, table, session, orders: [...byOrder.values()] };
+    return { timezone, table, session, orders: [...byOrder.values()], reopenable: null };
   });
 }
 

@@ -1,10 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
 import type { TenantContext } from "@/lib/tenant";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../../test/integration/database";
 import { orderingRestaurant } from "../../../../test/integration/ordering";
+import { localTime } from "@/lib/booking-engine";
 import { FloorScreen } from "./floor-screen";
 import { TableDetailScreen } from "./table-detail-screen";
 
@@ -286,6 +287,57 @@ describe("the table detail screen", () => {
     expect(html).toContain("No open session");
     expect(html).not.toContain("/clear");
     expect(html).not.toContain("/force-close");
+  });
+
+  describe("a session closed within the last 15 minutes (#76)", () => {
+    /** A session on the table closed by idle expiry `closed` minutes ago, on Postgres's clock. */
+    async function closedAgo(r: Restaurant, closed: number) {
+      const { rows } = await owner.db.execute<{ id: string; ms: number }>(sql`
+        insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason, closed_by)
+        values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '2 hours',
+          now() - make_interval(mins => ${closed}), 'idle_expiry', null)
+        returning id, extract(epoch from closed_at)::float8 * 1000 as ms`);
+      return { id: rows[0].id, closedAt: new Date(Number(rows[0].ms)) };
+    }
+
+    it("is offered back on a free table, naming the session, with when it closed and until when, on the restaurant's clock", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await owner.db.update(restaurants).set({ timezone: "Pacific/Auckland" }).where(eq(restaurants.id, r.restaurantId));
+      const { id, closedAt } = await closedAgo(r, 5);
+      const clock = (at: Date) => localTime(at, "Pacific/Auckland");
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+      const reopen = html.match(new RegExp(`<form[^>]*action="/api/floor/${r.tableId}/reopen"[^>]*>.*?</form>`))?.[0] ?? "";
+      expect(reopen).toContain(`name="session" value="${id}"`);
+      expect(reopen).toContain("Reopen");
+      expect(html).toContain("No open session");
+      expect(html).toContain(`closed at ${clock(closedAt)}`);
+      expect(html).toContain(`until ${clock(new Date(closedAt.getTime() + 15 * 60_000))}`);
+      expect(html).toContain("idle");
+    });
+
+    it("isn't offered once the 15 minutes have passed", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await closedAgo(r, 16);
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+      expect(html).toContain("No open session");
+      expect(html).not.toContain("/reopen");
+    });
+
+    it("isn't offered while a new party has the table", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await closedAgo(r, 5);
+      await openTable(r, [{ status: "placed" }]);
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+      expect(html).toContain("/clear");
+      expect(html).not.toContain("/reopen");
+    });
   });
 
   it("is a 404 for another restaurant's table", async () => {

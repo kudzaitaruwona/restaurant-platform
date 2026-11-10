@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { ActionForm } from "@/app/dashboard/action-form";
 import { localTime } from "@/lib/booking-engine";
+import { REOPEN_WINDOW_MINUTES } from "@/lib/closing";
 import { getTableDetail } from "@/lib/floor";
 import { VOID_REASON_MAX } from "@/lib/kitchen-board";
 import { getTenantContext } from "@/lib/tenant";
@@ -14,6 +15,15 @@ const statusWords = {
   done: "Done",
   delivered: "Delivered",
   voided: "Voided",
+} as const;
+
+/** How the last session closed, for the reopen offer (#76). */
+const closedWords = {
+  staff_clear: "Cleared by staff",
+  force_close: "Force-closed",
+  idle_expiry: "Closed as idle",
+  in_app_payment: "Paid in the app",
+  pos_payment: "Paid at the till",
 } as const;
 
 /** Whether a line can still be voided: not delivered (it was eaten) or voided already. */
@@ -62,7 +72,9 @@ function ReasonForm({
  * One table's open session (spec 06): every order and line with the customer's
  * name, the note and the status, Mark delivered on lines that are done, Void on
  * lines not yet delivered and Reject on orders with any (#73, S-36), and Clear
- * table and Force-close for the session (#74). A
+ * table and Force-close for the session (#74). A free table whose last session
+ * closed within the last 15 minutes offers Reopen (#76), until when on the
+ * restaurant's clock; Postgres has the final say when it's pressed. A
  * table that isn't a live one of this restaurant is a 404. React escapes
  * everything a customer typed. `now` is for tests.
  */
@@ -73,7 +85,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
   if (!id.success) notFound();
   const detail = await getTableDetail(tenant, id.data);
   if (!detail) notFound();
-  const { table, session, orders, timezone } = detail;
+  const { table, session, orders, timezone, reopenable } = detail;
   const at = now ?? new Date();
 
   return (
@@ -90,7 +102,26 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
         </span>
       </div>
       {!session ? (
-        <p className="text-muted-foreground">No open session.</p>
+        <>
+          <p className="text-muted-foreground">No open session.</p>
+          {reopenable && (
+            <section className="flex flex-col gap-2 rounded-md border p-4">
+              <h2 className="font-semibold">Last session</h2>
+              <p className="text-sm text-muted-foreground">
+                {closedWords[reopenable.closeReason ?? "staff_clear"]}, closed at{" "}
+                {localTime(reopenable.closedAt, timezone)}. It can be reopened until{" "}
+                {localTime(new Date(reopenable.closedAt.getTime() + REOPEN_WINDOW_MINUTES * 60_000), timezone)}, unless
+                a new party sits down first.
+              </p>
+              <ActionForm action={`/api/floor/${table.id}/reopen`}>
+                <input type="hidden" name="session" value={reopenable.id} />
+                <button type="submit" className="rounded-md border px-3 py-1 font-medium">
+                  Reopen
+                </button>
+              </ActionForm>
+            </section>
+          )}
+        </>
       ) : (
         <>
           <p className="text-muted-foreground">

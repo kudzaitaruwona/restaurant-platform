@@ -196,3 +196,129 @@ export function forceCloseTable(
     return { outcome: "done", voided } as const;
   });
 }
+
+/**
+ * How long after its close a session can be reopened (spec 06, Sessions; S-20).
+ * Postgres holds the rule itself (trigger table_sessions_reopen, migration 0048,
+ * which has the same 15 minutes); this is for what the floor offers and says.
+ */
+export const REOPEN_WINDOW_MINUTES = 15;
+
+export type ReopenOutcome =
+  | { outcome: "done" }
+  | { outcome: "not_found" }
+  /** Not a closed session of this table any more: reopened already, or never this table's. */
+  | { outcome: "session_changed" }
+  /** More than 15 minutes since it closed: a scan starts a fresh session instead. */
+  | { outcome: "too_late" }
+  /** A new party has opened the table since, whether still there or gone. */
+  | { outcome: "superseded" };
+
+/**
+ * The table's latest session, by when it opened, with whether it closed within
+ * the reopen window on Postgres's clock: what the table's detail offers to
+ * reopen. Only the latest can be reopened, since any other has a session that
+ * opened after it. Found by table_latest_session (migration 0048), the reopen
+ * rule's own probe: one entry at the newest end of table_sessions_table_opened,
+ * with its plan pinned, so none of the table's past is read on any statistics;
+ * then that session by its key. Exported so a test can measure it.
+ */
+export const lastSessionOf = (tx: TenantTransaction, ctx: Tenant, tableId: string) =>
+  tx
+    .select({
+      id: tableSessions.id,
+      status: tableSessions.status,
+      closedAt: tableSessions.closedAt,
+      closeReason: tableSessions.closeReason,
+      inWindow: sql<boolean>`coalesce(${tableSessions.closedAt} > now() - make_interval(mins => ${REOPEN_WINDOW_MINUTES}), false)`,
+    })
+    .from(tableSessions)
+    .where(sql`${tableSessions.id} = table_latest_session(${ctx.restaurantId}::uuid, ${tableId}::uuid)`);
+
+/**
+ * The session the page offered to reopen, locked, so two reopens at once queue
+ * and the second finds it open. Keyed by its id only, the tenant held by RLS:
+ * with the restaurant (or the table) in the filter too, Postgres on stale
+ * statistics served it from table_sessions_table_opened, reading the table's
+ * whole history (EXPLAIN-tested). The caller checks the table. Exported so a
+ * test can EXPLAIN it.
+ */
+export const sessionToReopen = (tx: TenantTransaction, sessionId: string) =>
+  tx
+    .select({
+      tableId: tableSessions.tableId,
+      status: tableSessions.status,
+      closedAt: tableSessions.closedAt,
+      closeReason: tableSessions.closeReason,
+    })
+    .from(tableSessions)
+    .where(eq(tableSessions.id, sessionId))
+    .for("update");
+
+/**
+ * The reopen itself, keyed by the session's id only, like sessionToReopen; RLS
+ * holds it to the tenant. Exported so a test can measure what it reads, the
+ * trigger's probe included.
+ */
+export const reopening = (tx: TenantTransaction, sessionId: string) =>
+  tx
+    .update(tableSessions)
+    .set({ status: "open", closedAt: null, closeReason: null, closedBy: null, lastActivityAt: sql`now()` })
+    .where(eq(tableSessions.id, sessionId));
+
+/** The reopen rule's refusals (0048) and the table lock's, as outcomes. Anything else is rethrown. */
+function refusalOf(error: unknown): ReopenOutcome | undefined {
+  const cause = (error as { cause?: { code?: string; constraint?: string } } | null)?.cause;
+  if (cause?.constraint === "table_sessions_reopen_window") return { outcome: "too_late" };
+  // Another party has opened the table since; or one is opening it right now and
+  // holds the table lock, which the reopen waited on and then lost.
+  if (cause?.constraint === "table_sessions_reopen_newer_session") return { outcome: "superseded" };
+  if (cause?.code === "23505" && cause.constraint === "table_sessions_one_open_per_table") {
+    return { outcome: "superseded" };
+  }
+  return undefined;
+}
+
+/**
+ * Reopen (spec 06, Sessions; S-20): staff reopen a closed session from the
+ * table's detail, within 15 minutes of its close and only if no session has
+ * opened on the table since, even one that has closed again. Postgres decides
+ * (trigger table_sessions_reopen, 0048, and the table lock), so a reopen racing a
+ * scan either wins, and the scan joins it, or is refused. Reopening forgets the
+ * close and resets last_activity_at (the trigger does both whoever writes; set
+ * here too so the statement says what it means). Audited as `session.reopen`
+ * with when and how it had closed (spec 01), for owner and staff alike (S-26).
+ */
+export function reopenSession(actor: Actor, tableId: string, sessionId: string): Promise<ReopenOutcome> {
+  return attempt(actor, async (tx) => {
+    const [table] = await tx
+      .select({ id: diningTables.id })
+      .from(diningTables)
+      .where(
+        and(
+          eq(diningTables.restaurantId, actor.restaurantId),
+          eq(diningTables.id, tableId),
+          isNull(diningTables.archivedAt),
+        ),
+      );
+    if (!table) throw new Refused<ReopenOutcome>({ outcome: "not_found" });
+    const [session] = await sessionToReopen(tx, sessionId);
+    if (session?.tableId !== table.id || session.status !== "closed") {
+      throw new Refused<ReopenOutcome>({ outcome: "session_changed" });
+    }
+    try {
+      await reopening(tx, sessionId);
+    } catch (error) {
+      const refusal = refusalOf(error);
+      if (refusal) throw new Refused(refusal);
+      throw error;
+    }
+    await recordAudit(tx, actor, {
+      action: "session.reopen",
+      entityType: "table_session",
+      entityId: sessionId,
+      details: { closedAt: session.closedAt?.toISOString() ?? null, closeReason: session.closeReason },
+    });
+    return { outcome: "done" } as const;
+  });
+}
