@@ -238,7 +238,7 @@ export function dismissWaiter(actor: Actor, tableId: string): Promise<DismissOut
       .returning({ id: tableSessions.id });
     if (!cleared) return { outcome: "nothing_pending" };
     await recordAudit(tx, actor, {
-      action: "table_session.waiter_dismiss",
+      action: "session.waiter_dismiss",
       entityType: "table_session",
       entityId: cleared.id,
     });

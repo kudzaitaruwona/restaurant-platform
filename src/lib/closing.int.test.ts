@@ -435,6 +435,12 @@ describe("closing, at a restaurant with months of history", () => {
     expect(readsOf(plans!.session)).toEqual({ table_sessions: 1, orders: 0, order_items: 0 });
     // Two orders of two lines each: the open session's own, and nothing more.
     expect(plans!.lines["Actual Rows"]).toBe(2);
-    expect(readsOf(plans!.lines)).toEqual({ table_sessions: 0, orders: 2, order_items: 4 });
+    // Upper bounds, not a pinned plan: the planner may join orders -> lines (2 + 4 reads) or
+    // read the in-play lines first and probe orders (2 + 2); both are fine. Walking history
+    // (~3,000 orders or ~30,000 lines) is what must fail.
+    const reads = readsOf(plans!.lines);
+    expect(reads.table_sessions).toBe(0);
+    expect(reads.orders).toBeLessThanOrEqual(2);
+    expect(reads.order_items).toBeLessThanOrEqual(4);
   });
 });

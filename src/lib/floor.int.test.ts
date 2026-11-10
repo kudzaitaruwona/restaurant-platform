@@ -479,7 +479,7 @@ describe("a table calling a waiter (spec 06, proposed)", () => {
     expect(await waiterOf(sessionId)).toBeNull();
     expect(await owner.db.select().from(auditLog).where(eq(auditLog.restaurantId, r.restaurantId))).toEqual([
       expect.objectContaining({
-        action: "table_session.waiter_dismiss",
+        action: "session.waiter_dismiss",
         entityType: "table_session",
         entityId: sessionId,
         actorType: "staff",
