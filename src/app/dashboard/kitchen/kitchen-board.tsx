@@ -351,8 +351,8 @@ function Ticket({
         )}
       >
         <span className="text-[2em] leading-none font-bold tracking-tight">{group.table}</span>
-        {/* At least 5em, so a narrow column wraps the age under the name instead of breaking the name per letter. */}
-        <span className="min-w-[5em] flex-1 truncate text-[1.0625em] font-medium text-ink-2">
+        {/* At least 5em, so a narrow column wraps the age under the name instead of breaking the name per letter; nothing on a card is cut off. */}
+        <span className="min-w-[5em] flex-1 break-words text-[1.0625em] font-medium text-ink-2">
           {group.customerName}
         </span>
         {isNew && (
