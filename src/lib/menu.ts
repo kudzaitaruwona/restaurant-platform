@@ -265,42 +265,32 @@ export function getMenu(
   });
 }
 
-export async function addCategory(ctx: Writer, category: NewCategory) {
-  await withTenant(ctx, (tx) => insertCategory(tx, ctx, category));
-  revalidateMenu(ctx);
-}
-
 /**
- * Inserts a category after the last one. Audited for a platform admin unless
- * the caller audits the whole change itself (an import, S-43). The caller
- * revalidates after commit.
+ * Adds a category after the last one. Audited for a platform admin. The CSV
+ * import (menu-import.ts) places new categories the same way, in one insert:
+ * keep the two alike.
  */
-export async function insertCategory(
-  tx: TenantTransaction,
-  ctx: Writer,
-  category: NewCategory,
-  { audit = true }: { audit?: boolean } = {},
-) {
+export async function addCategory(ctx: Writer, category: NewCategory) {
   const { restaurantId } = ctx;
-  const [added] = await tx
-    .insert(categories)
-    .values({
-      restaurantId,
-      name: category.name,
-      sortOrder: sql`(
-        select coalesce(max(${categories.sortOrder}), -1) + 1 from ${categories}
-        where ${eq(categories.restaurantId, restaurantId)}
-      )`,
-    })
-    .returning({ id: categories.id });
-  if (audit) {
+  await withTenant(ctx, async (tx) => {
+    const [added] = await tx
+      .insert(categories)
+      .values({
+        restaurantId,
+        name: category.name,
+        sortOrder: sql`(
+          select coalesce(max(${categories.sortOrder}), -1) + 1 from ${categories}
+          where ${eq(categories.restaurantId, restaurantId)}
+        )`,
+      })
+      .returning({ id: categories.id });
     await recordAdminAction(tx, ctx, {
       action: "category.create",
       entityType: "category",
       entityId: added.id,
     });
-  }
-  return added;
+  });
+  revalidateMenu(ctx);
 }
 
 /**
@@ -354,9 +344,10 @@ export async function addMenuItem(
 }
 
 /**
- * Inserts an item at the end of its category and audits it, unless the caller
- * audits the whole change itself (an import, S-43). The caller has checked the
- * category is live, and revalidates after commit.
+ * Inserts an item at the end of its category and audits it for a platform
+ * admin. The caller has checked the category is live, and revalidates after
+ * commit. The CSV import (menu-import.ts) places items the same way, in one
+ * insert: keep the two alike.
  */
 export async function insertMenuItem(
   tx: TenantTransaction,
@@ -364,7 +355,6 @@ export async function insertMenuItem(
   { categoryId, ...fields }: Omit<typeof menuItems.$inferInsert, "restaurantId" | "sortOrder"> & {
     categoryId: string;
   },
-  { audit = true }: { audit?: boolean } = {},
 ) {
   const { restaurantId } = ctx;
   const [added] = await tx
@@ -382,13 +372,11 @@ export async function insertMenuItem(
       )`,
     })
     .returning({ id: menuItems.id });
-  if (audit) {
-    await recordAdminAction(tx, ctx, {
-      action: "menu_item.create",
-      entityType: "menu_item",
-      entityId: added.id,
-    });
-  }
+  await recordAdminAction(tx, ctx, {
+    action: "menu_item.create",
+    entityType: "menu_item",
+    entityId: added.id,
+  });
   return added;
 }
 

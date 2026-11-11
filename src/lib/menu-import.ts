@@ -21,7 +21,8 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
  * rules (itemFields, hasAPrice), so prices and limits can't differ from adding
  * one by hand, and lands where adding it by hand would: a new category after
  * the last one, an item at the end of its category. The rows go in with one
- * insert per kind, not one per row (S-43). Nothing is overwritten or deleted: a
+ * insert per kind, not one per row (S-43); addCategory and insertMenuItem
+ * in menu.ts place a single one the same way, kept alike. Nothing is overwritten or deleted: a
  * row naming an item already in that category is skipped.
  */
 

@@ -245,7 +245,9 @@
   .staff-rail .rail-collapsed-only {
     transition: opacity 120ms ease-out;
   }
+  /* A failed sign-out's message keeps the rail open, so it stays readable. */
   .staff-rail:has(:focus-visible),
+  .staff-rail:has([role="alert"]),
   .staff-rail[data-open="true"] {
     width: 240px;
     box-shadow: var(--elevation);

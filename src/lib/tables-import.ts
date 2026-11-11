@@ -18,8 +18,8 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
  * Tables import from CSV (S-43, spec 03). Owner only, as tables are (S-26):
  * callers check requireOwner(ctx). Each row goes through the table form's own
  * parser, and gets its QR token and its place at the end of the list as adding
- * one by hand does (insertTable), all in one insert rather than one per row
- * (S-43). A label already on a live table is skipped, never overwritten.
+ * one by hand does (addTable in tables.ts, kept alike), all in one insert
+ * rather than one per row (S-43). A label already on a live table is skipped, never overwritten.
  */
 
 type Importer = Pick<TenantContext, "restaurantId" | "staffId" | "platformAdminId">;
@@ -96,7 +96,7 @@ export async function importTables(
       const planned = await plan(tx, restaurantId, table.rows);
       const ready = planned.flatMap((entry) => (entry.table ? [entry.table] : []));
       if (ready.length === 0) return { planned, imported: 0 };
-      // After the last table, archived ones included, as insertTable places one.
+      // After the last table, archived ones included, as addTable places one.
       const [{ next }] = await tx
         .select({ next: sql<number>`coalesce(max(${diningTables.sortOrder}), -1) + 1` })
         .from(diningTables)

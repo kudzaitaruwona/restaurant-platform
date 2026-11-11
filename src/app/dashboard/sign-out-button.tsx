@@ -52,11 +52,11 @@ export function SignOutButton({ audience }: { audience: Audience }) {
         <span className="rail-fade">{pending ? "Signing out…" : "Sign out"}</span>
       </button>
       {problem && (
-        // In the rail's footer, which clips anything beside it: shown while the
-        // rail is open, as it is when Sign out is pressed, at the open width.
+        // In the rail's footer, which clips anything beside it: not faded with
+        // the labels, and the rail stays open (globals.css) while it shows.
         <p
           role="alert"
-          className="rail-fade mt-1 rounded-control bg-danger-soft p-3 text-caption whitespace-normal text-ink md:w-56"
+          className="mt-1 rounded-control bg-danger-soft p-3 text-caption whitespace-normal text-ink"
         >
           {problem}
         </p>

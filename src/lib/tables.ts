@@ -86,14 +86,35 @@ const constraintOf = (error: unknown) =>
 /**
  * Adds a table at the end of the list, with the token that lets customers scan
  * to it. The partial unique index is what refuses a label already on a live
- * table, so two owners adding "7" together can't both win.
+ * table, so two owners adding "7" together can't both win. Audited for a
+ * platform admin. The CSV import (tables-import.ts) places tables the same
+ * way, in one insert: keep the two alike.
  */
 export async function addTable(
   ctx: Writer,
   table: NewTable,
 ): Promise<"saved" | "label_taken"> {
   try {
-    await withTenant(ctx, (tx) => insertTable(tx, ctx, table));
+    const { restaurantId } = ctx;
+    await withTenant(ctx, async (tx) => {
+      const [added] = await tx
+        .insert(diningTables)
+        .values({
+          ...table,
+          restaurantId,
+          qrToken: mintQrToken(),
+          sortOrder: sql`(
+            select coalesce(max(${diningTables.sortOrder}), -1) + 1 from ${diningTables}
+            where ${eq(diningTables.restaurantId, restaurantId)}
+          )`,
+        })
+        .returning({ id: diningTables.id });
+      await recordAdminAction(tx, ctx, {
+        action: "table.create",
+        entityType: "table",
+        entityId: added.id,
+      });
+    });
   } catch (error) {
     if (isLabelTaken(error)) return "label_taken";
     throw error;
@@ -103,40 +124,6 @@ export async function addTable(
 
 /** Whether the database refused a label already on a live table. */
 export const isLabelTaken = (error: unknown) => constraintOf(error) === LABEL_INDEX;
-
-/**
- * Inserts a table after the last one, with a token of its own. Audited for a
- * platform admin unless the caller audits the whole change itself (an import,
- * S-43). A label already on a live table throws: see isLabelTaken.
- */
-export async function insertTable(
-  tx: TenantTransaction,
-  ctx: Writer,
-  table: NewTable & { bookable?: boolean },
-  { audit = true }: { audit?: boolean } = {},
-) {
-  const { restaurantId } = ctx;
-  const [added] = await tx
-    .insert(diningTables)
-    .values({
-      ...table,
-      restaurantId,
-      qrToken: mintQrToken(),
-      sortOrder: sql`(
-        select coalesce(max(${diningTables.sortOrder}), -1) + 1 from ${diningTables}
-        where ${eq(diningTables.restaurantId, restaurantId)}
-      )`,
-    })
-    .returning({ id: diningTables.id });
-  if (audit) {
-    await recordAdminAction(tx, ctx, {
-      action: "table.create",
-      entityType: "table",
-      entityId: added.id,
-    });
-  }
-  return added;
-}
 
 export type TableChange = "saved" | "not_found";
 
