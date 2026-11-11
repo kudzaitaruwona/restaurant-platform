@@ -9,11 +9,12 @@ import { cn } from "@/lib/utils";
 
 /**
  * The control style (S-41): 48px tall, 10px radius, hairline border on the
- * surface, a green focus ring. Use it on any raw <input>, <select> or
+ * surface, a green focus ring, and text-control: 16px on small screens, so iOS
+ * doesn't zoom in on focus, body size from md up. Use it on any raw <input>, <select> or
  * <textarea>, or use the components below.
  */
 export const inputClassName =
-  "min-h-12 w-full min-w-0 rounded-control border border-line bg-surface px-3 py-2.5 text-body text-ink placeholder:text-ink-2 outline-none transition-[border-color,box-shadow] duration-150 focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-danger [&[type=number]]:tabular-nums";
+  "min-h-12 w-full min-w-0 rounded-control border border-line bg-surface px-3 py-2.5 text-control text-ink placeholder:text-ink-2 outline-none transition-[border-color,box-shadow] duration-150 focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-danger [&[type=number]]:tabular-nums";
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return <input className={cn(inputClassName, className)} {...props} />;

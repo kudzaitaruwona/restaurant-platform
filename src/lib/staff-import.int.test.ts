@@ -148,4 +148,30 @@ describe("importStaff", () => {
 
     expect(result.imported).toBe(2);
   });
+
+  it("stops when time runs out, and reports the rest as not imported, to import again", async () => {
+    const tenant = await newRestaurant();
+    const [first, second, third] = [email(), email(), email()];
+    let checks = 0;
+
+    const result = report(
+      await importStaff(tenant, `email,name\n${first},One\nbad,Bad\n${second},Two\n${third},Three`, {
+        outOfTime: () => ++checks > 1,
+      }),
+    );
+
+    const notImported =
+      "Not imported: the import stopped here to finish in time. Import the file again to add this row; rows already added will be skipped.";
+    expect(result.imported).toBe(1);
+    expect(result.rows.map((row) => row.problems)).toEqual([
+      [],
+      ["Enter a valid email address."],
+      [notImported],
+      [notImported],
+    ]);
+    expect((await listStaff(tenant)).map((member) => member.email)).toEqual([
+      `${tenant.staffId}@example.test`,
+      first,
+    ]);
+  });
 });

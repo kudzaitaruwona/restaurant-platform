@@ -80,6 +80,10 @@
   --text-heading--line-height: 1.25;
   --text-display: 32px;
   --text-display--line-height: 1.15;
+  /* Text typed into a control: 16px on small screens, where less makes iOS
+     Safari zoom in on focus, and body size from md up (text-control). */
+  --text-control: var(--control-text);
+  --text-control--line-height: 1.45;
 
   /* Shape: cards and sheets 14px, buttons and inputs 10px, chips rounded-full. */
   --radius-card: 14px;
@@ -140,6 +144,13 @@
   --border: var(--line);
   --input: var(--line);
   --ring: var(--accent);
+  --control-text: 16px;
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --control-text: 15px;
+  }
 }
 
 /* Dark: the same values twice, once for the system setting and once for a page that asks. */
@@ -234,17 +245,21 @@
   .staff-rail .rail-collapsed-only {
     transition: opacity 120ms ease-out;
   }
+  /* A failed sign-out's message keeps the rail open, so it stays readable. */
   .staff-rail:has(:focus-visible),
+  .staff-rail:has([role="alert"]),
   .staff-rail[data-open="true"] {
     width: 240px;
     box-shadow: var(--elevation);
     transition-delay: 0ms;
   }
   .staff-rail:has(:focus-visible) .rail-fade,
+  .staff-rail:has([role="alert"]) .rail-fade,
   .staff-rail[data-open="true"] .rail-fade {
     opacity: 1;
   }
   .staff-rail:has(:focus-visible) .rail-collapsed-only,
+  .staff-rail:has([role="alert"]) .rail-collapsed-only,
   .staff-rail[data-open="true"] .rail-collapsed-only {
     opacity: 0;
   }

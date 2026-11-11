@@ -4,6 +4,13 @@ import { importStaff, previewStaffImport } from "@/lib/staff-import";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /**
+ * Rows go one at a time with an invite email each, so this can run for minutes:
+ * the import stops starting rows before this (IMPORT_TIME_BUDGET_MS) and
+ * reports the rest, so the answer always comes back (S-43).
+ */
+export const maxDuration = 300;
+
+/**
  * Previews or imports staff from CSV, from /dashboard/staff. Owner only (S-26).
  * Each person goes through addStaff, so is invited as when added by hand (S-42).
  */

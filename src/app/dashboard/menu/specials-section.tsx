@@ -2,10 +2,11 @@ import { Check, Clock, Pause, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input, Select } from "@/components/ui/input";
 import { formatUsd, formatZig } from "@/lib/pricing";
 import type { listSpecials, SpecialStatus } from "@/lib/specials";
 import { ActionForm } from "../action-form";
-import { Field, inputClassName } from "../field";
+import { Field } from "../field";
 import { Disclosure } from "./disclosure";
 import { Pill } from "./pill";
 
@@ -105,36 +106,36 @@ export function SpecialsSection({
               className="@container flex flex-col gap-4"
             >
               <Field label="Item">
-                <select name="menuItemId" className={inputClassName}>
+                <Select name="menuItemId">
                   {items.map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </Field>
               <Field label="Badge" hint="Optional, like Taco Tuesday.">
-                <input name="title" maxLength={80} className={inputClassName} />
+                <Input name="title" maxLength={80} />
               </Field>
               <p className="text-caption text-ink-2">
                 Leave both prices blank for a badge alone. A price in one currency discounts both.
               </p>
               <div className="grid gap-4 @md:grid-cols-2">
                 <Field label="Special price (USD)" hint="Optional.">
-                  <input name="priceUsd" inputMode="decimal" className={`${inputClassName} tabular-nums`} />
+                  <Input name="priceUsd" inputMode="decimal" className="tabular-nums" />
                 </Field>
                 <Field label="Special price (ZiG)" hint="Optional.">
-                  <input name="priceZig" inputMode="decimal" className={`${inputClassName} tabular-nums`} />
+                  <Input name="priceZig" inputMode="decimal" className="tabular-nums" />
                 </Field>
               </div>
               <Field label="First day" hint={`Optional. Dates are in ${timezone} time.`}>
-                <input name="startDate" type="date" className={inputClassName} />
+                <Input name="startDate" type="date" />
               </Field>
               <Field
                 label="Last day"
                 hint="Optional, and included. Leave blank to keep it on until you turn it off."
               >
-                <input name="endDate" type="date" className={inputClassName} />
+                <Input name="endDate" type="date" />
               </Field>
               <Button type="submit" size="staff" className="self-start">
                 Add special

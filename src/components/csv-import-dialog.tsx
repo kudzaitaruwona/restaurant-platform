@@ -7,7 +7,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Field, Textarea, inputClassName } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
-import { byteLength, CSV_MAX_BYTES } from "@/lib/csv";
+import { byteLength, CSV_MAX_BYTES, CSV_MAX_ROWS } from "@/lib/csv";
 import type { ImportKind, ImportReport } from "@/lib/csv-import";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +31,7 @@ export function CsvImportDialog({
   intro,
   triggerLabel = "Import CSV",
   triggerSize = "staff",
+  maxRows = CSV_MAX_ROWS,
 }: {
   kind: ImportKind;
   /** The import route, e.g. "/api/menu/import". */
@@ -43,6 +44,8 @@ export function CsvImportDialog({
   triggerLabel?: string;
   /** staff (48px) on staff pages; compact (40px) in /admin's header. */
   triggerSize?: "staff" | "compact";
+  /** The kind's row cap, as its route enforces it (S-43): staff and restaurants take fewer. */
+  maxRows?: number;
 }) {
   const router = useRouter();
   const dialog = useRef<HTMLDialogElement>(null);
@@ -155,8 +158,8 @@ export function CsvImportDialog({
               <div className="flex flex-col gap-2 text-ink-2">
                 {intro}
                 <p>
-                  The first row names the columns. Up to 500 rows and 1 MB. Nothing is saved until
-                  you check the rows and choose Import.
+                  The first row names the columns. Up to {maxRows} rows and 1 MB. Nothing is saved
+                  until you check the rows and choose Import.
                 </p>
               </div>
               <a
@@ -179,7 +182,7 @@ export function CsvImportDialog({
                 />
               </Field>
               <Field label="Or paste it here">
-                <Textarea name="pasted" rows={6} spellCheck={false} className="font-mono text-caption" />
+                <Textarea name="pasted" rows={6} spellCheck={false} className="font-mono md:text-caption" />
               </Field>
             </form>
           )}

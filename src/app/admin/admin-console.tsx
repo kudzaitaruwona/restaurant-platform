@@ -20,6 +20,7 @@ import {
   type OwnerOnCard,
 } from "@/lib/tenant/platform-admin";
 import { inviteStatus } from "@/lib/invite-status";
+import { RESTAURANTS_MAX_ROWS } from "@/lib/restaurant-import";
 import { BookingMetricsPanel } from "../dashboard/booking-metrics";
 import { InviteStatusLabel } from "../dashboard/staff/invite-status";
 import { easeOut, pressable } from "../motion";
@@ -299,6 +300,7 @@ export async function AdminConsole() {
               title="Import restaurants"
               noun={{ one: "restaurant", other: "restaurants" }}
               triggerSize="compact"
+              maxRows={RESTAURANTS_MAX_ROWS}
               intro={
                 <p>
                   Columns: restaurant_name, slug (blank makes one from the name), timezone (blank is{" "}

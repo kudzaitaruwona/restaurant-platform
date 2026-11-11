@@ -168,9 +168,15 @@ async function inviteOwner(
       appUrl: appUrl(),
     }),
   );
-  await getAdminDb().execute(
-    sql`select platform_finish_invite(${admin.platformAdminId}, ${restaurantId}, ${invite.invite_id}, ${delivered})`,
-  );
+  // The email has gone or not: failing to note how must not turn that into an
+  // error, as in sendInvite. The invite stays "not known", shown as not delivered.
+  await getAdminDb()
+    .execute(
+      sql`select platform_finish_invite(${admin.platformAdminId}, ${restaurantId}, ${invite.invite_id}, ${delivered})`,
+    )
+    .catch((error: unknown) => {
+      console.error("Couldn't record how an invite went (S-42):", error instanceof Error ? error.message : error);
+    });
   return delivered ? "sent" : "not_sent";
 }
 

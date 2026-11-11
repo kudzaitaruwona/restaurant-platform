@@ -9,17 +9,29 @@ import { importMenu, previewMenuImport } from "./menu-import";
 const revalidateTag = vi.hoisted(() => vi.fn());
 vi.mock("next/cache", () => ({ revalidateTag }));
 
-/** An item of this name fails to insert, after the rows before it went in. */
-const failing = vi.hoisted(() => ({ name: "" }));
-vi.mock("./menu", async (importOriginal) => {
-  const menu = await importOriginal<typeof import("./menu")>();
-  return {
-    ...menu,
-    insertMenuItem: (...args: Parameters<typeof menu.insertMenuItem>) => {
-      if (failing.name && args[2].name === failing.name) throw new Error("boom");
-      return menu.insertMenuItem(...args);
-    },
-  };
+/**
+ * Every insert the import's transaction makes, by table; and a table whose
+ * insert fails, after the inserts before it went in.
+ */
+const inserts = vi.hoisted(() => ({ into: [] as unknown[], failing: undefined as unknown }));
+vi.mock("@/lib/tenant/scope", async (importOriginal) => {
+  const scope = await importOriginal<typeof import("@/lib/tenant/scope")>();
+  const withTenant: typeof scope.withTenant = (ctx, fn) =>
+    scope.withTenant(ctx, (tx) =>
+      fn(
+        new Proxy(tx, {
+          get(target, key, receiver) {
+            if (key !== "insert") return Reflect.get(target, key, receiver);
+            return (table: Parameters<typeof target.insert>[0]) => {
+              inserts.into.push(table);
+              if (table === inserts.failing) throw new Error("boom");
+              return target.insert(table);
+            };
+          },
+        }),
+      ),
+    );
+  return { ...scope, withTenant };
 });
 
 /** Runs as app_tenant, so everything here also holds under RLS. */
@@ -70,7 +82,10 @@ const report = <T,>(result: T) => {
 beforeAll(() => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
 });
-beforeEach(() => revalidateTag.mockClear());
+beforeEach(() => {
+  revalidateTag.mockClear();
+  inserts.into.length = 0;
+});
 
 afterAll(async () => {
   await owner.db.delete(auditLog).where(inArray(auditLog.restaurantId, created));
@@ -262,16 +277,58 @@ describe("importMenu", () => {
 
   it("adds nothing when one insert fails: one transaction", async () => {
     const tenant = await newRestaurant();
-    failing.name = "Boom";
+    inserts.failing = menuItems;
 
     await expect(
       importMenu(tenant, `${header}\nMains,Sadza,,8,,\nDrinks,Boom,,1,,`),
     ).rejects.toThrow("boom");
 
-    failing.name = "";
+    inserts.failing = undefined;
     expect(await itemsOf(tenant.restaurantId)).toEqual([]);
     expect((await getMenu(tenant)).categories).toEqual([]);
     expect(await auditOf(tenant.restaurantId)).toEqual([]);
+  });
+
+  it("adds a whole file in one insert per kind, in file order at the end of each category", async () => {
+    const tenant = await newRestaurant();
+    await addCategory(tenant, { name: "Mains" });
+    const [{ id: mains }] = (await getMenu(tenant)).categories;
+    await addMenuItem(tenant, { name: "Soup", description: "", priceUsd: "3", priceZig: null, categoryId: mains });
+    await addMenuItem(tenant, { name: "Stew", description: "", priceUsd: "5", priceZig: null, categoryId: mains });
+    const names = Array.from({ length: 120 }, (_, i) => `Dish ${i}`);
+    const csv = [
+      header,
+      ...names.map((name, i) => `${["Mains", "Drinks", "Sides"][i % 3]},${name},,1,,`),
+    ].join("\n");
+    inserts.into.length = 0;
+
+    const result = report(await importMenu(tenant, csv));
+
+    expect(result.imported).toBe(120);
+    expect(inserts.into.filter((table) => table === categories)).toHaveLength(1);
+    expect(inserts.into.filter((table) => table === menuItems)).toHaveLength(1);
+    const items = await itemsOf(tenant.restaurantId);
+    const inCategory = (category: string) =>
+      items.filter((item) => item.category === category).map(({ name, sortOrder }) => ({ name, sortOrder }));
+    expect(inCategory("Mains")).toEqual([
+      { name: "Soup", sortOrder: 0 },
+      { name: "Stew", sortOrder: 1 },
+      ...names.filter((_, i) => i % 3 === 0).map((name, i) => ({ name, sortOrder: i + 2 })),
+    ]);
+    expect(inCategory("Sides")).toEqual(
+      names.filter((_, i) => i % 3 === 2).map((name, i) => ({ name, sortOrder: i })),
+    );
+    expect((await getMenu(tenant)).categories.map((category) => category.name)).toEqual([
+      "Mains",
+      "Drinks",
+      "Sides",
+    ]);
+    expect(await auditOf(tenant.restaurantId)).toEqual([
+      expect.objectContaining({
+        action: "menu.import",
+        details: { items: 120, categories: 2, skipped: 0 },
+      }),
+    ]);
   });
 
   it("only ever writes to the context's restaurant", async () => {

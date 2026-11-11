@@ -7,6 +7,7 @@ import {
   reportOf,
   reportRow,
 } from "@/lib/csv-import";
+import { deadlineIn, IMPORT_TIME_BUDGET_MS, type ImportTiming, notImportedInTime } from "@/lib/import-deadline";
 import { addStaff, listStaff, type NewStaff, parseNewStaff } from "@/lib/staff-management";
 import type { Acting } from "@/lib/tenant/audit";
 
@@ -97,18 +98,28 @@ export async function previewStaffImport(
   return toReport(await plan(ctx, table.rows), null);
 }
 
-/** Adds each valid person in file order, through addStaff. */
+/**
+ * Adds each valid person in file order, through addStaff. Stops starting rows
+ * when time runs out, reporting the rest as not imported (S-43).
+ */
 export async function importStaff(
   ctx: Acting,
   csv: string,
+  { outOfTime = deadlineIn(IMPORT_TIME_BUDGET_MS) }: ImportTiming = {},
 ): Promise<ImportReport | { error: string }> {
   const table = read(csv);
   if (!table.ok) return { error: table.error };
 
   const planned = await plan(ctx, table.rows);
   let imported = 0;
+  let stopped = false;
   for (const entry of planned) {
     if (!entry.person) continue;
+    stopped ||= outOfTime();
+    if (stopped) {
+      entry.problems.push(notImportedInTime);
+      continue;
+    }
     if (imported > 0) await pause(INVITE_SPACING_MS);
     const result = await addStaff(ctx, entry.person);
     if (result === "added") imported++;

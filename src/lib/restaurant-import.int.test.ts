@@ -110,6 +110,25 @@ describe("previewRestaurantsImport", () => {
 });
 
 describe("importRestaurants", () => {
+  it("stops when time runs out, and reports the rest as not imported, to import again", async () => {
+    const id = run();
+    let checks = 0;
+    const csv = `${header}\nFirst ${id},first-${id},,,${email()},Rudo\nSecond ${id},second-${id},,,${email()},Tendai`;
+
+    const result = report(await importRestaurants(admin, csv, { outOfTime: () => ++checks > 1 }));
+
+    expect(result.imported).toBe(1);
+    expect(result.rows.map((row) => row.problems)).toEqual([
+      [],
+      [
+        "Not imported: the import stopped here to finish in time. Import the file again to add this row; rows already added will be skipped.",
+      ],
+    ]);
+    expect((await bySlug([`first-${id}`, `second-${id}`])).map((restaurant) => restaurant.slug)).toEqual([
+      `first-${id}`,
+    ]);
+  });
+
   it("creates each restaurant and its owner through the platform functions, audited by them", async () => {
     const id = run();
     const ownerEmail = email();

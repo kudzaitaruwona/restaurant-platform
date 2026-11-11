@@ -1,12 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SignOutButton, signOut } from "./sign-out-button";
+import { SignOutButton, SignOutProblem, signOut } from "./sign-out-button";
 
 /**
  * No DOM here, so the decision is tested in signOut(), which the button calls
  * and which holds everything but its pending and message state.
  */
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {} }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {} }), usePathname: () => "/dashboard" }));
 
 const go = vi.fn();
 
@@ -54,5 +54,14 @@ describe("the button", () => {
     expect(html).toContain("Sign out");
     expect(html).not.toContain('role="alert"');
     expect(html).not.toMatch(/<button[^>]* disabled=/);
+  });
+});
+
+describe("the failure message", () => {
+  it("is announced as an alert and has a labelled button to dismiss it", () => {
+    const html = renderToStaticMarkup(<SignOutProblem message="Try again." onDismiss={() => {}} />);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Try again.");
+    expect(html).toMatch(/<button[^>]*aria-label="Dismiss message"/);
   });
 });

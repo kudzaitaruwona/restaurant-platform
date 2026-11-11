@@ -4,6 +4,13 @@ import { importRestaurants, previewRestaurantsImport } from "@/lib/restaurant-im
 import { getPlatformAdminContext } from "@/lib/tenant/platform-admin";
 
 /**
+ * Rows go one at a time with an invite email each, so this can run for minutes:
+ * the import stops starting rows before this (IMPORT_TIME_BUDGET_MS) and
+ * reports the rest, so the answer always comes back (S-43).
+ */
+export const maxDuration = 300;
+
+/**
  * Previews or creates restaurants with their first owners from CSV, from
  * /admin (S-42, S-43). Platform admin only: each row goes through the same
  * platform_* functions as the single forms (S-28). No restaurant id comes from

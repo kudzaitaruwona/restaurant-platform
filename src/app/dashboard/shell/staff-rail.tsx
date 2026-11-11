@@ -272,11 +272,11 @@ function Rate({ rate, variant, onNavigate }: { rate: RailRate; variant: Variant;
       className="mx-2 flex min-h-14 items-center gap-3.5 rounded-control px-3 py-1.5 text-ink-2 no-underline outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span className="-ml-px flex w-6 shrink-0 flex-col items-center">
-        <Banknote aria-hidden className="size-5" strokeWidth={1.75} />
+        <Banknote aria-hidden className={cn("size-5", warn && "text-attention")} strokeWidth={1.75} />
         <small
           className={cn(
             "mt-px text-caption font-semibold tracking-[-0.01em] tabular-nums",
-            warn ? "text-danger" : "text-ink",
+            warn ? "text-attention-ink" : "text-ink",
             collapsedOnly(variant),
           )}
         >
@@ -287,7 +287,7 @@ function Rate({ rate, variant, onNavigate }: { rate: RailRate; variant: Variant;
         <span className="block text-body font-medium text-ink tabular-nums">
           {unset ? "No exchange rate" : `1 USD = ZiG ${rate.value}`}
         </span>
-        <span className={cn("block text-caption", warn && "text-danger")}>
+        <span className={cn("block text-caption", warn && "text-attention-ink")}>
           {unset ? "Set one on the Menu page" : `Updated ${rate.age}. Change`}
         </span>
       </span>
