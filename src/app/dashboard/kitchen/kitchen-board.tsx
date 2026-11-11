@@ -345,13 +345,14 @@ function Ticket({
     >
       <div
         className={cn(
-          "flex items-center gap-3 border-b border-line py-2.5 pr-3 pl-4",
+          "flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line py-2.5 pr-3 pl-4",
           status === "done" && "bg-accent-soft",
           age.level !== "fresh" && "bg-attention-soft",
         )}
       >
         <span className="text-[2em] leading-none font-bold tracking-tight">{group.table}</span>
-        <span className="min-w-0 flex-1 text-[1.0625em] font-medium break-words text-ink-2">
+        {/* At least 5em, so a narrow column wraps the age under the name instead of breaking the name per letter. */}
+        <span className="min-w-[5em] flex-1 truncate text-[1.0625em] font-medium text-ink-2">
           {group.customerName}
         </span>
         {isNew && (
