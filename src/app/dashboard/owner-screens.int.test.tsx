@@ -1100,9 +1100,13 @@ describe("/dashboard/tables, managing", () => {
 
     const [first, second] = (await screen(TablesScreen)).split("<li").slice(1);
 
-    expect(first.match(/<button[^>]*disabled=""[^>]*>Move up/)).not.toBeNull();
-    expect(first.match(/<button[^>]*disabled=""[^>]*>Move down/)).toBeNull();
-    expect(second.match(/<button[^>]*disabled=""[^>]*>Move down/)).not.toBeNull();
+    // The move buttons are icon buttons named "Move table A up" and so on (S-41).
+    const disabled = (direction: string) =>
+      new RegExp(`<button(?=[^>]*disabled="")[^>]*aria-label="Move table [^"]+ ${direction}"`);
+    expect(first.match(disabled("up"))).not.toBeNull();
+    expect(first.match(disabled("down"))).toBeNull();
+    expect(second.match(disabled("down"))).not.toBeNull();
+    expect(second.match(disabled("up"))).toBeNull();
   });
 
   it("edits a table, and the list shows it", async () => {

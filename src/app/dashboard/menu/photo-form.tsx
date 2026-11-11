@@ -1,7 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { ImagePlus } from "lucide-react";
 import { type ChangeEvent, useState } from "react";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { postForm } from "@/lib/form-response";
 import { downscalePhoto } from "./downscale";
 
@@ -51,7 +54,7 @@ export function PhotoForm({
   }
 
   return (
-    <div className="flex items-start gap-3 py-1">
+    <div className="flex items-start gap-4">
       {thumbUrl ? (
         // eslint-disable-next-line @next/next/no-img-element -- already a 320px WebP on the CDN
         <img
@@ -60,15 +63,18 @@ export function PhotoForm({
           width={64}
           height={64}
           loading="lazy"
-          className="size-16 shrink-0 rounded-md object-cover"
+          className="size-16 shrink-0 rounded-control bg-surface-2 object-cover"
         />
       ) : (
         <div
           aria-hidden
-          className="size-16 shrink-0 rounded-md border border-dashed"
-        />
+          className="flex size-16 shrink-0 items-center justify-center rounded-control border border-dashed border-line text-ink-2 [&_svg]:size-6"
+        >
+          <ImagePlus strokeWidth={1.75} />
+        </div>
       )}
-      <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex min-w-0 flex-col items-start gap-2">
+        <span className="text-caption font-medium text-ink-2">Photo, optional</span>
         <input
           type="file"
           name="photo"
@@ -76,7 +82,7 @@ export function PhotoForm({
           disabled={pending}
           onChange={chosen}
           aria-label={`${thumbUrl ? "Change" : "Add"} photo for ${itemName}`}
-          className="max-w-full text-sm"
+          className="max-w-full text-caption text-ink-2 file:mr-3 file:h-10 file:cursor-pointer file:rounded-control file:border file:border-line file:bg-surface file:px-3.5 file:text-body file:font-semibold file:text-ink hover:file:bg-surface-2 disabled:opacity-50"
         />
         {thumbUrl && (
           <form
@@ -90,19 +96,19 @@ export function PhotoForm({
             <button
               type="submit"
               disabled={pending}
-              className="text-sm text-muted-foreground underline"
+              className={cn(buttonVariants({ variant: "danger-ghost", size: "compact", className: "-ml-3.5" }))}
             >
               Remove photo
             </button>
           </form>
         )}
         {pending && (
-          <p role="status" className="text-sm text-muted-foreground">
+          <p role="status" className="text-caption text-ink-2">
             Saving photo…
           </p>
         )}
         {error && (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="text-caption text-danger">
             {error}
           </p>
         )}
