@@ -31,7 +31,7 @@ const currencyModeLabels: Record<CurrencyMode, string> = {
   both: "USD and ZiG equally",
 };
 
-/** Each item's rule in plain words, from platform_onboarding_checklist (0028). */
+/** Each item's rule in plain words, as derived by the platform_onboarding_checklist function, migration 0028. */
 const onboardingRules: Record<(typeof onboardingItems)[number]["key"], string> = {
   menuEntered: "Done when at least one menu item is live.",
   photos: "Done when a live item has a photo.",
