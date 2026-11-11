@@ -7,6 +7,7 @@ import {
   openOwnerDatabase,
   testDatabaseSettings,
 } from "../../../../test/integration/database";
+import { installFakeServices } from "../../../../test/integration/fake-services";
 import { statusOf } from "../../../../test/integration/http";
 
 const session = vi.hoisted(() => ({ identity: "" }));
@@ -20,9 +21,12 @@ vi.mock("next/headers", () => ({
 const SLUG_PREFIX = "routes-test-";
 const owner = openOwnerDatabase();
 
+let services: ReturnType<typeof installFakeServices>;
+
 beforeAll(() => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
   vi.stubEnv("DEV_AUTH_BYPASS", "1");
+  services = installFakeServices();
 });
 beforeEach(() => {
   session.identity = devPlatformAdmin.key;
@@ -31,6 +35,7 @@ afterAll(async () => {
   // Restaurants created here stay behind: one with an owner can't lose it (S-26).
   await owner.pool.end();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 const post = (path: string, fields: Record<string, string>) => {
@@ -73,6 +78,13 @@ async function enter(restaurantId: string) {
     ),
     { params: Promise.resolve({ restaurantId }) },
   );
+}
+
+async function inviteOwner(restaurantId: string, fields: Record<string, string>) {
+  const { POST } = await import("./restaurants/[restaurantId]/invite/route");
+  return POST(post(`/api/admin/restaurants/${restaurantId}/invite`, fields), {
+    params: Promise.resolve({ restaurantId }),
+  });
 }
 
 async function tickQrCodes(restaurantId: string, fields: Record<string, string>) {
@@ -375,4 +387,88 @@ describe("POST /api/admin/restaurants/[restaurantId]/qr-codes-printed", () => {
       ).toBe(404);
     },
   );
+});
+
+describe("the owner's invite (S-42)", () => {
+  async function withOwner() {
+    const restaurantId = await created(await createRestaurant(validRestaurant()));
+    const fields = validOwner();
+    const response = await createOwner(restaurantId, fields);
+    expect(response.status).toBe(201);
+    const { id, invited } = await response.json();
+    return { restaurantId, staffId: id as string, email: fields.email, invited };
+  }
+
+  it("creating the owner says the invite went", async () => {
+    const { email, invited } = await withOwner();
+    expect(invited).toBe(true);
+    expect((await services.emailTo(email)).subject).toBe("Mama's Kitchen is ready for you");
+  });
+
+  it("creating the owner says when the invite didn't go, and keeps them", async () => {
+    const restaurantId = await created(await createRestaurant(validRestaurant()));
+    const fields = validOwner();
+    services.refusing.add(fields.email);
+
+    const response = await createOwner(restaurantId, fields);
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ invited: false });
+    expect(await staffOf(restaurantId)).toHaveLength(1);
+  });
+
+  it("sends it again", async () => {
+    const { restaurantId, staffId, email } = await withOwner();
+    await services.emailTo(email);
+
+    const response = await inviteOwner(restaurantId, { staffId });
+
+    expect(response.status).toBe(204);
+    await services.emailTo(email);
+  });
+
+  it("is a 502 that says so when the email doesn't go", async () => {
+    const { restaurantId, staffId, email } = await withOwner();
+    services.refusing.add(email);
+
+    const response = await inviteOwner(restaurantId, { staffId });
+
+    expect(response.status).toBe(502);
+    expect((await response.json()).error).toMatch(/didn't go/);
+  });
+
+  it("is a 429 after 3 in an hour", async () => {
+    const { restaurantId, staffId } = await withOwner();
+    await inviteOwner(restaurantId, { staffId });
+    await inviteOwner(restaurantId, { staffId });
+
+    const response = await inviteOwner(restaurantId, { staffId });
+
+    expect(response.status).toBe(429);
+    expect((await response.json()).error).toMatch(/3 invites in the last hour/);
+  });
+
+  it("is a 409 for an owner who has signed in", async () => {
+    const { restaurantId, staffId } = await withOwner();
+    await owner.db.update(staff).set({ firstSignedInAt: new Date() }).where(eq(staff.id, staffId));
+
+    expect((await inviteOwner(restaurantId, { staffId })).status).toBe(409);
+  });
+
+  it.each([
+    ["an unknown person", () => ({ staffId: crypto.randomUUID() })],
+    ["a malformed id", () => ({ staffId: "nope" })],
+    ["no id", () => ({})],
+  ])("is a 404 for %s", async (_name, fields) => {
+    const { restaurantId } = await withOwner();
+    expect(await statusOf(() => inviteOwner(restaurantId, fields()))).toBe(404);
+  });
+
+  it("is a 404 for another restaurant's owner", async () => {
+    const mine = await withOwner();
+    const theirs = await withOwner();
+    expect(
+      await statusOf(() => inviteOwner(mine.restaurantId, { staffId: theirs.staffId })),
+    ).toBe(404);
+  });
 });

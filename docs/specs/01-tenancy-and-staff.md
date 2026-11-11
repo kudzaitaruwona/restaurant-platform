@@ -37,9 +37,9 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - **Staff routes:** every query is scoped by `restaurant_id`, taken from the tenant context and never from a request parameter.
 - **Public routes** (`/m/{menu_token}`, `/t/{qr_token}` and its ordering endpoints `POST /api/t/{qr_token}/session` and `POST /api/t/{qr_token}/orders` (S-40), `/r/{slug}/book`, `/b/{manage_token}`): there's no session, so the server resolves the tenant by looking up the token or slug. It then sets `app.restaurant_id` and runs every further query under RLS. The token is the only tenant input these routes accept. The lookup is a `SECURITY DEFINER` function per token type that returns only the restaurant's id (S-31).
 - **Sign-in** has no tenant yet either. It finds staff by email through a `SECURITY DEFINER` function that returns only what a session needs (S-30).
-- **Admin routes:** a platform admin works across tenants, so three routes take the restaurant ID from the URL, the only exceptions to taking it from the session (S-28). `POST /api/admin/restaurants/[restaurantId]/owner` passes it only to `platform_create_first_owner`, which refuses a restaurant that already has staff. `POST /api/admin/restaurants/[restaurantId]/enter` passes it only to `platform_enter_restaurant`, and from then on the ID comes from the session. `POST /api/admin/restaurants/[restaurantId]/qr-codes-printed` passes it only to `platform_set_qr_codes_printed` (S-33). All three sit behind `getPlatformAdminContext()`.
+- **Admin routes:** a platform admin works across tenants, so four routes take the restaurant ID from the URL, the only exceptions to taking it from the session (S-28). `POST /api/admin/restaurants/[restaurantId]/owner` passes it only to `platform_create_first_owner`, which refuses a restaurant that already has staff. `POST /api/admin/restaurants/[restaurantId]/enter` passes it only to `platform_enter_restaurant`, and from then on the ID comes from the session. `POST /api/admin/restaurants/[restaurantId]/qr-codes-printed` passes it only to `platform_set_qr_codes_printed` (S-33). `POST /api/admin/restaurants/[restaurantId]/invite` passes it, with the owner's id, only to `platform_start_owner_invite`, which reaches only an active owner of that restaurant who hasn't signed in yet *(proposed, S-42)*. All four sit behind `getPlatformAdminContext()`.
 - **The admin path has its own database login,** `app_admin` (`DATABASE_URL_ADMIN`), which only the admin seam loads. Only it can run the `platform_*` functions or touch `admin_auth_*`. `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28).
-- **Staff sign-in has its own database login,** `app_staff_auth` (`DATABASE_URL_STAFF_AUTH`), which only sign-in loads. Only it can touch `staff_auth_*`, where a magic link is only a row, or run `staff_identity_by_email`. `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28, S-30).
+- **Staff sign-in has its own database login,** `app_staff_auth` (`DATABASE_URL_STAFF_AUTH`), which only sign-in loads. Only it can touch `staff_auth_*`, where a magic link is only a row, or run `staff_identity_by_email` and `staff_record_first_sign_in` (S-42). `app_tenant` can do neither, whatever it does to `app.restaurant_id` (S-28, S-30).
 - **System routes** (the scheduled job and the Meta webhook, spec 05) work across all tenants. They use a separate database role with `BYPASSRLS`, whose credentials only those two route handlers load. They must still filter by `restaurant_id` explicitly whenever they act on one booking.
 - Postgres RLS policies on every tenant table use `current_setting('app.restaurant_id')`, set per transaction.
 - Composite foreign keys (see spec 00) are the backstop.
@@ -53,8 +53,15 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 - Deactivating a staff member (`active = false`) kills their sessions immediately.
 - How it's built, including the lookup before a tenant exists, where Better Auth's tables sit and the Origin check on writes: S-30. Email provider: D-09 *(proposed)*.
 
+### Invites *(proposed, S-42)*
+- An invite is an email telling someone they have an account and how to sign in. It creates no credential and no token: its link is `/login?email=<address>`, which only fills in the address, and signing in still emails a link or a code as above.
+- Creating a restaurant's first owner emails them an invite (the restaurant is ready and they are its owner). Adding a staff member or an owner emails them one, naming the restaurant and who added them. Every way of creating them invites, because the sending is inside the functions that create them.
+- A failed send never undoes the account. The screen says the email didn't go and offers "Send invite again", on the staff screen and on the owner card on `/admin`.
+- "Send invite again" is offered for anyone active who hasn't signed in yet. At most 3 invite emails per person per hour, the first included; Postgres holds the limit. Each resend is audited.
+- `staff.first_signed_in_at` is set once, on the first successful sign-in, by staff sign-in's own login. Nothing else can set or clear it, `app_tenant` included. The staff screen and the owner card show "Invited" (with when, in the restaurant's timezone) or "Joined".
+
 ### Platform admin and onboarding
-- Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26).
+- Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26), who is emailed an invite *(proposed, S-42)*. Each restaurant's card lists its owners as Invited or Joined, with "Send invite again" until they join.
 - *(Proposed, S-43)* The admin can also create restaurants with their first owners from a CSV on `/admin` (`restaurant_name`, `slug` blank to make it from the name, `timezone` blank for Africa/Harare, `currency_mode` blank for `usd_primary`, `owner_email`, `owner_name`), with a preview first. Each row goes through the same `platform_*` functions as the single forms (S-28), and each owner is invited as per S-42. A slug in use is skipped; a restaurant whose owner's email turns out to be taken is still created, and the admin adds the owner from its card.
 - The admin screen also shows each restaurant's booking success metrics (spec 04) without entering it. This is a cross-tenant read, through `platform_list_booking_metrics`, and it isn't audited, like other reads *(proposed, S-34)*.
 - "Enter restaurant" switches the admin into that tenant's staff UI, with a persistent banner reading "Acting as admin in {restaurant}".
@@ -70,6 +77,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ### Restaurant settings and staff management (owner only)
 - Restaurant settings: name, `contact_phone`, Wi-Fi details, `currency_mode`, timezone.
 - Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
+- *(proposed, S-42)* Adding someone emails them an invite. The list shows each active person as Invited (with when) or Joined, and offers "Send invite again" until they sign in.
 - *(Proposed, S-43)* Staff can also be added from a CSV (`email`, `name`, `role`, blank role is staff), with the same preview and confirm as the menu import (spec 02). Each person goes through the single add, one at a time, so is audited and invited as per S-42. An email already on the staff or earlier in the file is skipped and reported, never duplicated; one another restaurant has shows on import. With no owner yet, an owner row must come before any staff row.
 
 ### Audit log
@@ -79,6 +87,7 @@ Write an entry for: exchange rate changes, staff created, deactivated or role-ch
 - *(proposed, #74)* force-close as `session.force_close` on the session (the reason and the items it voided), besides each item's `order_item.void`. Clear table isn't on the list, so a staff member's isn't audited; an entered platform admin's is, as `session.clear`, like every admin write (S-28).
 - *(proposed, #77)* dismissing a table's "Call a waiter" (`session.waiter_dismiss`, on the session), only when a call was pending; a dismissal with nothing pending writes no entry.
 - *(proposed, #76)* reopen as `session.reopen` on the session (when it had closed and how), for owner and staff alike; a refused reopen writes no entry.
+- *(proposed, S-42)* "Send invite again", as `staff.invite_resend` on the person, by whoever asked. The first invite goes with `staff.create` and isn't recorded again.
 - *(proposed, S-43)* a menu or tables import, once per import (`menu.import`, `table.import`, with the counts), for owners as well as an entered admin. A staff import is audited per person as `staff.create`.
 - *(proposed, #75)* idle expiry isn't on the list and isn't audited: no one acted, and the session's `close_reason = idle_expiry` with `closed_by` null records it.
 
@@ -104,3 +113,4 @@ The audit log has no viewer in v1. It is database-only.
 - [ ] The app refuses to start in production with `DEV_AUTH_BYPASS` set (automated test).
 - [ ] The platform admin can create a restaurant, create a staff login, and enter the restaurant, and an audit entry is written.
 - [ ] Deactivating a staff member logs them out on their next request.
+- [ ] *(proposed, S-42)* A new owner or staff member is emailed an invite; a failed email keeps the account and can be sent again, at most 3 times an hour per person; the list shows Invited or Joined, and only sign-in can mark someone joined (automated tests).

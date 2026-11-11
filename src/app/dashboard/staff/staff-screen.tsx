@@ -1,4 +1,4 @@
-import { UserCog, UserX } from "lucide-react";
+import { Mail, UserCog, UserX } from "lucide-react";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -6,6 +6,8 @@ import { Field, Input, Select } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { RowMenu, RowMenuItem, RowMenuSeparator } from "@/components/ui/row-menu";
+import { inviteStatus } from "@/lib/invite-status";
+import { getRestaurantSettings } from "@/lib/restaurant-settings";
 import {
   countOwnerLogins,
   listStaff,
@@ -15,15 +17,19 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { ActionForm } from "../action-form";
 import { initialsOf } from "../shell/nav";
+import { InviteStatusLabel } from "./invite-status";
 
-/** The hidden forms take no room until one has a refusal to show. */
-const refusalSpace = "has-[[role=alert]]:mt-2 sm:pl-[52px]";
+/** The hidden forms take no room until one has a refusal (or a "sent") to show. */
+const refusalSpace = "has-[[role=alert]]:mt-2 has-[[role=status]]:mt-2 sm:pl-[52px]";
 
 /** Staff management: owner only (S-26). */
 export async function StaffScreen() {
   const tenant = await getTenantContext();
   requireOwner(tenant);
-  const team = await listStaff(tenant);
+  const [team, { timezone }] = await Promise.all([
+    listStaff(tenant),
+    getRestaurantSettings(tenant),
+  ]);
   const ownerLogins = countOwnerLogins(team);
   const active = team.filter((member) => member.active).length;
 
@@ -61,6 +67,9 @@ export async function StaffScreen() {
             {team.map((member) => {
               const you = member.id === tenant.staffId;
               const makeOwner = member.role !== "owner";
+              const invite = inviteStatus(member, timezone);
+              // Only someone who can still sign in and hasn't yet (S-42).
+              const canInvite = member.active && invite.kind !== "joined";
               return (
                 <li key={member.id} className="flex flex-col px-4 py-3 sm:px-5">
                   <div className="flex min-h-12 items-center gap-3">
@@ -84,11 +93,34 @@ export async function StaffScreen() {
                         {you && <span className="font-normal text-ink-2"> (you)</span>}
                       </p>
                       <p className="text-caption [overflow-wrap:anywhere] text-ink-2">{member.email}</p>
+                      {member.active && (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <InviteStatusLabel status={invite} />
+                          {invite.kind === "not_sent" && (
+                            <Button
+                              type="submit"
+                              form={`invite-${member.id}`}
+                              variant="secondary"
+                              size="compact"
+                            >
+                              Send invite again
+                            </Button>
+                          )}
+                        </div>
+                      )}
                       <RoleLabel active={member.active} role={member.role} className="mt-1 self-start sm:hidden" />
                     </div>
                     <RoleLabel active={member.active} role={member.role} className="hidden sm:inline-block" />
                     {member.active && (
                       <RowMenu label={`More for ${member.displayName}`}>
+                        {canInvite && (
+                          <RowMenuItem
+                            form={`invite-${member.id}`}
+                            icon={<Mail aria-hidden strokeWidth={1.75} />}
+                          >
+                            {invite.kind === "not_invited" ? "Send invite" : "Send invite again"}
+                          </RowMenuItem>
+                        )}
                         <RowMenuItem
                           form={`role-${member.id}`}
                           icon={<UserCog aria-hidden strokeWidth={1.75} />}
@@ -109,6 +141,16 @@ export async function StaffScreen() {
                   {member.active && (
                     // The menu items submit these; a refusal shows here, under the person.
                     <>
+                      {canInvite && (
+                        <ActionForm
+                          id={`invite-${member.id}`}
+                          action={`/api/staff/${member.id}/invite`}
+                          className={refusalSpace}
+                          savedMessage="Invite sent."
+                        >
+                          {null}
+                        </ActionForm>
+                      )}
                       <ActionForm
                         id={`role-${member.id}`}
                         action={`/api/staff/${member.id}/role`}
@@ -145,7 +187,10 @@ export async function StaffScreen() {
             <Field label="Name">
               <Input name="displayName" required maxLength={200} />
             </Field>
-            <Field label="Email" hint="They sign in with this address.">
+            <Field
+              label="Email"
+              hint="We email them an invite. They sign in with this address, with no password."
+            >
               <Input name="email" type="email" required />
             </Field>
             <Field

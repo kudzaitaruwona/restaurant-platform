@@ -9,7 +9,10 @@ import {
 
 const restaurantIdParam = z.uuid();
 
-/** Creates a restaurant's first staff record, who is its owner (S-26). */
+/**
+ * Creates a restaurant's first staff record, who is its owner (S-26), and emails
+ * them an invite (S-42). `invited` says whether the email went.
+ */
 export async function POST(
   request: NextRequest,
   context: RouteContext<"/api/admin/restaurants/[restaurantId]/owner">,
@@ -42,5 +45,5 @@ export async function POST(
     );
   }
 
-  return Response.json({ id: result.id }, { status: 201 });
+  return Response.json({ id: result.id, invited: result.invited }, { status: 201 });
 }

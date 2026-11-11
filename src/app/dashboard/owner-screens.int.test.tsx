@@ -19,6 +19,7 @@ import { POST as addBundle } from "@/app/api/menu/bundles/route";
 import { POST as saveSettings } from "@/app/api/restaurant/route";
 import { POST as deactivate } from "@/app/api/staff/[staffId]/deactivate/route";
 import { POST as changeRole } from "@/app/api/staff/[staffId]/role/route";
+import { POST as resendInvite } from "@/app/api/staff/[staffId]/invite/route";
 import { POST as addStaff } from "@/app/api/staff/route";
 import { POST as archive } from "@/app/api/tables/[tableId]/archive/route";
 import { POST as move } from "@/app/api/tables/[tableId]/move/route";
@@ -37,6 +38,7 @@ import {
   servicePeriods,
   specials,
   staff,
+  staffInvites,
 } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
@@ -257,6 +259,14 @@ describe("how a saved form is answered", () => {
           post(`/api/staff/${id}/role`, { role: "owner" }, headers),
           params(id),
         );
+      },
+    ],
+    [
+      "POST /api/staff/[staffId]/invite",
+      "/dashboard/staff",
+      async (headers) => {
+        const id = await colleague();
+        return resendInvite(post(`/api/staff/${id}/invite`, {}, headers), params(id));
       },
     ],
     [
@@ -1813,6 +1823,67 @@ describe("/dashboard/staff", () => {
   it("refuses staff with forbidden(), before any data renders", async () => {
     session.tenant = { ...tenant, role: "staff" };
     expect(await statusOf(() => StaffScreen())).toBe(403);
+  });
+
+  describe("Invited or Joined (S-42)", () => {
+    const added = async () => {
+      const person = newPerson("staff");
+      await addStaff(post("/api/staff", person));
+      const [{ id }] = await owner.db
+        .select({ id: staff.id })
+        .from(staff)
+        .where(eq(staff.email, person.email));
+      rows.set(id, person.email);
+      return id;
+    };
+    const rows = new Map<string, string>();
+    /** The member's row, from their email to the end of their last form. */
+    const rowOf = (html: string, id: string) => {
+      const start = html.indexOf(rows.get(id)!);
+      return html.slice(start, html.indexOf("</form>", html.indexOf(`id="deactivate-${id}"`)));
+    };
+
+    it("says when someone was invited, in the restaurant's time, and offers it again", async () => {
+      const id = await added();
+      await owner.db
+        .update(staffInvites)
+        .set({ sentAt: new Date("2026-11-12T12:05:00Z") })
+        .where(eq(staffInvites.staffId, id));
+
+      const row = rowOf(await screen(StaffScreen), id);
+
+      expect(row).toContain("Invited 12 Nov, 14:05");
+      expect(row).toContain(`action="/api/staff/${id}/invite"`);
+      expect(row).toContain("Send invite again");
+      expect(row).toContain('data-saved-message="Invite sent."');
+    });
+
+    it("says when the invite didn't go, with the way to send it again in sight", async () => {
+      const id = await added();
+      await owner.db.update(staffInvites).set({ delivered: false }).where(eq(staffInvites.staffId, id));
+
+      const row = rowOf(await screen(StaffScreen), id);
+
+      expect(row).toContain("Invite email didn&#x27;t go");
+      expect(row).toMatch(new RegExp(`<button[^>]*form="invite-${id}"[^>]*>Send invite again`));
+    });
+
+    it("says Joined, and offers no invite, once they've signed in", async () => {
+      const id = await added();
+      await owner.db
+        .update(staff)
+        .set({ firstSignedInAt: new Date("2026-11-12T12:05:00Z") })
+        .where(eq(staff.id, id));
+
+      const row = rowOf(await screen(StaffScreen), id);
+
+      expect(row).toContain("Joined 12 Nov");
+      expect(row).not.toContain(`/api/staff/${id}/invite`);
+    });
+
+    it("tells the owner adding someone that an invite goes", async () => {
+      expect(await screen(StaffScreen)).toContain("We email them an invite");
+    });
   });
 
   describe("the soft-limit notice", () => {

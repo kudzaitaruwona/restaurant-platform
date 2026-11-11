@@ -34,6 +34,22 @@ describe("the sign-in form", () => {
     expect(render()).toContain("couldn&#x27;t sign you in");
   });
 
+  it("fills in the email an invite links with (S-42), and nothing else", () => {
+    url.search = "?email=tendai%2Bwork%40example.test";
+    const html = render();
+    expect(html).toContain('value="tendai+work@example.test"');
+    expect(html).toContain("Email me a sign-in link");
+  });
+
+  it("starts empty with no email in the address", () => {
+    expect(render()).toContain('value=""');
+  });
+
+  it("ignores something too long to be an email", () => {
+    url.search = `?email=${"a".repeat(300)}%40example.test`;
+    expect(render()).toContain('value=""');
+  });
+
   it("explains a dead link", () => {
     url.search = "?error=INVALID_TOKEN";
     expect(render()).toContain("expired");

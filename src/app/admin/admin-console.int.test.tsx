@@ -6,7 +6,7 @@ import {
   devPlatformAdmin,
   devRestaurants,
 } from "@/lib/tenant/dev-identities";
-import { bookings, onboardingChecklist, restaurants, staff } from "@/db/schema";
+import { bookings, onboardingChecklist, restaurants, staff, staffInvites } from "@/db/schema";
 import { getEnv } from "@/lib/env";
 import { aBooking, bookableRestaurant } from "../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../test/integration/database";
@@ -32,6 +32,13 @@ beforeAll(() => {
   vi.stubEnv("DEV_AUTH_BYPASS", "1");
 });
 afterAll(() => vi.unstubAllEnvs());
+
+/** One restaurant's card, from its way in to the next restaurant's. */
+const cardIn = (html: string, restaurantId: string) => {
+  const start = html.indexOf(`${restaurantId}/enter`);
+  const next = html.indexOf("/enter\"", start + restaurantId.length + 7);
+  return html.slice(start, next < 0 ? undefined : next);
+};
 
 const render = async () => {
   session.identity = devPlatformAdmin.key;
@@ -158,8 +165,7 @@ describe("the admin screen", () => {
 
       const html = await render();
 
-      const start = html.indexOf(`${restaurant.id}/enter`);
-      const item = html.slice(start, html.indexOf("</ul>", start));
+      const item = cardIn(html, restaurant.id);
       const login = new URL("/login", getEnv().NEXT_PUBLIC_APP_URL).toString();
       expect(item).toContain(
         `Hi, &lt;img src=x onerror=alert(1)&gt; &quot;Tom &amp; Jerry&#x27;s&quot; is ready for you. Sign in at ${login}`,
@@ -170,6 +176,78 @@ describe("the admin screen", () => {
     } finally {
       await owner.pool.end();
     }
+  });
+
+  describe("the owner card: Invited or Joined (S-42)", () => {
+    const owner = openOwnerDatabase();
+    afterAll(() => owner.pool.end());
+
+    /** A restaurant with an owner, left in place: its last owner can't go. */
+    async function withOwner(state: {
+      joined?: Date;
+      invite?: { sentAt: Date; delivered: boolean };
+    }) {
+      const slug = `card-${crypto.randomUUID()}`;
+      const [restaurant] = await owner.db
+        .insert(restaurants)
+        .values({ name: "Card Grill", slug, menuToken: slug, currencyMode: "both" })
+        .returning();
+      const staffId = crypto.randomUUID();
+      await owner.db.insert(staff).values({
+        id: staffId,
+        restaurantId: restaurant.id,
+        email: `${slug}@example.test`,
+        displayName: "Rudo Chari",
+        role: "owner",
+        firstSignedInAt: state.joined,
+      });
+      if (state.invite) {
+        const [row] = await owner.db
+          .insert(staffInvites)
+          .values({ restaurantId: restaurant.id, staffId, delivered: state.invite.delivered })
+          .returning();
+        await owner.db
+          .update(staffInvites)
+          .set({ sentAt: state.invite.sentAt })
+          .where(eq(staffInvites.id, row.id));
+      }
+      return { restaurantId: restaurant.id, staffId, email: `${slug}@example.test` };
+    }
+
+    it("names the owner and when they were invited, and offers to send it again", async () => {
+      const { restaurantId, staffId, email } = await withOwner({
+        invite: { sentAt: new Date("2026-11-12T12:05:00Z"), delivered: true },
+      });
+
+      const card = cardIn(await render(), restaurantId);
+
+      expect(card).toContain("Rudo Chari");
+      expect(card).toContain(email);
+      expect(card).toContain("Invited 12 Nov, 14:05");
+      expect(card).toContain("Send invite again");
+      expect(card).toContain(`<input type="hidden" name="staffId" value="${staffId}"/>`);
+    });
+
+    it("says when the invite didn't go", async () => {
+      const { restaurantId } = await withOwner({
+        invite: { sentAt: new Date(), delivered: false },
+      });
+      expect(cardIn(await render(), restaurantId)).toContain("Invite email didn&#x27;t go");
+    });
+
+    it("says Joined, and offers no invite, once the owner has signed in", async () => {
+      const { restaurantId } = await withOwner({ joined: new Date("2026-11-12T12:05:00Z") });
+
+      const card = cardIn(await render(), restaurantId);
+
+      expect(card).toContain("Joined 12 Nov");
+      expect(card).not.toContain("Send invite");
+      expect(card).not.toContain(`${restaurantId}/invite`);
+    });
+
+    it("tells the admin the owner is emailed when they create one", async () => {
+      expect(await render()).toContain("We email them an invite");
+    });
   });
 
   it("doesn't offer a first owner to a restaurant that has one", async () => {

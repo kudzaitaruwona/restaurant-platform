@@ -36,6 +36,10 @@ const messageFor = (error: string | null) => {
   return error === "sign_in_refused" ? refused : expired;
 };
 
+/** 254 characters is the most an address can have. */
+const invitedEmail = (value: string | null) =>
+  value && value.length <= 254 ? value.trim() : "";
+
 /** The per-IP limiter passes in a minute. The per-email ceiling on codes doesn't. */
 export async function tooManyTriesMessage(response: Response) {
   const body = await response.json().catch(() => undefined);
@@ -49,14 +53,17 @@ export async function tooManyTriesMessage(response: Response) {
  * answer is the same whether or not an email is known, so the words are too.
  */
 export function SignInForm({ audience, destination, page }: Props) {
-  const [email, setEmail] = useState("");
+  const searchParams = useSearchParams();
+  // An invite links here with the address filled in (S-42). Only filled in: it
+  // still has to be asked for, and the answer is the same as for anyone.
+  const [email, setEmail] = useState(() => invitedEmail(searchParams.get("email")));
   const [code, setCode] = useState("");
   const [step, setStep] = useState<Step>({ name: "start" });
   const [pending, setPending] = useState<Pending>();
   /** Signed in and on the way out: keep saying so until the page changes. */
   const [leaving, setLeaving] = useState<Pending>();
   const busy = pending !== undefined || leaving !== undefined;
-  const urlError = useSearchParams().get("error");
+  const urlError = searchParams.get("error");
   // The words outlive the message being shown, so they stay in the closing
   // Reveal while it folds away.
   const [message, setMessage] = useState(messageFor(urlError));

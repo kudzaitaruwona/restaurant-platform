@@ -1,7 +1,7 @@
 /**
- * The message the admin sends a new owner on WhatsApp. No invite email goes out
- * (S-27: sign-in only works for an email we already know), so this is how they
- * hear about it. Plain text for the clipboard: React escapes it on screen.
+ * The message the admin can send a new owner on WhatsApp, beside the invite
+ * email (S-42), which may sit unread or go to spam. Plain text for the
+ * clipboard: React escapes it on screen.
  */
 export function ownerSignInMessage({
   restaurantName,

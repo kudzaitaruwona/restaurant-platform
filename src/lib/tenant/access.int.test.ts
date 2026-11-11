@@ -32,6 +32,7 @@ import {
   specials,
   staff,
   staffAuthUser,
+  staffInvites,
   tableSessions,
 } from "@/db/schema";
 import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
@@ -597,6 +598,16 @@ const routes: TenantRoute[] = [
           method: "POST",
           body: form({ displayName: "Renamed by the harness" }),
         }),
+        staffParams(target),
+      ),
+  },
+  {
+    // Before deactivate: the harness runs them in this order, and it needs them active.
+    name: "POST /api/staff/[staffId]/invite",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/staff/[staffId]/invite/route")).POST(
+        request(`/api/staff/${target.staffId}/invite`, { method: "POST" }),
         staffParams(target),
       ),
   },
@@ -1445,6 +1456,18 @@ const postBooking = async (
 type AdminRoute = {
   name: string;
   call: (restaurantId: string) => Promise<Response>;
+  /** What the route needs in a restaurant before the admin can get through. */
+  prepare?: (restaurantId: string) => Promise<void>;
+};
+
+/** The restaurant's owner, if it has one: who the owner card's invite is for. */
+const ownerOf = async (restaurantId: string) => {
+  const [row] = await owner.db
+    .select({ id: staff.id })
+    .from(staff)
+    .where(and(eq(staff.restaurantId, restaurantId), eq(staff.kind, "staff"), eq(staff.role, "owner")))
+    .limit(1);
+  return row?.id ?? crypto.randomUUID();
 };
 
 const HARNESS_SLUG_PREFIX = "harness-";
@@ -1477,6 +1500,27 @@ const adminRoutes: AdminRoute[] = [
         }),
         { params: Promise.resolve({ restaurantId }) },
       ),
+  },
+  {
+    name: "POST /api/admin/restaurants/[restaurantId]/invite",
+    call: async (restaurantId) =>
+      (await import("@/app/api/admin/restaurants/[restaurantId]/invite/route")).POST(
+        request(`/api/admin/restaurants/${restaurantId}/invite`, {
+          method: "POST",
+          body: form({ staffId: await ownerOf(restaurantId) }),
+        }),
+        { params: Promise.resolve({ restaurantId }) },
+      ),
+    prepare: async (restaurantId) => {
+      const id = crypto.randomUUID();
+      await owner.db.insert(staff).values({
+        id,
+        restaurantId,
+        email: `${id}@example.test`,
+        displayName: "Owner by the harness",
+        role: "owner",
+      });
+    },
   },
   {
     name: "POST /api/admin/restaurants/[restaurantId]/qr-codes-printed",
@@ -1681,6 +1725,8 @@ afterEach(async () => {
     .update(staff)
     .set({ displayName: fixtureName, role: "staff", active: true })
     .where(eq(staff.id, fixtures.a.staffId));
+  // "Send invite again" is limited per hour, and the harness calls it often.
+  await owner.db.delete(staffInvites).where(eq(staffInvites.staffId, fixtures.a.staffId));
   await resetMenuFixtures();
 });
 
@@ -3036,9 +3082,9 @@ describe("platform-admin routes", () => {
     "%s: the platform admin gets through, so the refusals above mean something",
     async (_name, route) => {
       session.identity = devPlatformAdmin.key;
-      expect(
-        await statusOf(async () => route.call(await emptyRestaurant())),
-      ).toBeLessThan(400);
+      const restaurantId = await emptyRestaurant();
+      await route.prepare?.(restaurantId);
+      expect(await statusOf(() => route.call(restaurantId))).toBeLessThan(400);
     },
   );
 });

@@ -385,9 +385,13 @@ describe("every SECURITY DEFINER function", () => {
         "platform_list_booking_metrics",
         "platform_list_restaurants",
         "platform_onboarding_checklist",
+        "platform_finish_invite",
+        "platform_list_owners",
         "platform_set_qr_codes_printed",
+        "platform_start_owner_invite",
         "staff_identity_by_email",
         "staff_keep_last_owner",
+        "staff_record_first_sign_in",
       ]),
     );
   });
@@ -398,7 +402,7 @@ describe("every SECURITY DEFINER function", () => {
       // A trigger needs no EXECUTE grant, so nobody at all should hold one.
       const runner = name.startsWith("platform_")
         ? "app_admin"
-        : name === "staff_identity_by_email"
+        : name === "staff_identity_by_email" || name === "staff_record_first_sign_in"
           ? "app_staff_auth"
           : "app_tenant";
       expect(executors, name).toEqual(isTrigger ? [] : [runner]);
