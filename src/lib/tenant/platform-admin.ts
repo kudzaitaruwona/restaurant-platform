@@ -5,9 +5,18 @@ import { forbidden, unauthorized } from "next/navigation";
 import { getAdminDb } from "@/db/admin";
 import type { currencyMode } from "@/db/schema";
 import { sessionOf } from "@/lib/auth";
+import { ownerInviteEmail } from "@/lib/auth/email";
 import { type MetricCounts, metricsFrom } from "@/lib/booking-metrics";
 import { findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
+import {
+  ALREADY_JOINED,
+  appUrl,
+  deliverInvite,
+  type ResendOutcome,
+  sqlStateOf,
+  TOO_MANY_INVITES,
+} from "@/lib/invites";
 import { currentIdentity, sessionPlatformAdmin } from "./index";
 
 /**
@@ -94,13 +103,17 @@ export function createRestaurant(
   );
 }
 
-/** Makes a restaurant's first staff record, its owner (S-26), and audits it. */
-export function createFirstOwner(
+/**
+ * Makes a restaurant's first staff record, its owner (S-26), and audits it, then
+ * emails them an invite (S-42). The owner stays whether or not the email goes;
+ * `invited` says whether it did, and the owner card offers it again.
+ */
+export async function createFirstOwner(
   admin: Admin,
   restaurantId: string,
   owner: { email: string; displayName: string },
-) {
-  return createdId(
+): Promise<{ id: string; invited: boolean } | { problem: "email_taken" | "no_restaurant" | "has_staff" }> {
+  const created = await createdId(
     sql`select platform_create_first_owner(${admin.platformAdminId}, ${restaurantId}, ${owner.email}, ${owner.displayName}) as id`,
     {
       [UNIQUE_VIOLATION]: "email_taken",
@@ -108,6 +121,90 @@ export function createFirstOwner(
       [ALREADY_HAS_STAFF]: "has_staff",
     },
   );
+  if ("problem" in created) return created;
+  const invited = await inviteOwner(admin, restaurantId, created.id, false);
+  return { id: created.id, invited: invited === "sent" };
+}
+
+/** "Send invite again" on the owner card: audited, at most 3 an hour per person. */
+export const resendOwnerInvite = (admin: Admin, restaurantId: string, staffId: string) =>
+  inviteOwner(admin, restaurantId, staffId, true);
+
+async function inviteOwner(
+  admin: Admin,
+  restaurantId: string,
+  staffId: string,
+  resend: boolean,
+): Promise<ResendOutcome> {
+  let invite;
+  try {
+    const { rows } = await getAdminDb().execute<{
+      invite_id: string;
+      email: string;
+      display_name: string;
+      restaurant_name: string;
+    }>(
+      sql`select * from platform_start_owner_invite(${admin.platformAdminId}, ${restaurantId}, ${staffId}, ${resend})`,
+    );
+    invite = rows[0];
+  } catch (error) {
+    const code = sqlStateOf(error);
+    if (code === NO_DATA_FOUND) return "not_found";
+    if (code === ALREADY_JOINED) return "joined";
+    if (code === TOO_MANY_INVITES) return "too_many";
+    throw error;
+  }
+
+  const delivered = await deliverInvite(
+    ownerInviteEmail({
+      to: invite.email,
+      name: invite.display_name,
+      restaurantName: invite.restaurant_name,
+      appUrl: appUrl(),
+    }),
+  );
+  await getAdminDb().execute(
+    sql`select platform_finish_invite(${admin.platformAdminId}, ${restaurantId}, ${invite.invite_id}, ${delivered})`,
+  );
+  return delivered ? "sent" : "not_sent";
+}
+
+export type OwnerOnCard = {
+  id: string;
+  displayName: string;
+  email: string;
+  /** Joined (S-42): null until their first sign-in. */
+  firstSignedInAt: Date | null;
+  /** Their latest invite; null if none was ever sent (an owner from before S-42). */
+  invite: { sentAt: Date; delivered: boolean | null } | null;
+};
+
+/** Every restaurant's active owners, by restaurant id, for the owner card. */
+export async function listOwners(admin: Admin) {
+  const { rows } = await getAdminDb().execute<{
+    restaurant_id: string;
+    staff_id: string;
+    display_name: string;
+    email: string;
+    first_signed_in_at: string | null;
+    invited_at: string | null;
+    invite_delivered: boolean | null;
+  }>(sql`select * from platform_list_owners(${admin.platformAdminId})`);
+  const owners = new Map<string, OwnerOnCard[]>();
+  for (const row of rows) {
+    const list = owners.get(row.restaurant_id) ?? [];
+    list.push({
+      id: row.staff_id,
+      displayName: row.display_name,
+      email: row.email,
+      firstSignedInAt: row.first_signed_in_at ? new Date(row.first_signed_in_at) : null,
+      invite: row.invited_at
+        ? { sentAt: new Date(row.invited_at), delivered: row.invite_delivered }
+        : null,
+    });
+    owners.set(row.restaurant_id, list);
+  }
+  return owners;
 }
 
 /**

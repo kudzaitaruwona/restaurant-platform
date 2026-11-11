@@ -189,6 +189,12 @@ export const staff = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Joined (S-42): when they first signed in, null until then. Set once, by
+     * staff sign-in's own function; a trigger refuses it from anyone but the
+     * table's owner, so app_tenant can't mark someone joined or unjoined.
+     */
+    firstSignedInAt: timestamp("first_signed_in_at", { withTimezone: true }),
   },
   (table) => [
     foreignKey({
@@ -212,6 +218,33 @@ export const staff = pgTable(
       "staff_shadow_row",
       sql`${table.kind} = 'staff' or (${table.email} is null and ${table.role} = 'owner' and ${table.active})`,
     ),
+    tenantPolicy("restaurant_id"),
+  ],
+);
+
+/**
+ * Each invite email sent to a staff member (S-42), the first and every "Send
+ * invite again". `delivered` is null while it's being sent, then whether the
+ * provider took it. A trigger refuses a fourth row for one person within an
+ * hour, so the limit holds on every path; app_tenant can't delete rows or
+ * change anything but `delivered` (see the migration). Goes with the person.
+ */
+export const staffInvites = pgTable(
+  "staff_invites",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    restaurantId: uuid("restaurant_id").notNull(),
+    staffId: uuid("staff_id").notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+    delivered: boolean(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.restaurantId, table.staffId],
+      foreignColumns: [staff.restaurantId, staff.id],
+    }).onDelete("cascade"),
+    unique().on(table.restaurantId, table.id),
+    index("staff_invites_by_person").on(table.restaurantId, table.staffId, table.sentAt),
     tenantPolicy("restaurant_id"),
   ],
 );

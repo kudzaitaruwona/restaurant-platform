@@ -23,6 +23,8 @@ const fakeJwt = (claims: Record<string, unknown>) =>
 export function installFakeServices() {
   const sent: SentEmail[] = [];
   const google: { profile?: GoogleProfile } = {};
+  /** Resend refuses any email to these addresses, as it would a bounced one. */
+  const refusing = new Set<string>();
 
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://localhost:3000");
   vi.stubEnv("AUTH_SECRET", "integration-test-secret-of-32-characters-or-more");
@@ -37,7 +39,11 @@ export function installFakeServices() {
     async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input instanceof Request ? input.url : input);
       if (url === "https://api.resend.com/emails") {
-        sent.push(JSON.parse(String(init?.body)));
+        const email: SentEmail = JSON.parse(String(init?.body));
+        if (email.to.some((to) => refusing.has(to))) {
+          return Response.json({ message: "Refused" }, { status: 422 });
+        }
+        sent.push(email);
         return Response.json({ id: "fake" });
       }
       if (url === "https://oauth2.googleapis.com/token") {
@@ -62,7 +68,7 @@ export function installFakeServices() {
     });
   }
 
-  return { sent, google, emailTo };
+  return { sent, google, refusing, emailTo };
 }
 
 export const codeIn = (email: SentEmail) => {

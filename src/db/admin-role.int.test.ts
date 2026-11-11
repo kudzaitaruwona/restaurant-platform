@@ -127,6 +127,15 @@ describe("app_tenant, with app.restaurant_id cleared", () => {
     ["platform_leave_restaurant", sql`select platform_leave_restaurant(${adminId}, ${devPlatformAdmin.sessionId})`],
     ["platform_onboarding_checklist", sql`select * from platform_onboarding_checklist(${adminId})`],
     ["platform_set_qr_codes_printed", sql`select platform_set_qr_codes_printed(${adminId}, ${restaurantA}, true)`],
+    ["platform_list_owners", sql`select * from platform_list_owners(${adminId})`],
+    [
+      "platform_start_owner_invite",
+      sql`select * from platform_start_owner_invite(${adminId}, ${restaurantA}, ${restaurantA}, true)`,
+    ],
+    [
+      "platform_finish_invite",
+      sql`select platform_finish_invite(${adminId}, ${restaurantA}, ${restaurantA}, true)`,
+    ],
   ] as const;
 
   it.each(platformFunctions)("can't call %s", async (_name, call) => {

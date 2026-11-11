@@ -29,14 +29,13 @@ import {
   sessionCookieName,
 } from "./cookies";
 import {
-  consoleSender,
-  resendSender,
+  APP_NAME,
+  emailSender,
   signInCodeEmail,
   signInLinkEmail,
   type Email,
-  type EmailSender,
 } from "./email";
-import { findPlatformAdminId, findStaffIdentity } from "./identity";
+import { findPlatformAdminId, findStaffIdentity, recordFirstSignIn } from "./identity";
 
 /**
  * Sign-in (S-27, S-30). Two separate Better Auth instances, one per session type
@@ -99,14 +98,6 @@ const mayUseSignIn = async (audience: Audience, email: string) =>
     ? await findStaffIdentity(email)
     : await findPlatformAdminId(email)) !== undefined;
 
-function emailSender(): EmailSender {
-  const { RESEND_API_KEY, EMAIL_FROM } = getEnv();
-  if (RESEND_API_KEY && EMAIL_FROM) {
-    return resendSender(RESEND_API_KEY, EMAIL_FROM);
-  }
-  return consoleSender;
-}
-
 function createAuth(audience: Audience) {
   const env = getEnv();
   if (!env.AUTH_SECRET) {
@@ -135,7 +126,7 @@ function createAuth(audience: Audience) {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } = env;
 
   return betterAuth({
-    appName: "restaurant-platform",
+    appName: APP_NAME,
     baseURL: env.NEXT_PUBLIC_APP_URL,
     basePath: basePath(audience),
     secret: env.AUTH_SECRET,
@@ -255,6 +246,14 @@ function createAuth(audience: Audience) {
               session.userId,
             );
             await refuseUnlessAllowed(user?.email ?? "", !!user?.emailVerified);
+          },
+          // Joined (S-42): every way in makes a session, so this catches them all.
+          after: async (session, context) => {
+            if (audience !== "staff") return;
+            const user = await context?.context.internalAdapter.findUserById(
+              session.userId,
+            );
+            if (user) await recordFirstSignIn(user.email);
           },
         },
       },
