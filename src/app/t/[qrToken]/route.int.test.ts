@@ -176,6 +176,17 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain('"/api/t/"');
   });
 
+  it("hides the cart bar while the cart is open, so it can't cover Keep browsing or Place order", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    // Both sit fixed at the bottom of the screen, and the bar draws on top. The
+    // rule relies on the form coming before the bar, as siblings.
+    expect(body).toContain(".order:not([hidden])~.bar{display:none}");
+    expect(body).toMatch(/<form id="order"[^]*?<\/form>\s*<button type="button" id="cart-open" class="bar"/);
+  });
+
   it("has a Call a waiter button, hidden until the script has joined the session", async () => {
     const { qrToken } = await newRestaurant("Ordering", "Beef stew");
 

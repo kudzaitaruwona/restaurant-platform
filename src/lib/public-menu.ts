@@ -87,6 +87,7 @@ const orderStyles = trusted(`[hidden]{display:none!important}
 #cart .note{flex:1 1 8rem;min-width:0}
 #cart .step{padding:.25rem .75rem}
 .bar{position:fixed;inset:auto 1rem 1rem;max-width:38rem;margin:0 auto;border:0;background:CanvasText;color:Canvas;font-weight:600}
+.order:not([hidden])~.bar{display:none}
 .order-status{position:fixed;inset:auto 1rem 4.5rem;max-width:38rem;margin:0 auto;padding:.75rem 1rem;border-radius:.375rem;background:CanvasText;color:Canvas}
 .order-status:empty{display:none}
 .tracker{max-width:40rem;margin:0 auto;padding:0 1rem 1rem}
