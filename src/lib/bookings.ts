@@ -407,10 +407,10 @@ export async function firstTableToTake<T>(
   return undefined;
 }
 
-export const raceLostMessage = "That time was just booked — here are the nearest available times.";
+export const raceLostMessage = "That time was just booked. Here are the nearest available times.";
 export const leadTimeMessage =
-  "That time is now too soon to book online — here are the next available times.";
-export const botCheckMessage = "We couldn't verify the request — please try again.";
+  "That time is now too soon to book online. Here are the next available times.";
+export const botCheckMessage = "We couldn't verify the request. Please try again.";
 export const closedMessage = "This restaurant isn't taking online bookings right now.";
 /** *(Proposed)* Spec 04 has no row for a date outside today to max_days_ahead. */
 export const dateMessage = "That date can't be booked online. Choose another date.";

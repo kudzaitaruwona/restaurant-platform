@@ -496,7 +496,7 @@ describe("the manage page", () => {
     const response = await visit(`/b/${token}`, { method: "POST", headers: { "x-now": "2000-01-01" } });
 
     expect(response.status).toBe(409);
-    expect(await response.text()).toContain("Too late to cancel online — please call.");
+    expect(await response.text()).toContain("Too late to cancel online. Please call.");
     expect(await statusIn(restaurantId)).toBe("confirmed");
   });
 
