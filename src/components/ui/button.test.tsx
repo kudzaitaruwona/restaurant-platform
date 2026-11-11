@@ -8,7 +8,7 @@ describe("shadcn/ui Button", () => {
     const html = renderToStaticMarkup(<Button variant="outline">Save</Button>);
     expect(html).toMatch(/^<button[^>]*data-slot="button"/);
     expect(html).toContain("Save");
-    expect(html).toMatch(/class="[^"]*border-border/);
+    expect(html).toMatch(/class="[^"]*border-line/);
   });
 
   it("is rendered on the home page", () => {

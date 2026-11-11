@@ -1,15 +1,40 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { postForm } from "@/lib/form-response";
+
+/** What the in-page confirmation says (S-41). */
+export type Confirmation = {
+  /** A question: "Cancel this booking?" */
+  title: string;
+  description?: ReactNode;
+  /** Says what it does: "Cancel booking". */
+  confirmLabel: string;
+  /** Default "Cancel". */
+  cancelLabel?: string;
+  /** Default "danger" (solid red); "primary" is solid black. */
+  tone?: "danger" | "primary";
+  /** Asks for a reason, posted with the form as `reason.name` (default "reason"). */
+  reason?: ConfirmReason;
+};
+
+/** A plain-text confirmation, as screens wrote them before S-41, becomes a dialog with that question. */
+export const confirmationOf = (confirmation: string | Confirmation): Confirmation =>
+  typeof confirmation === "string"
+    ? { title: confirmation, confirmLabel: "Confirm", cancelLabel: "Go back" }
+    : confirmation;
 
 /**
  * A form that posts to a route handler and shows the refusal in place, keeping
- * what was typed. Without JavaScript it's still a plain post.
+ * what was typed. Without JavaScript it's still a plain post. With a
+ * `confirmation`, it asks first in an in-page dialog (S-41), not the browser's
+ * confirm(); a reason typed there posts with the form.
  */
 export function ActionForm({
   action,
+  id,
   className,
   confirmation,
   resetOnSuccess = false,
@@ -17,22 +42,29 @@ export function ActionForm({
   children,
 }: {
   action: string;
+  /** Lets a button elsewhere submit it with `form={id}`, e.g. a RowMenuItem. */
+  id?: string;
   className?: string;
-  confirmation?: string;
+  confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
   savedMessage?: string;
   children: ReactNode;
 }) {
   const router = useRouter();
+  const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const ask = confirmation === undefined ? undefined : confirmationOf(confirmation);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (confirmation && !window.confirm(confirmation)) return;
+    if (ask) setAsking(true);
+    else void send(event.currentTarget);
+  }
 
-    const form = event.currentTarget;
+  async function send(form: HTMLFormElement) {
     const body = new FormData(form); // before the fieldset disables its controls
     setPending(true);
     setError(undefined);
@@ -54,16 +86,16 @@ export function ActionForm({
   }
 
   return (
-    <form method="post" action={action} onSubmit={submit}>
+    <form ref={formRef} id={id} method="post" action={action} onSubmit={submit}>
       <fieldset disabled={pending} className={className}>
         {children}
         {saved && savedMessage && (
-          <p role="status" className="text-sm text-muted-foreground">
+          <p role="status" className="text-caption text-ink-2">
             {savedMessage}
           </p>
         )}
         {error && (
-          <div role="alert" className="text-sm text-destructive">
+          <div role="alert" className="text-caption text-danger">
             <p>{error.message}</p>
             {error.bookings.length > 0 && (
               <ul className="list-disc pl-5">
@@ -75,6 +107,18 @@ export function ActionForm({
           </div>
         )}
       </fieldset>
+      {ask && (
+        <ConfirmDialog
+          {...ask}
+          open={asking}
+          pending={pending}
+          onCancel={() => setAsking(false)}
+          onConfirm={() => {
+            setAsking(false);
+            if (formRef.current) void send(formRef.current);
+          }}
+        />
+      )}
     </form>
   );
 }
