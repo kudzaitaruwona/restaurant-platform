@@ -7,6 +7,7 @@ import {
   reportOf,
   reportRow,
 } from "@/lib/csv-import";
+import { deadlineIn, IMPORT_TIME_BUDGET_MS, type ImportTiming, notImportedInTime } from "@/lib/import-deadline";
 import { newOwner, newRestaurant, unknownTimezone } from "@/lib/new-restaurant";
 import { slugFrom } from "@/lib/slug";
 import {
@@ -134,19 +135,27 @@ export async function previewRestaurantsImport(
 
 /**
  * Creates each valid restaurant, then its owner, in file order. Counts the
- * restaurants made; an owner refused is a note on its row.
+ * restaurants made; an owner refused is a note on its row. Stops starting rows
+ * when time runs out, reporting the rest as not imported (S-43).
  */
 export async function importRestaurants(
   admin: Admin,
   csv: string,
+  { outOfTime = deadlineIn(IMPORT_TIME_BUDGET_MS) }: ImportTiming = {},
 ): Promise<ImportReport | { error: string }> {
   const table = read(csv);
   if (!table.ok) return { error: table.error };
 
   const planned = await plan(admin, table.rows);
   let imported = 0;
+  let stopped = false;
   for (const entry of planned) {
     if (!entry.ready) continue;
+    stopped ||= outOfTime();
+    if (stopped) {
+      entry.problems.push(notImportedInTime);
+      continue;
+    }
     const { restaurant, owner } = entry.ready;
     const created = await createRestaurant(admin, restaurant);
     if ("problem" in created) {
