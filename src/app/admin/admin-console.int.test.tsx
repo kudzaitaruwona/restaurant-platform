@@ -6,7 +6,8 @@ import {
   devPlatformAdmin,
   devRestaurants,
 } from "@/lib/tenant/dev-identities";
-import { bookings, onboardingChecklist, restaurants } from "@/db/schema";
+import { bookings, onboardingChecklist, restaurants, staff } from "@/db/schema";
+import { getEnv } from "@/lib/env";
 import { aBooking, bookableRestaurant } from "../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
@@ -107,6 +108,66 @@ describe("the admin screen", () => {
       expect(row).toContain('<input type="hidden" name="printed" value="false"/>');
     } finally {
       await owner.db.delete(restaurants).where(eq(restaurants.id, restaurant.id));
+      await owner.pool.end();
+    }
+  });
+
+  it("says how each checklist item is decided, in plain words under it", async () => {
+    const html = await render();
+    for (const rule of [
+      "Done when at least one menu item is live.",
+      "Done when a live item has a photo.",
+      "Done once any rate is saved. It is set on the Menu page.",
+      "Done when a table is live.",
+      "Tick once the codes are printed and on the tables.",
+      "Done when there is a service period.",
+      "Done when online booking is on. It needs a bookable table, a service period and a contact phone.",
+    ]) {
+      expect(html).toContain(rule);
+    }
+  });
+
+  it("creates in a two-step sheet: the restaurant, then its owner, closed until asked", async () => {
+    const html = await render();
+    expect(html).toMatch(/<dialog aria-labelledby="new-restaurant-title"/);
+    expect(html).not.toMatch(/<dialog[^>]*\sopen(=""|\s|>)/);
+    expect(html).toContain('<form id="new-restaurant-form"');
+    expect(html).toContain('<form id="new-owner-form" inert=""');
+    expect(html).toContain('name="displayName"');
+    // The owner step's route is only known once the restaurant exists.
+    expect(html).not.toMatch(/action="\/api\/admin\/restaurants\/[^"]*\/owner"[^>]*id="new-owner-form"/);
+  });
+
+  it("gives a restaurant with an owner a ready-to-send sign-in message, escaped", async () => {
+    // Left in place, like the other restaurants these tests make: its owner is
+    // its last one, which the database won't let go.
+    const owner = openOwnerDatabase();
+    const slug = `msg-${crypto.randomUUID()}`;
+    const name = `<img src=x onerror=alert(1)> "Tom & Jerry's"`;
+    try {
+      const [restaurant] = await owner.db
+        .insert(restaurants)
+        .values({ name, slug, menuToken: slug, currencyMode: "both" })
+        .returning();
+      await owner.db.insert(staff).values({
+        restaurantId: restaurant.id,
+        email: `${slug}@example.test`,
+        displayName: "Tom",
+        role: "owner",
+      });
+
+      const html = await render();
+
+      const start = html.indexOf(`${restaurant.id}/enter`);
+      const item = html.slice(start, html.indexOf("</ul>", start));
+      const login = new URL("/login", getEnv().NEXT_PUBLIC_APP_URL).toString();
+      expect(item).toContain(
+        `Hi, &lt;img src=x onerror=alert(1)&gt; &quot;Tom &amp; Jerry&#x27;s&quot; is ready for you. Sign in at ${login}`,
+      );
+      expect(item).toContain("Copy message for WhatsApp");
+      expect(html).not.toContain("<img src=x");
+      expect(item).not.toContain(`${restaurant.id}/owner`);
+    } finally {
       await owner.pool.end();
     }
   });

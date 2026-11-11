@@ -1,8 +1,10 @@
-import { ArrowRight, Circle, CircleCheck, Store } from "lucide-react";
+import { ArrowRight, Circle, CircleCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cardClassName } from "@/components/ui/card";
-import { Field, Input, Select } from "@/components/ui/input";
+import { Field, Input } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
+import { getEnv } from "@/lib/env";
 import { cn } from "@/lib/utils";
 import { currencyMode } from "@/db/schema";
 import {
@@ -15,8 +17,11 @@ import {
   onboardingItems,
 } from "@/lib/tenant/platform-admin";
 import { BookingMetricsPanel } from "../dashboard/booking-metrics";
-import { easeOut } from "../motion";
+import { easeOut, pressable } from "../motion";
 import { AdminForm } from "./admin-form";
+import { CopyMessage } from "./copy-message";
+import { NewRestaurantSheet } from "./new-restaurant-sheet";
+import { ownerSignInMessage } from "./sign-in-message";
 
 const currencyModeLabels: Record<CurrencyMode, string> = {
   usd_only: "USD only",
@@ -24,6 +29,18 @@ const currencyModeLabels: Record<CurrencyMode, string> = {
   usd_primary: "USD first, ZiG too",
   zig_primary: "ZiG first, USD too",
   both: "USD and ZiG equally",
+};
+
+/** Each item's rule in plain words, from platform_onboarding_checklist (0028). */
+const onboardingRules: Record<(typeof onboardingItems)[number]["key"], string> = {
+  menuEntered: "Done when at least one menu item is live.",
+  photos: "Done when a live item has a photo.",
+  exchangeRateSet: "Done once any rate is saved. It is set on the Menu page.",
+  tablesAdded: "Done when a table is live.",
+  qrCodesPrinted: "Tick once the codes are printed and on the tables.",
+  bookingHoursSet: "Done when there is a service period.",
+  bookingEnabled:
+    "Done when online booking is on. It needs a bookable table, a service period and a contact phone.",
 };
 
 type Restaurant = Awaited<ReturnType<typeof listRestaurants>>[number];
@@ -97,24 +114,24 @@ function Onboarding({
           style={{ transform: `scaleX(${done / onboardingItems.length})` }}
         />
       </div>
-      <ul className="grid gap-x-6 sm:grid-cols-2">
+      <ul className="flex flex-col divide-y divide-line">
         {onboardingItems.map(({ key, label }) => (
-          <li
-            key={key}
-            className={cn(
-              "flex min-h-10 items-center gap-2.5 py-1 text-body",
-              // The one item the admin ticks by hand: last, with room for its button.
-              key === "qrCodesPrinted" &&
-                "order-last mt-1 border-t border-line pt-2 sm:col-span-2",
-            )}
-          >
+          <li key={key} className="flex flex-wrap items-start gap-x-3 gap-y-2 py-3">
             {checklist[key] ? (
-              <CircleCheck aria-hidden strokeWidth={1.75} className="size-5 shrink-0 text-accent" />
+              <CircleCheck aria-hidden strokeWidth={1.75} className="mt-px size-5 shrink-0 text-accent" />
             ) : (
-              <Circle aria-hidden strokeWidth={1.75} className="size-5 shrink-0 text-ink-2" />
+              <Circle aria-hidden strokeWidth={1.75} className="mt-px size-5 shrink-0 text-ink-2" />
             )}
-            <span className={checklist[key] ? "text-ink" : "text-ink-2"}>{label}</span>
-            <span className="sr-only">{checklist[key] ? "done" : "not done"}</span>
+            <div className="flex min-w-0 flex-1 basis-48 flex-col gap-0.5">
+              <span className={cn("text-body font-medium", checklist[key] ? "text-ink" : "text-ink-2")}>
+                {label}
+                <span className="sr-only">{checklist[key] ? ", done" : ", not done"}</span>
+              </span>
+              <span className="text-caption text-ink-2">
+                {onboardingRules[key]}
+                {key === "qrCodesPrinted" && !checklist.tablesAdded && " No tables yet."}
+              </span>
+            </div>
             {key === "qrCodesPrinted" && (
               <QrCodesPrintedForm
                 restaurantId={restaurant.id}
@@ -138,10 +155,12 @@ function RestaurantItem({
   restaurant,
   metrics,
   checklist,
+  appUrl,
 }: {
   restaurant: Restaurant;
   metrics: Metrics | undefined;
   checklist: Checklist | undefined;
+  appUrl: string;
 }) {
   return (
     <li className={cn(cardClassName, "overflow-hidden")}>
@@ -164,30 +183,42 @@ function RestaurantItem({
           method="post"
           action={`/api/admin/restaurants/${restaurant.id}/enter`}
         >
-          <Button type="submit" variant="secondary" size="compact">
+          <Button type="submit" size="compact" className={pressable}>
             Enter restaurant
             <ArrowRight aria-hidden strokeWidth={1.75} />
           </Button>
         </form>
       </div>
-      {!restaurant.hasOwner && (
-        <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
-          <h4 className="text-body font-semibold">First owner</h4>
-          <AdminForm
-            action={`/api/admin/restaurants/${restaurant.id}/owner`}
-            submitLabel="Create owner"
-            pendingLabel="Creating owner"
-            className="grid gap-3 sm:grid-cols-2"
-          >
-            <Field label="Owner's email">
-              <Input name="email" type="email" required />
-            </Field>
-            <Field label="Owner's name">
-              <Input name="displayName" required maxLength={200} />
-            </Field>
-          </AdminForm>
-        </section>
-      )}
+      <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
+        <h4 className="text-body font-semibold">Owner</h4>
+        {restaurant.hasOwner ? (
+          <div className="flex max-w-2xl flex-col gap-2">
+            <p className="text-caption text-ink-2">
+              Send the owner this on WhatsApp. No invite email goes out.
+            </p>
+            <CopyMessage
+              text={ownerSignInMessage({ restaurantName: restaurant.name, appUrl })}
+            />
+          </div>
+        ) : (
+          <>
+            <Notice tone="attention">No owner yet. Nobody can sign in to this restaurant.</Notice>
+            <AdminForm
+              action={`/api/admin/restaurants/${restaurant.id}/owner`}
+              submitLabel="Create owner"
+              pendingLabel="Creating owner"
+              className="grid gap-3 sm:grid-cols-2"
+            >
+              <Field label="Owner's name">
+                <Input name="displayName" required maxLength={200} />
+              </Field>
+              <Field label="Owner's email" hint="They sign in with this email. No invite is sent; you tell them.">
+                <Input name="email" type="email" required />
+              </Field>
+            </AdminForm>
+          </>
+        )}
+      </section>
       {metrics && (
         <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
           <h4 className="text-caption font-medium text-ink-2">Bookings</h4>
@@ -207,75 +238,46 @@ export async function AdminConsole() {
     listBookingMetrics(admin),
     onboardingChecklists(admin),
   ]);
+  const appUrl = getEnv().NEXT_PUBLIC_APP_URL;
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Platform admin"
+        title="Restaurants"
         subtitle={
           restaurants.length === 1
             ? "1 restaurant"
             : `${restaurants.length} restaurants`
         }
+        actions={
+          <NewRestaurantSheet
+            timezone={DEFAULT_TIMEZONE}
+            currencyModes={currencyMode.enumValues.map((mode) => ({
+              value: mode,
+              label: currencyModeLabels[mode],
+            }))}
+            appUrl={appUrl}
+          />
+        }
       />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
-        <section aria-labelledby="restaurants" className="flex flex-col gap-3">
-          <h2 id="restaurants" className="text-title font-semibold">
-            Restaurants
-          </h2>
-          {restaurants.length === 0 ? (
-            <p className={cn(cardClassName, "p-6 text-body text-ink-2")}>
-              No restaurants yet. Create the first one.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-4">
-              {restaurants.map((restaurant) => (
-                <RestaurantItem
-                  key={restaurant.id}
-                  restaurant={restaurant}
-                  metrics={metrics.get(restaurant.id)}
-                  checklist={checklists.get(restaurant.id)}
-                />
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section
-          aria-labelledby="new-restaurant"
-          className={cn(cardClassName, "flex flex-col gap-4 p-4 md:p-5 lg:sticky lg:top-6")}
-        >
-          <h2 id="new-restaurant" className="flex items-center gap-2 text-title font-semibold">
-            <Store aria-hidden strokeWidth={1.75} className="size-5 text-ink-2" />
-            New restaurant
-          </h2>
-          <AdminForm
-            action="/api/admin/restaurants"
-            submitLabel="Create restaurant"
-            pendingLabel="Creating restaurant"
-          >
-            <Field label="Name">
-              <Input name="name" required maxLength={200} />
-            </Field>
-            <Field label="Slug" hint="Its public address, /r/your-slug">
-              <Input name="slug" required maxLength={63} />
-            </Field>
-            <Field label="Timezone">
-              <Input name="timezone" required defaultValue={DEFAULT_TIMEZONE} />
-            </Field>
-            <Field label="Currency mode">
-              <Select name="currencyMode" required>
-                {currencyMode.enumValues.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {currencyModeLabels[mode]}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </AdminForm>
-        </section>
-      </div>
+      {restaurants.length === 0 ? (
+        <p className={cn(cardClassName, "p-6 text-body text-ink-2")}>
+          No restaurants yet. Create the first one with New restaurant.
+        </p>
+      ) : (
+        <ul aria-label="Restaurants" className="flex flex-col gap-4">
+          {restaurants.map((restaurant) => (
+            <RestaurantItem
+              key={restaurant.id}
+              restaurant={restaurant}
+              metrics={metrics.get(restaurant.id)}
+              checklist={checklists.get(restaurant.id)}
+              appUrl={appUrl}
+            />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
