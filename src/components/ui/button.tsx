@@ -54,7 +54,7 @@ const baseButtonVariants = cva(
  * variant's own (e.g. `hidden` over `inline-flex`). Plain cva only joins them.
  */
 function buttonVariants(
-  options?: VariantProps<typeof baseButtonVariants> & { className?: string },
+  options?: Parameters<typeof baseButtonVariants>[0],
 ) {
   return cn(baseButtonVariants(options))
 }
