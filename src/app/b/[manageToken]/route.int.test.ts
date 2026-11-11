@@ -41,7 +41,7 @@ const cancel = (token: string, body?: FormData) =>
 const statusOf = async (token: string) =>
   (await owner.db.select().from(bookings).where(eq(bookings.manageToken, token)))[0].status;
 
-const TOO_LATE = "Too late to cancel online — please call.";
+const TOO_LATE = "Too late to cancel online. Please call.";
 
 describe("GET /b/{manage_token}", () => {
   it("shows the booking, with a cancel that is a POST form and nothing external", async () => {
