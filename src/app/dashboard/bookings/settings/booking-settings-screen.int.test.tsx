@@ -40,12 +40,17 @@ vi.mock("next/navigation", async (original) => ({
 }));
 
 // A client form's props never reach static markup, so what it would ask once
-// clicked is surfaced here beside the real form.
+// clicked (the dialog's question and what it says will happen) is surfaced here
+// beside the real form.
 vi.mock("../../action-form", async (original) => {
   const { ActionForm } = await original<typeof import("../../action-form")>();
+  const asked = ({ confirmation }: React.ComponentProps<typeof ActionForm>) =>
+    typeof confirmation === "object"
+      ? [confirmation.title, confirmation.description].filter(Boolean).join(" ")
+      : confirmation;
   return {
     ActionForm: (props: React.ComponentProps<typeof ActionForm>) => (
-      <div data-confirmation={props.confirmation}>
+      <div data-confirmation={asked(props)}>
         <ActionForm {...props} />
       </div>
     ),

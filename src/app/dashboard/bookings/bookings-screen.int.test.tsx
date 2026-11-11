@@ -69,7 +69,7 @@ describe("the day view", () => {
 
     const html = await render(day);
     const actionsOf = (name: string) => {
-      const row = html.split("<li").find((part) => part.includes(name)) ?? "";
+      const row = html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
       return [...row.matchAll(/<form[^>]*action="\/api\/bookings\/[0-9a-f-]+\/([a-z-]+)"[^>]*method="post"/g)].map((m) => m[1]);
     };
 
@@ -77,6 +77,32 @@ describe("the day view", () => {
     expect(actionsOf("Waiting")).toEqual(["seat", "no-show", "cancel", "move"]);
     expect(actionsOf("Eating")).toEqual(["finish"]);
     expect(actionsOf("Gone")).toEqual([]);
+  });
+
+  it("keeps Seat in the row and puts No-show and Cancel in its More menu, each submitting its own form", async () => {
+    await dayWith([{ guestName: "Waiting" }]);
+
+    const row = (await render(day)).split(/<li[\s>]/).find((part) => part.includes("Waiting")) ?? "";
+    const menu = row.slice(row.indexOf('role="menu"'));
+
+    expect(row).toContain('aria-label="More for Waiting"');
+    expect(row.indexOf("/seat")).toBeLessThan(row.indexOf('role="menu"'));
+    for (const action of ["no-show", "cancel"]) {
+      const id = new RegExp(`<form id="([^"]+)"[^>]*action="/api/bookings/[0-9a-f-]+/${action}"`).exec(row)?.[1];
+      expect(id).toBeDefined();
+      expect(menu).toMatch(new RegExp(`role="menuitem" type="submit" form="${id}"`));
+    }
+  });
+
+  it("says where each booking came from: online, or added by staff", async () => {
+    await dayWith([{ guestName: "Booked", source: "online" }, { guestName: "Phoned", source: "staff" }]);
+
+    const html = await render(day);
+    const row = (name: string) => html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
+
+    expect(row("Booked")).toContain("Online");
+    expect(row("Booked")).not.toContain("Added by staff");
+    expect(row("Phoned")).toContain("Added by staff");
   });
 
   it("shows no call buttons for a walk-in with no number", async () => {
@@ -112,11 +138,14 @@ describe("the day view", () => {
     await dayWith([{ guestName: "Waiting" }, { guestName: "Eating", status: "seated" }, { guestName: "Gone", status: "no_show" }]);
 
     const html = await render(day);
-    const row = (name: string) => html.split("<li").find((part) => part.includes(name)) ?? "";
+    const row = (name: string) => html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
 
-    const options = [...row("Waiting").matchAll(/<option value="[0-9a-f-]+">([^<]*)</g)].map((m) => m[1]);
-    expect(options).toHaveLength(1);
-    expect(options[0]).toMatch(/^T3 \(seats 4/);
+    // The move dialog lists them as radio rows: the table, then what it seats.
+    const options = [
+      ...row("Waiting").matchAll(/<input type="radio"[^>]*name="tableId"[^>]*value="[0-9a-f-]+"[^>]*\/><span[^>]*>([^<]*)<\/span><span[^>]*>([^<]*)</g),
+    ].map((m) => `${m[1]} ${m[2]}`);
+    expect(options).toEqual(["T3 seats 4"]);
+    expect(row("Waiting")).toMatch(/<form[^>]*action="\/api\/bookings\/[0-9a-f-]+\/move"[^>]*method="post"/);
     expect(row("Waiting")).toContain('name="tableId"');
     expect(row("Eating")).not.toContain("tableId");
     expect(row("Gone")).not.toContain("tableId");
@@ -147,7 +176,7 @@ describe("a confirmation that failed to deliver (spec 05, Delivery status)", () 
     });
     if (queued.length > 0) await owner.db.insert(notifications).values(queued);
   }
-  const rowOf = (html: string, name: string) => html.split("<li").find((part) => part.includes(name)) ?? "";
+  const rowOf = (html: string, name: string) => html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
   const WARNING = "WhatsApp confirmation failed";
 
   it("shows a warning on the booking, which stays confirmed with every action", async () => {
@@ -226,7 +255,7 @@ describe("seat walk-in on the day view", () => {
     const html = await render();
     expect(html).toContain(`href="/dashboard/bookings/new?date=${today}"`);
     expect(html).toContain("Seat a walk-in");
-    expect(html.split("<li").find((part) => part.includes("Waiting"))).toContain('name="tableId"');
+    expect(html.split(/<li[\s>]/).find((part) => part.includes("Waiting"))).toContain('name="tableId"');
 
     const other = await render(addDays(today, 1));
     expect(other).toContain("Add booking");
