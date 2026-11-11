@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { RowMenu, RowMenuItem, RowMenuSeparator } from "@/components/ui/row-menu";
 import { inviteStatus } from "@/lib/invite-status";
 import { getRestaurantSettings } from "@/lib/restaurant-settings";
+import { STAFF_MAX_ROWS } from "@/lib/staff-import";
 import {
   countOwnerLogins,
   listStaff,
@@ -44,10 +45,12 @@ export async function StaffScreen() {
             action="/api/staff/import"
             title="Import staff"
             noun={{ one: "person", other: "people" }}
+            maxRows={STAFF_MAX_ROWS}
             intro={
               <p>
                 Columns: email, name and role (owner or staff, blank is staff). Each person is added
-                as if by hand, and invited by email. Someone already on your staff is skipped.
+                as if by hand, and invited by email, so a file takes at most {STAFF_MAX_ROWS} people.
+                Someone already on your staff is skipped.
               </p>
             }
           />

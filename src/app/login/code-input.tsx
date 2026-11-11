@@ -92,7 +92,7 @@ export function CodeInput({
         }}
         aria-invalid={invalid || undefined}
         // Invisible but real: it takes the taps, the typing and the paste.
-        className="absolute inset-0 h-full w-full cursor-text bg-transparent text-transparent caret-transparent outline-none selection:bg-transparent"
+        className="absolute inset-0 h-full w-full cursor-text bg-transparent text-control text-transparent caret-transparent outline-none selection:bg-transparent"
       />
     </div>
   );

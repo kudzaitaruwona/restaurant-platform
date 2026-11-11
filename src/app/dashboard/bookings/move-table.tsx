@@ -140,14 +140,9 @@ export function MoveTableDialog({
           ))}
         </fieldset>
         <div className="mt-4 flex flex-wrap justify-end gap-3">
-          <button
-            type="button"
-            popoverTarget={id}
-            popoverTargetAction="hide"
-            className="inline-flex h-12 items-center rounded-control border border-line bg-surface px-[18px] text-body font-semibold text-ink hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          >
+          <Button type="button" variant="secondary" size="staff" popoverTarget={id} popoverTargetAction="hide">
             Go back
-          </button>
+          </Button>
           <Button type="submit" size="staff">
             Move
           </Button>

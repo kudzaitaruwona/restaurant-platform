@@ -52,10 +52,11 @@ export function SignOutButton({ audience }: { audience: Audience }) {
         <span className="rail-fade">{pending ? "Signing out…" : "Sign out"}</span>
       </button>
       {problem && (
-        // Beside the rail, so a collapsed rail can't hide it.
+        // In the rail's footer, which clips anything beside it: shown while the
+        // rail is open, as it is when Sign out is pressed, at the open width.
         <p
           role="alert"
-          className="mt-1 rounded-control bg-danger-soft p-3 text-caption text-ink md:absolute md:bottom-0 md:left-full md:mt-0 md:ml-4 md:w-64 md:shadow-float"
+          className="rail-fade mt-1 rounded-control bg-danger-soft p-3 text-caption whitespace-normal text-ink md:w-56"
         >
           {problem}
         </p>

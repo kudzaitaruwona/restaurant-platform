@@ -44,6 +44,22 @@ describe("the CSV import dialog", () => {
     expect(html).toContain("Nothing is saved until");
   });
 
+  it("says the kind's own row cap: 500 unless the kind takes fewer", () => {
+    expect(dialog()).toContain("Up to 500 rows and 1 MB.");
+    const staff = renderToStaticMarkup(
+      <CsvImportDialog
+        kind="staff"
+        action="/api/staff/import"
+        title="Import staff"
+        noun={{ one: "person", other: "people" }}
+        intro={<p>Columns: email, name and role.</p>}
+        maxRows={50}
+      />,
+    );
+    expect(staff).toContain("Up to 50 rows and 1 MB.");
+    expect(staff).not.toContain("500");
+  });
+
   it("uses no em or en dash in what it says", () => {
     expect(dialog()).not.toMatch(/[–—]/);
   });

@@ -80,7 +80,7 @@ function DateChip({
         {open ? (
           <small className="text-caption font-medium text-ink-2">{month}</small>
         ) : (
-          <em className="text-[11px] not-italic tracking-[.01em]">No times</em>
+          <em className="text-caption not-italic">No times</em>
         )}
       </span>
     </label>
