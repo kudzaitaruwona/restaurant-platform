@@ -218,7 +218,25 @@ export const ORDER_SCRIPT = `(() => {
     if (className) element.className = className;
     return element;
   };
-  const fail = (text) => { error.textContent = text; form.hidden = false; };
+  // The sheet is a modal for keyboard users: opening it moves focus into it
+  // (the bar that opened it disappears), and closing it hands focus back.
+  const openSheet = () => {
+    if (!form.hidden) return;
+    form.hidden = false;
+    const first = form.querySelector("#cart button, #cart input, #cart textarea") || fields.name;
+    if (first && first.focus) first.focus();
+  };
+  const closeSheet = () => {
+    if (form.hidden) return;
+    form.hidden = true;
+    if (!bar.hidden && bar.focus) bar.focus();
+  };
+  // With nothing left in the cart there is no sheet to show the message in.
+  const fail = (text) => {
+    if (cart.length > 0) { error.textContent = text; openSheet(); return; }
+    waiterSaid.dataset.tone = "error";
+    waiterSaid.textContent = text;
+  };
   const times = (quantity, name) => quantity + " \\u00d7 " + name;
   let session = null;
   let ended = false;
@@ -343,7 +361,7 @@ export const ORDER_SCRIPT = `(() => {
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
   });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") form.hidden = true; });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheet(); });
   waiter.addEventListener("click", async () => {
     if (waiter.disabled) return;
     waiter.disabled = true;
@@ -368,9 +386,9 @@ export const ORDER_SCRIPT = `(() => {
       waiter.disabled = false;
     }
   });
-  bar.addEventListener("click", () => { form.hidden = false; error.textContent = ""; });
-  $("order-cancel").addEventListener("click", () => { form.hidden = true; });
-  $("order-scrim").addEventListener("click", () => { form.hidden = true; });
+  bar.addEventListener("click", () => { error.textContent = ""; openSheet(); });
+  $("order-cancel").addEventListener("click", closeSheet);
+  $("order-scrim").addEventListener("click", closeSheet);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = fields.name.value.trim();
@@ -444,7 +462,7 @@ const waiterButton = trusted(
 const orderBlock = html`
 <style>${orderStyles}</style>
 <svg hidden><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol></svg>
-<form id="order" class="sheet order" aria-label="Your order" hidden>
+<form id="order" class="sheet order" role="dialog" aria-modal="true" aria-label="Your order" hidden>
 <div class="grab"></div>
 <div class="shead"><h2>Your order</h2><span id="cart-items" class="muted"></span></div>
 <div class="sheet-body"><ul id="cart"></ul>

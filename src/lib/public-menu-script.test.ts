@@ -53,6 +53,10 @@ class FakeElement {
   dispatch(type: string, event: Record<string, unknown> = {}) {
     return this.listeners.get(type)?.({ target: this, preventDefault() {}, ...event });
   }
+  focusCount = 0;
+  focus() {
+    this.focusCount += 1;
+  }
   closest(selector: string) {
     if (selector === "li") return this.row ?? null;
     return selector === "button[data-item]" && this.dataset.item ? this : null;
@@ -212,6 +216,11 @@ async function loadPage(
     trackerList: elements["tracker-list"],
     cartText,
     buttonLabelled,
+    /** How many times anything on the page has been given focus. */
+    focusTotal: () =>
+      [...Object.values(elements), ...Object.values(fields)]
+        .flatMap((element) => (element instanceof FakeElement ? element.find(() => true) : []))
+        .reduce((sum, element) => sum + element.focusCount, 0),
     noteInputs: () => elements.cart.find((el) => el.tagName === "input"),
     /** The quantity each cart line shows in its stepper, by name. */
     quantities: () =>
@@ -407,6 +416,19 @@ describe("the cart", () => {
     page.document.getElementById("order-scrim").dispatch("click");
     expect(page.form.hidden).toBe(true);
   });
+
+  it("moves focus into the sheet when it opens and back to the order bar when it closes", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    const before = page.focusTotal();
+
+    page.open.dispatch("click");
+    expect(page.focusTotal()).toBe(before + 1);
+    expect(page.open.focusCount).toBe(0);
+
+    page.document.getElementById("order-cancel").dispatch("click");
+    expect(page.open.focusCount).toBe(1);
+  });
 });
 
 describe("placing the order", () => {
@@ -490,6 +512,21 @@ describe("placing the order", () => {
     expect(page.cartText()).toContain("Beef stew");
     expect(page.cartText()).not.toContain("Rice");
     expect(page.error.textContent).toContain("isn't available");
+  });
+
+  it("doesn't reopen an empty sheet when the only item is no longer available, and says so on the page", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.state.orderReply = {
+      status: 409,
+      json: { error: "Sorry, that item isn't available right now.", code: "unavailable", item: "item-stew" },
+    };
+
+    await page.placeAs("Tariro");
+
+    expect(page.cart.children).toHaveLength(0);
+    expect(page.form.hidden).toBe(true);
+    expect(page.document.getElementById("waiter-status").textContent).toContain("isn't available");
   });
 
   it("rejoins the table's session when the order says it has changed", async () => {
