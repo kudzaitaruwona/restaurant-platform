@@ -46,6 +46,7 @@ const messages = {
   ownerTaken:
     "The restaurant was created, but not its owner: that email is already in use. Add the owner from the restaurant's card.",
   ownerNotMade: "The restaurant was created, but not its owner. Add the owner from the restaurant's card.",
+  inviteNotSent: "The owner was added, but the invite email didn't go. Send it again from the restaurant's card.",
 };
 
 async function plan(admin: Admin, rows: Row[]) {
@@ -144,6 +145,8 @@ export async function importRestaurants(
     const first = await createFirstOwner(admin, created.id, owner);
     if ("problem" in first) {
       entry.notes.push(first.problem === "email_taken" ? messages.ownerTaken : messages.ownerNotMade);
+    } else if (!first.invited) {
+      entry.notes.push(messages.inviteNotSent);
     }
   }
   return toReport(planned, imported);

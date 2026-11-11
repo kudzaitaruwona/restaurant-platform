@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, restaurants, staff } from "@/db/schema";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
+import { installFakeServices } from "../../test/integration/fake-services";
 import { importRestaurants, previewRestaurantsImport } from "./restaurant-import";
 import { devPlatformAdmin } from "./tenant/dev-identities";
 
@@ -13,8 +14,11 @@ import { devPlatformAdmin } from "./tenant/dev-identities";
 const owner = openOwnerDatabase();
 const admin = { platformAdminId: devPlatformAdmin.platformAdminId };
 
+let services: ReturnType<typeof installFakeServices>;
+
 beforeAll(() => {
   vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+  services = installFakeServices();
 });
 afterAll(async () => {
   await owner.pool.end();
@@ -134,6 +138,23 @@ describe("importRestaurants", () => {
         .where(eq(auditLog.restaurantId, kitchen.id))
     ).map((entry) => entry.action);
     expect(actions).toContain("staff.create");
+  });
+
+  it("invites each owner it creates (S-42), and says on the row when the email didn't go", async () => {
+    const id = run();
+    const invited = email();
+    const refused = email();
+    services.refusing.add(refused);
+    const csv = `${header}\nInvite ${id},,,,${invited},Rudo\nNo mail ${id},,,,${refused},Tendai`;
+
+    const result = report(await importRestaurants(admin, csv));
+
+    expect(result).toMatchObject({ imported: 2 });
+    expect(services.sent.some((sent) => sent.to.includes(invited))).toBe(true);
+    expect(result.rows[0].notes.join(" ")).not.toMatch(/invite email didn't go/);
+    expect(result.rows[1].notes).toContain(
+      "The owner was added, but the invite email didn't go. Send it again from the restaurant's card.",
+    );
   });
 
   it("says when the restaurant was made but its owner's email was taken", async () => {
