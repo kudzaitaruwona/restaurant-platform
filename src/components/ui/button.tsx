@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
  * Sizes: default 44px (guest and general), staff 48px (staff screens), compact
  * 40px (inside a row or band, where the row's padding keeps the hit area 48px).
  */
-const buttonVariants = cva(
+const baseButtonVariants = cva(
   "group/button inline-flex shrink-0 items-center justify-center gap-2 rounded-control border border-transparent text-body font-semibold whitespace-nowrap no-underline transition-[background-color,border-color,color,transform] duration-150 ease-out outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 aria-invalid:border-danger [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-5",
   {
     variants: {
@@ -49,13 +49,23 @@ const buttonVariants = cva(
   }
 )
 
-type ButtonProps = ButtonPrimitive.Props & VariantProps<typeof buttonVariants>
+/**
+ * The classes for a button, merged so a `className` override wins over the
+ * variant's own (e.g. `hidden` over `inline-flex`). Plain cva only joins them.
+ */
+function buttonVariants(
+  options?: VariantProps<typeof baseButtonVariants> & { className?: string },
+) {
+  return cn(baseButtonVariants(options))
+}
+
+type ButtonProps = ButtonPrimitive.Props & VariantProps<typeof baseButtonVariants>
 
 function Button({ className, variant, size, ...props }: ButtonProps) {
   return (
     <ButtonPrimitive
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={buttonVariants({ variant, size, className })}
       {...props}
     />
   )
