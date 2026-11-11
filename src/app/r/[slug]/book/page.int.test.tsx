@@ -34,6 +34,14 @@ const render = async (slug: string, query: Record<string, string> = {}) =>
     await Page({ params: Promise.resolve({ slug }), searchParams: Promise.resolve(query) }),
   );
 
+/** The page's radios of one name, in order: value, and whether checked or disabled. */
+const radios = (page: string, name: string) =>
+  [...page.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, "g"))].map(([tag]) => ({
+    value: /value="([^"]*)"/.exec(tag)?.[1],
+    checked: tag.includes('checked=""'),
+    disabled: tag.includes('disabled=""'),
+  }));
+
 const tomorrow = () => addDays(localToday(new Date(), "Africa/Harare"), 1);
 
 describe("the booking page", () => {
@@ -61,9 +69,9 @@ describe("the booking page", () => {
 
     const page = await render(slug);
 
-    const sizes = [...page.matchAll(/<option value="(\d+)"/g)].map((match) => match[1]);
+    const sizes = radios(page, "party").map((radio) => radio.value);
     expect(sizes).toEqual(["1", "2", "3", "4"]);
-    expect(page).toContain(">4+</option>");
+    expect(page).toContain(">4+</span>");
   });
 
   it("shows the contact message with the number and a WhatsApp link for the final option, not an empty list", async () => {
@@ -79,7 +87,8 @@ describe("the booking page", () => {
     expect(page).toContain('href="https://wa.me/263771234567"');
     expect(page).not.toContain("No tables for");
     expect(page).not.toContain("Available times");
-    expect(page).toContain('<option value="7" selected="">7+</option>');
+    expect(radios(page, "party").find((radio) => radio.checked)?.value).toBe("7");
+    expect(page).toContain(">7+</span>");
   });
 
   it("says the same for a size that fits online but no bookable table", async () => {
@@ -121,12 +130,12 @@ describe("the booking page", () => {
 
     const page = await render(slug);
 
-    const dates = [...page.matchAll(/<option value="(\d{4}-\d{2}-\d{2})"( disabled="")?/g)];
+    const dates = radios(page, "date");
     expect(dates).toHaveLength(8);
-    expect(dates[0][1]).toBe(localToday(new Date(), "Africa/Harare"));
-    expect(dates[7][1]).toBe(addDays(localToday(new Date(), "Africa/Harare"), 7));
-    expect(dates[3][2]).toBeDefined();
-    expect(dates[4][2]).toBeUndefined();
+    expect(dates[0].value).toBe(localToday(new Date(), "Africa/Harare"));
+    expect(dates[7].value).toBe(addDays(localToday(new Date(), "Africa/Harare"), 7));
+    expect(dates[3].disabled).toBe(true);
+    expect(dates[4].disabled).toBe(false);
   });
 
   it("groups the times by service period, and only what can be seated", async () => {
@@ -148,6 +157,8 @@ describe("the booking page", () => {
     expect(page.indexOf("Lunch")).toBeLessThan(page.indexOf("Dinner"));
     expect(page).toContain(`time=12:30`);
     expect(page).toContain(`time=21:00`);
+    // A chosen time reloads onto the details, not the top of the page.
+    expect(page).toContain(`time=21:00#details`);
     expect(page).not.toContain("Secret corner");
   });
 
@@ -236,6 +247,9 @@ describe("the confirmation", () => {
     const html = renderToStaticMarkup(<Confirmed confirmation={confirmation} />);
 
     expect(html).toContain("Mbira Kitchen, Fri 6 Nov at 19:00, party of 4");
+    // The sentence is for screen readers; the ticket drawn from it is hidden from them.
+    expect(html).toMatch(/<div aria-hidden="true"[^>]*>.*Fri 6 Nov/);
+    expect(html).toContain("+263 77 123 4567");
     expect(html).toMatch(/<a[^>]*href="\/b\/AbCdEfGhIjKlMnOpQrStUv"[^>]*>Cancel booking<\/a>/);
     expect(html).toContain('href="tel:+263771234567"');
   });

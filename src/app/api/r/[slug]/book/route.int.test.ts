@@ -84,7 +84,7 @@ describe("POST /api/r/[slug]/book", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: "That time was just booked — here are the nearest available times.",
+      error: "That time was just booked. Here are the nearest available times.",
       times: [{ period: "Dinner", time: "20:00" }, { period: "Dinner", time: "20:30" }, { period: "Dinner", time: "21:00" }],
     });
   });
@@ -196,7 +196,7 @@ describe("the refusals, each with its own message", () => {
 
     expect(response.status).toBe(409);
     const answer = await response.json();
-    expect(answer.error).toBe("That time is now too soon to book online — here are the next available times.");
+    expect(answer.error).toBe("That time is now too soon to book online. Here are the next available times.");
     expect(answer.times).toEqual([]);
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
@@ -381,7 +381,7 @@ describe("the bot check", () => {
 
     for (const response of [rejected, absent]) {
       expect(response.status).toBe(403);
-      expect(await response.json()).toEqual({ error: "We couldn't verify the request — please try again." });
+      expect(await response.json()).toEqual({ error: "We couldn't verify the request. Please try again." });
     }
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
     expect(siteverify).toHaveBeenCalledTimes(1);

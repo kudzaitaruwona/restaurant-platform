@@ -396,10 +396,43 @@ describe("/dashboard/menu", () => {
     expect(html).toContain(`<option value="${categoryId}">Mains</option>`);
   });
 
-  it("asks for a category first, since an item needs one", async () => {
+  it("asks for a category first, since an item needs one: the empty state is that form", async () => {
     const html = await screen(MenuScreen);
-    expect(html).toContain("Add a category first");
+    expect(html).toContain("Start your menu with a category");
+    expect(html).toContain('action="/api/menu/categories"');
+    expect(html).toContain('id="first-category"');
+    expect(html).toContain("Dishes, specials and bundles can be added once you have a category.");
     expect(html).not.toContain('action="/api/menu/items"');
+    expect(html).not.toContain('action="/api/menu/bundles"');
+    expect(html).not.toContain('href="#add-item"');
+  });
+
+  it("offers quick picks that only fill the field, never a form of their own", async () => {
+    const html = await screen(MenuScreen);
+    const picks = html.slice(html.indexOf('aria-label="Quick picks"'));
+    for (const name of ["Starters", "Mains", "Sides", "Drinks", "Desserts"]) {
+      expect(picks).toContain(`type="button"`);
+      expect(picks).toContain(`>${name}</button>`);
+    }
+    // One category form: the side column's comes back once there is a category.
+    expect(html.split('action="/api/menu/categories"')).toHaveLength(2);
+  });
+
+  it("drops the empty state once there is a category, for the usual forms", async () => {
+    await newCategory("Mains");
+    const html = await screen(MenuScreen);
+    expect(html).not.toContain("Start your menu with a category");
+    expect(html).not.toContain('aria-label="Quick picks"');
+    expect(html).toContain("Add a category");
+    expect(html).toContain('action="/api/menu/items"');
+  });
+
+  it("shows staff a plain empty menu, with no form", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    const html = await screen(MenuScreen);
+    expect(html).toContain("The owner hasn&#x27;t added anything to the menu.");
+    expect(html).not.toContain("Start your menu with a category");
+    expect(html).not.toContain('action="/api/menu/categories"');
   });
 
   it("offers a photo picker for an item with none, and no remove button", async () => {
@@ -1051,8 +1084,28 @@ describe("/dashboard/tables", () => {
 
   it("offers no print sheet until there's a table", async () => {
     const html = await screen(TablesScreen);
-    expect(html).toContain("No tables yet");
+    expect(html).toContain("Add your first table");
     expect(html).not.toContain("/dashboard/tables/print");
+  });
+
+  it("makes the add form the empty state, with the first label suggested", async () => {
+    const html = await screen(TablesScreen);
+    const form = html.slice(html.indexOf('id="add-table"'));
+    expect(form).toContain('action="/api/tables"');
+    expect(form).toContain('name="label" value="T1"');
+    expect(form).toContain('name="capacity" value="2"');
+    expect(form).toContain('aria-label="More seats"');
+    // One add form, and no header link to it: it is already the first thing on the page.
+    expect(html.split('action="/api/tables"')).toHaveLength(2);
+    expect(html).not.toContain('href="#add-table"');
+  });
+
+  it("goes back to the list and the usual add form once there is a table", async () => {
+    await newTable("7", "4");
+    const html = await screen(TablesScreen);
+    expect(html).not.toContain("Add your first table");
+    expect(html).toContain("Add a table");
+    expect(html).toContain('href="#add-table"');
   });
 
   it("refuses staff with forbidden(), before any data renders", async () => {
@@ -1100,9 +1153,13 @@ describe("/dashboard/tables, managing", () => {
 
     const [first, second] = (await screen(TablesScreen)).split("<li").slice(1);
 
-    expect(first.match(/<button[^>]*disabled=""[^>]*>Move up/)).not.toBeNull();
-    expect(first.match(/<button[^>]*disabled=""[^>]*>Move down/)).toBeNull();
-    expect(second.match(/<button[^>]*disabled=""[^>]*>Move down/)).not.toBeNull();
+    // The move buttons are icon buttons named "Move table A up" and so on (S-41).
+    const disabled = (direction: string) =>
+      new RegExp(`<button(?=[^>]*disabled="")[^>]*aria-label="Move table [^"]+ ${direction}"`);
+    expect(first.match(disabled("up"))).not.toBeNull();
+    expect(first.match(disabled("down"))).toBeNull();
+    expect(second.match(disabled("down"))).not.toBeNull();
+    expect(second.match(disabled("up"))).toBeNull();
   });
 
   it("edits a table, and the list shows it", async () => {
@@ -1311,7 +1368,7 @@ describe("the tables route", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: expect.any(String) });
-    expect(await screen(TablesScreen)).toContain("No tables yet");
+    expect(await screen(TablesScreen)).toContain("Add your first table");
   });
 
   it("refuses a blank label with a reason", async () => {
@@ -1975,6 +2032,12 @@ describe("/dashboard/menu specials", () => {
   });
 
   it("asks for an item first, since a special needs one", async () => {
+    // With no category at all, the specials wait behind the empty menu's one line.
+    const empty = await screen(MenuScreen);
+    expect(empty).toContain("Dishes, specials and bundles can be added once you have a category.");
+    expect(empty).not.toContain('action="/api/menu/specials"');
+
+    await newCategory("Mains");
     const html = await screen(MenuScreen);
     expect(html).toContain("Add an item first.");
     expect(html).not.toContain('action="/api/menu/specials"');

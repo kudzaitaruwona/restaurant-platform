@@ -25,6 +25,16 @@ Next.js (App Router) · TypeScript · Tailwind · shadcn/ui · Postgres (Neon, p
 
 The public menu page is the one exception: a Route Handler with no React, Tailwind or shadcn/ui (S-32).
 
+## Design system
+
+One visual system for every screen (S-41): black and white, a green accent for positive states and focus, an amber accent for "a person needs to look", and red for destructive only. Dark mode follows the system.
+
+- **Tokens** are CSS variables in `src/app/globals.css`, exposed to Tailwind by role: `bg-page`, `bg-surface`, `bg-surface-2`, `border-line`, `text-ink`, `text-ink-2`, `bg-brand` / `text-brand-ink` (primary actions), `bg-brand-soft`, `text-accent` / `bg-accent-soft`, `bg-attention` / `bg-attention-soft` / `text-attention-ink`, `bg-danger` / `bg-danger-soft`, `bg-scrim`, `shadow-float`. Type: `text-caption` (13), `text-body` (15), `text-lead` (17), `text-title` (20), `text-heading` (24), `text-display` (32), and `tabular-nums` for times, counts and prices. Shape: `rounded-card` (14px), `rounded-control` (10px), `rounded-full` for chips. The shadcn names (`bg-primary`, `text-muted-foreground`, ...) map onto the same palette; note that `accent` is the green. Use `cn` from `@/lib/utils`, which knows these names.
+- **Dark on request:** a page that should be dark whatever the system says renders an element with `data-page-theme="dark"`; the whole shell follows, and so does `dark:`. The kitchen board does this.
+- **Components** in `src/components/ui`: `Button` and `buttonVariants`, `IconButton`, `StatusPill`, `Chip` and `ChoiceChip`, `Notice`, `Card`, `Input` / `Select` / `Textarea` / `Field` (and `inputClassName`), `Stepper`, `PageHeader`, `ConfirmDialog`, and `RowMenu` with `RowMenuItem`, `RowMenuSeparator` and `RowMenuLabel`. `ActionForm` (`src/app/dashboard/action-form.tsx`) asks its `confirmation` in a `ConfirmDialog`, never the browser's `confirm()`.
+- **The staff shell** is `src/app/dashboard/layout.tsx` with `src/app/dashboard/shell`: the acting-as-admin bar, the navigation rail (a top bar and drawer on phones; `StaffTopBarAction` puts a page's main action in that bar) and the page, padded. The navigation and who sees what is `shell/nav.ts`.
+- **Guest pages** (`/t`, `/m`, `/b`, hand-written, S-32) use `guestThemeCss` from `src/lib/guest-theme.ts`: the same tokens and the shared guest primitives (`.btn`, `.pill`, `.notice`, `.chip`, `.input`, `.card`, `.sheet`) in a few KB, with no webfont. A test keeps its tokens equal to `globals.css`.
+
 ## Development
 
 ```bash

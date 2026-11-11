@@ -23,6 +23,8 @@ export type DayRow = {
   table: string;
   status: DayStatus;
   note: string | null;
+  /** Who made it: the guest online, or staff (a phone booking or a walk-in). */
+  source: "online" | "staff";
   /** E.164, or null for a walk-in or once the retention job has run (D-06). */
   phone: string | null;
   /** Confirmed and not seated 30 minutes after its start: staff decide (spec 04). */

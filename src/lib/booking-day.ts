@@ -72,6 +72,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         status: bookings.status,
         note: bookings.guestNote,
         phone: bookings.guestPhone,
+        source: bookings.source,
         confirmationStatus: notifications.status,
       })
       .from(bookings)

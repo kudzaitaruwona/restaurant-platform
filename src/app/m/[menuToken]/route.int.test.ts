@@ -159,7 +159,7 @@ describe("/m/{menu_token}", () => {
     // Past the jump bar, which names the categories too.
     const body = (await page(menuToken)).split("</nav>")[1];
 
-    const order = ["Starters", "Soup", "$3.00", "Mains", "Zebra steak", "$21.00", "Beef stew", "$8.50", "With sadza"];
+    const order = ["Starters", "Soup", "$3.00", "Mains", "Zebra steak", "$21.00", "Beef stew", "With sadza", "$8.50"];
     const positions = order.map((text) => body.indexOf(text));
     expect(positions).not.toContain(-1);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -303,7 +303,7 @@ describe("prices by currency_mode", () => {
   }
 
   const priceOf = (body: string) =>
-    /<li[^>]*>\n<div class="text">\n<div class="item"><span>Stew<\/span>(.*?)<\/div>/.exec(body)![1];
+    /<li[^>]*>\n<div class="body"><div class="left"><span class="name">Stew<\/span><\/div>\n<div class="right">(.*?)<\/div>/.exec(body)![1];
 
   it("usd_only shows dollars alone", async () => {
     const { menuToken } = await menuIn("usd_only");

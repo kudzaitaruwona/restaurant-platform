@@ -153,7 +153,7 @@ describe("a table calling a waiter", () => {
 
     const html = renderToStaticMarkup(await FloorScreen());
 
-    expect(html).toContain("Calling a waiter since 23:05");
+    expect(html).toContain("Calling since 23:05");
     expect(html).toContain(`action="/api/floor/${r.tableId}/dismiss-waiter"`);
   });
 
@@ -177,7 +177,7 @@ describe("a table calling a waiter", () => {
     const detail = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
 
     for (const html of [grid, detail]) {
-      expect(html).not.toContain("Calling a waiter");
+      expect(html).not.toContain("Calling");
       expect(html).not.toContain("dismiss-waiter");
     }
   });
@@ -193,7 +193,7 @@ describe("the table detail screen", () => {
 
     expect(html).toContain("Table 7");
     expect(html).toContain("&lt;i&gt;Tariro&lt;/i&gt;");
-    expect(html).toContain("2 × Beef stew");
+    expect(html).toMatch(/>2x<\/span>.*>Beef stew</);
     expect(html).toContain("No &lt;b&gt;onions&lt;/b&gt;");
     expect(html).toContain("Cooking");
   });
@@ -211,7 +211,7 @@ describe("the table detail screen", () => {
     expect(html).toContain(`action="/api/order-items/${done.id}/deliver"`);
   });
 
-  it("offers Void, with a required reason, on items not yet delivered or voided (#73)", async () => {
+  it("offers Void, with a required reason in its dialog, on items not yet delivered or voided (#73)", async () => {
     const r = await orderingRestaurant(owner.db);
     as(r);
     await openTable(r, [
@@ -229,7 +229,12 @@ describe("the table detail screen", () => {
     expect(html).toContain(`action="/api/order-items/${id("done")}/void"`);
     expect(html).not.toContain(`/api/order-items/${id("delivered")}/void`);
     expect(html).not.toContain(`/api/order-items/${id("voided")}/void`);
-    expect(html.match(/<input[^>]*name="reason"[^>]*>/g)?.every((input) => /required/.test(input) && /maxLength="200"/i.test(input))).toBe(true);
+    // The reason is typed in the confirmation dialog inside each form; the dialog checks it's there (confirm-dialog.test.tsx) and the route refuses a blank one.
+    for (const status of ["placed", "done"]) {
+      const form = html.match(new RegExp(`<form[^>]*action="/api/order-items/${id(status)}/void"[^>]*>.*?</form>`))?.[0] ?? "";
+      expect(form).toMatch(/<textarea[^>]*name="reason"[^>]*maxLength="200"/i);
+    }
+    expect(html).toContain("Required. Recorded with the void.");
     expect(html).toContain("Voided");
   });
 
@@ -276,7 +281,8 @@ describe("the table detail screen", () => {
     expect(clear).toContain(`name="session" value="${sessionId}"`);
     expect(force).toContain("Force-close");
     expect(force).toContain(`name="session" value="${sessionId}"`);
-    expect(force).toMatch(/<input[^>]*required[^>]*name="reason"/);
+    expect(force).toMatch(/<textarea[^>]*name="reason"[^>]*maxLength="200"/i);
+    expect(force).toContain("Void 1 and close");
   });
 
   it("says so for a free table, with nothing to clear or force-close", async () => {
@@ -313,9 +319,8 @@ describe("the table detail screen", () => {
       expect(reopen).toContain(`name="session" value="${id}"`);
       expect(reopen).toContain("Reopen");
       expect(html).toContain("No open session");
-      expect(html).toContain(`closed at ${clock(closedAt)}`);
-      expect(html).toContain(`until ${clock(new Date(closedAt.getTime() + 15 * 60_000))}`);
-      expect(html).toContain("idle");
+      expect(html).toMatch(new RegExp(`Closed</dt><dd[^>]*>${clock(closedAt)}, closed as idle<`));
+      expect(html).toMatch(new RegExp(`Reopen until</dt><dd[^>]*>${clock(new Date(closedAt.getTime() + 15 * 60_000))}<`));
     });
 
     it("isn't offered once the 15 minutes have passed", async () => {

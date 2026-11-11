@@ -1,9 +1,14 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Field, inputClassName } from "@/app/dashboard/field";
+import { type FormEvent, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { Calendar, Check, MessageCircle, Phone } from "lucide-react";
+import { buttonVariants } from "@/components/ui/button";
+import { Notice } from "@/components/ui/notice";
+import { inputClassName } from "@/components/ui/input";
 import type { Confirmation, TimeChoice } from "@/lib/bookings";
+import { displayPhone } from "@/lib/display-phone";
 import { postForm } from "@/lib/form-response";
+import { cn } from "@/lib/utils";
 
 /** The part of Cloudflare's script this form uses. */
 type TurnstileApi = {
@@ -76,6 +81,10 @@ function useTurnstile(siteKey: string | undefined) {
   return { container, token };
 }
 
+/** The guest's filled control (S-41): grey until focused, then the surface. */
+const filled = cn(inputClassName, "border-transparent bg-surface-2 text-[16px] focus:bg-surface");
+const fieldLabel = "text-body font-medium text-ink";
+
 const noSubscription = () => () => {};
 /** False in the server's markup and until the browser has hydrated the form. */
 const useHydrated = () =>
@@ -118,6 +127,7 @@ export function DetailsForm({
   // a URL, and without party, date and time the route stores nothing), but a
   // disabled button spares them the JSON.
   const hydrated = useHydrated();
+  const id = useId();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -144,86 +154,129 @@ export function DetailsForm({
   if (confirmation) return <Confirmed confirmation={confirmation} />;
 
   return (
-    <form method="post" action={action} onSubmit={submit}>
-      <fieldset disabled={pending} className="flex flex-col gap-3">
-        <legend className="mb-3 text-sm font-medium">
-          Table for {party} on {dateLabel} at {time}
+    <form
+      id="details"
+      method="post"
+      action={action}
+      onSubmit={submit}
+      className="scroll-mt-4 rounded-card border border-line bg-surface px-4 py-5"
+    >
+      <fieldset disabled={pending} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+        <legend className="mb-4 flex w-full items-center gap-3 border-b border-line p-0 pb-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-control bg-brand-soft text-ink">
+            <Calendar aria-hidden className="size-5" />
+          </span>
+          <span className="flex flex-col">
+            <span className="text-lead font-semibold text-ink">
+              Table for {party} on {dateLabel} at <span className="tabular-nums">{time}</span>
+            </span>
+            <span className="text-caption text-ink-2">Your details, then confirm.</span>
+          </span>
         </legend>
-        <Field label="Name">
-          <input name="name" required maxLength={100} autoComplete="name" className={inputClassName} />
-        </Field>
-        <div className="grid grid-cols-[5rem_1fr] gap-2">
-          <Field label="Code">
+        <label className="flex flex-col gap-1.5">
+          <span className={fieldLabel}>Name</span>
+          <input name="name" required maxLength={100} autoComplete="name" className={filled} />
+        </label>
+        <div role="group" aria-labelledby={`${id}-phone`} className="flex flex-col gap-1.5">
+          <span id={`${id}-phone`} className={fieldLabel}>
+            WhatsApp number
+          </span>
+          <div className="grid grid-cols-[76px_minmax(0,1fr)] gap-2">
             <input
               name="countryCode"
               required
               defaultValue="+263"
               inputMode="tel"
               autoComplete="tel-country-code"
-              className={inputClassName}
+              aria-label="Country code"
+              className={cn(filled, "tabular-nums")}
             />
-          </Field>
-          <Field label="WhatsApp number">
             <input
               name="phone"
               type="tel"
               required
               autoComplete="tel-national"
-              className={inputClassName}
+              aria-labelledby={`${id}-phone`}
+              placeholder="77 200 0004"
+              className={cn(filled, "tabular-nums")}
             />
-          </Field>
+          </div>
         </div>
-        <Field label="Note (optional)">
-          <textarea name="note" maxLength={200} rows={2} className={inputClassName} />
-        </Field>
-        <label className="flex items-start gap-2 text-sm">
-          <input name="consent" type="checkbox" required className="mt-0.5" />
+        <label className="flex flex-col gap-1.5">
+          <span className={fieldLabel}>
+            Note <span className="font-normal text-ink-2">(optional)</span>
+          </span>
+          <textarea
+            name="note"
+            maxLength={200}
+            rows={2}
+            aria-describedby={`${id}-note`}
+            className={cn(filled, "min-h-[72px] resize-y")}
+          />
+          <span id={`${id}-note`} className="text-caption text-ink-2">
+            Up to 200 characters.
+          </span>
+        </label>
+        <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-control bg-surface-2 p-3 text-body text-ink">
+          <input
+            name="consent"
+            type="checkbox"
+            required
+            className="mt-px size-[22px] shrink-0 cursor-pointer accent-brand"
+          />
           Send my confirmation and reminder on WhatsApp.
         </label>
         <button
           type="submit"
           disabled={!hydrated}
-          className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+          className={cn(buttonVariants({ variant: "primary" }), "h-12 w-full")}
         >
-          Confirm booking
+          {pending ? "Confirming" : "Confirm booking"}
         </button>
-        <div ref={turnstileContainer} />
+        <div ref={turnstileContainer} className="flex justify-center empty:hidden" />
         {refusal && (
-          <div role="alert" className="flex flex-col gap-2 text-sm">
-            <p className="text-destructive">{refusal.error}</p>
-            {(refusal.contactPhone || refusal.whatsappLink) && (
-              <p className="flex flex-wrap gap-x-4">
-                {refusal.contactPhone && (
-                  <a className="underline" href={`tel:${refusal.contactPhone}`}>
-                    {refusal.contactPhone}
-                  </a>
-                )}
-                {refusal.whatsappLink && (
-                  <a className="underline" href={refusal.whatsappLink}>
-                    Message us on WhatsApp
-                  </a>
-                )}
-              </p>
-            )}
-            {refusal.times && refusal.times.length > 0 && (
-              <ul className="flex flex-wrap gap-2">
-                {refusal.times.map((choice) => (
-                  <li key={choice.time}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTime(choice.time);
-                        setRefusal(undefined);
-                      }}
-                      className="rounded-md border px-3 py-1.5"
+          <Notice tone="attention" role="alert">
+            <div className="flex flex-col gap-3">
+              <p>{refusal.error}</p>
+              {(refusal.contactPhone || refusal.whatsappLink) && (
+                <p className="flex flex-wrap gap-2">
+                  {refusal.contactPhone && (
+                    <a
+                      className={cn(buttonVariants({ variant: "secondary" }), "tabular-nums")}
+                      href={`tel:${refusal.contactPhone}`}
                     >
-                      {choice.time}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                      <Phone aria-hidden className="size-[18px]" />
+                      {displayPhone(refusal.contactPhone)}
+                    </a>
+                  )}
+                  {refusal.whatsappLink && (
+                    <a className={buttonVariants({ variant: "secondary" })} href={refusal.whatsappLink}>
+                      <MessageCircle aria-hidden className="size-[18px]" />
+                      Message us on WhatsApp
+                    </a>
+                  )}
+                </p>
+              )}
+              {refusal.times && refusal.times.length > 0 && (
+                <ul className="m-0 grid list-none grid-cols-4 gap-2 p-0">
+                  {refusal.times.map((choice) => (
+                    <li key={choice.time}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTime(choice.time);
+                          setRefusal(undefined);
+                        }}
+                        className="grid h-11 w-full cursor-pointer place-items-center rounded-control border border-transparent bg-surface font-medium text-ink tabular-nums transition-colors duration-150 ease-out hover:border-line"
+                      >
+                        {choice.time}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </Notice>
         )}
       </fieldset>
     </form>
@@ -232,18 +285,51 @@ export function DetailsForm({
 
 export function Confirmed({ confirmation }: { confirmation: Confirmation }) {
   const { restaurantName, dateLabel, time, party, manageToken, contactPhone } = confirmation;
+  const section = useRef<HTMLElement>(null);
+  // On a phone the choices sit above: bring the guest to the answer.
+  useEffect(() => section.current?.scrollIntoView({ block: "start" }), []);
   return (
-    <section role="status" className="flex flex-col gap-2">
-      <h2 className="text-lg font-semibold">You&apos;re booked</h2>
-      <p>
+    <section ref={section} role="status" className="flex scroll-mt-4 flex-col gap-5 pt-2">
+      <span className="grid size-14 place-items-center rounded-full bg-accent-soft text-accent">
+        <Check aria-hidden className="size-7" />
+      </span>
+      <h2 className="text-heading font-semibold tracking-[-0.015em] text-ink">You&apos;re booked</h2>
+      <p className="sr-only">
         {restaurantName}, {dateLabel} at {time}, party of {party}.
       </p>
+      <div aria-hidden className="overflow-hidden rounded-card border border-line bg-surface">
+        <div className="border-b border-dashed border-line p-4 text-lead font-semibold">{restaurantName}</div>
+        <dl className="m-0 grid grid-cols-[1.3fr_1fr_1fr]">
+          <div className="px-4 py-3">
+            <dt className="text-caption text-ink-2">Date</dt>
+            <dd className="m-0 mt-0.5 pt-[3px] text-lead font-semibold whitespace-nowrap">{dateLabel}</dd>
+          </div>
+          <div className="border-l border-line px-4 py-3">
+            <dt className="text-caption text-ink-2">Time</dt>
+            <dd className="m-0 mt-0.5 text-title font-semibold whitespace-nowrap tabular-nums">{time}</dd>
+          </div>
+          <div className="border-l border-line px-4 py-3">
+            <dt className="text-caption text-ink-2">Party</dt>
+            <dd className="m-0 mt-0.5 text-title font-semibold tabular-nums">{party}</dd>
+          </div>
+        </dl>
+      </div>
       {contactPhone && (
-        <p className="text-muted-foreground">
-          Need anything? Call <a className="underline" href={`tel:${contactPhone}`}>{contactPhone}</a>.
-        </p>
+        <div className="flex flex-col gap-2">
+          <p className="text-body text-ink-2">Need anything? Call the restaurant.</p>
+          <a
+            className={cn(buttonVariants({ variant: "secondary" }), "h-12 w-full tabular-nums")}
+            href={`tel:${contactPhone}`}
+          >
+            <Phone aria-hidden className="size-[18px]" />
+            {displayPhone(contactPhone)}
+          </a>
+        </div>
       )}
-      <a className="text-sm underline" href={`/b/${manageToken}`}>
+      <a
+        className="inline-flex min-h-11 items-center self-start text-body text-ink-2 underline underline-offset-[3px]"
+        href={`/b/${manageToken}`}
+      >
         Cancel booking
       </a>
     </section>

@@ -176,6 +176,56 @@ describe("the kitchen screen", () => {
     expect(await render()).toContain("No orders waiting");
   });
 
+  it("says what each empty column is waiting for", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+
+    const html = await render();
+
+    expect(column(html, "Placed")).toContain("No orders waiting");
+    expect(column(html, "Cooking")).toContain("Nothing cooking");
+    expect(column(html, "Done")).toContain("Nothing to take out");
+  });
+
+  it("counts each column's items, and puts an order's items in one ticket with its table once", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+    const { orderId } = await ordered(restaurant, { nameSnapshot: "Sadza" });
+    await owner.db.insert(orderItems).values({
+      restaurantId: restaurant.restaurantId,
+      orderId,
+      menuItemId: restaurant.itemId,
+      nameSnapshot: "Greens",
+      quantity: 1,
+      unitPriceUsd: "2",
+    });
+    await ordered(restaurant, { nameSnapshot: "Bream", status: "cooking" });
+
+    const html = await render();
+
+    const placed = column(html, "Placed");
+    expect(placed).toContain('aria-label="2 items"');
+    expect(column(html, "Cooking")).toContain('aria-label="1 item"');
+    expect(column(html, "Done")).toContain('aria-label="0 items"');
+    expect(placed.slice(placed.indexOf(`data-order="${orderId}"`)).match(/>Table 7</g)).toHaveLength(1);
+  });
+
+  it("marks an order waiting 25 minutes or more as late", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+    const { orderId } = await ordered(restaurant, { status: "cooking" });
+    await owner.db
+      .update(orders)
+      // On the database's clock, which the board ages against.
+      .set({ placedAt: sql`now() - interval '26 minutes 30 seconds'` })
+      .where(eq(orders.id, orderId));
+
+    const html = await render();
+
+    expect(html).toMatch(/data-age="red"/);
+    expect(html).toContain("26 min ago");
+  });
+
   it("shows only its own restaurant's orders", async () => {
     const mine = await orderingRestaurant(owner.db);
     const theirs = await orderingRestaurant(owner.db);

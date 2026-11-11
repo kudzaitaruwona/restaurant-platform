@@ -93,31 +93,6 @@ describe("the protected page", () => {
     }
   });
 
-  it("links an owner to the owner-only screens, and not staff", async () => {
-    expect(await render("a-owner")).toContain('href="/dashboard/staff"');
-    expect(await render("a-owner")).toContain('href="/dashboard/settings"');
-    expect(await render("a-owner")).toContain('href="/dashboard/menu"');
-    expect(await render("a-owner")).toContain('href="/dashboard/tables"');
-    expect(await render("a-owner")).toContain('href="/dashboard/bookings"');
-    expect(await render("a-owner")).toContain('href="/dashboard/bookings/settings"');
-    expect(await render("a-staff")).not.toContain("/dashboard/staff");
-    expect(await render("a-staff")).not.toContain("/dashboard/settings");
-    expect(await render("a-staff")).not.toContain("/dashboard/tables");
-    expect(await render("a-staff")).not.toContain("/dashboard/bookings/settings");
-    expect(await render("a-staff")).toContain('href="/dashboard/menu"');
-    expect(await render("a-staff")).toContain('href="/dashboard/bookings"');
-  });
-
-  it("links owner and staff alike to the floor (S-26)", async () => {
-    expect(await render("a-owner")).toContain('href="/dashboard/floor"');
-    expect(await render("a-staff")).toContain('href="/dashboard/floor"');
-  });
-
-  it("links owner and staff alike to the kitchen (S-26)", async () => {
-    expect(await render("a-owner")).toContain('href="/dashboard/kitchen"');
-    expect(await render("a-staff")).toContain('href="/dashboard/kitchen"');
-  });
-
   it("refuses no identity with unauthorized(), before any data renders", async () => {
     vi.stubEnv("DEV_AUTH_BYPASS", "");
     const Dashboard = await dashboard();

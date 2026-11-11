@@ -3,8 +3,8 @@ import { KitchenScreen } from "./kitchen-screen";
 
 export default function Page() {
   return (
-    <main className="mx-auto flex w-full max-w-screen-2xl flex-1 flex-col gap-6 px-4 py-6">
-      <Suspense fallback={<p className="text-muted-foreground">Loading…</p>}>
+    <main data-page-theme="dark" className="flex flex-1 flex-col">
+      <Suspense fallback={<p className="text-ink-2">Loading the board…</p>}>
         <KitchenScreen />
       </Suspense>
     </main>
