@@ -254,10 +254,12 @@
     transition-delay: 0ms;
   }
   .staff-rail:has(:focus-visible) .rail-fade,
+  .staff-rail:has([role="alert"]) .rail-fade,
   .staff-rail[data-open="true"] .rail-fade {
     opacity: 1;
   }
   .staff-rail:has(:focus-visible) .rail-collapsed-only,
+  .staff-rail:has([role="alert"]) .rail-collapsed-only,
   .staff-rail[data-open="true"] .rail-collapsed-only {
     opacity: 0;
   }
