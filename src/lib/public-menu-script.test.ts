@@ -7,6 +7,7 @@ import { ORDER_SCRIPT } from "./public-menu";
  * just enough of a page: a small fake DOM with the elements it looks up, fetch,
  * localStorage and a timer to tick by hand. Its remembered name (landed in #69,
  * proposed, S-40), the cart, the notes, and the order tracker's polling (#70).
+ * Its messages each have a place of their own on the page (S-41).
  */
 
 class FakeElement {
@@ -19,6 +20,8 @@ class FakeElement {
   maxLength = 0;
   placeholder = "";
   dataset: Record<string, string> = {};
+  /** The menu row an Add button sits in. */
+  row?: FakeElement;
   attributes: Record<string, string> = {};
   children: FakeElement[] = [];
   private text = "";
@@ -51,7 +54,11 @@ class FakeElement {
     return this.listeners.get(type)?.({ target: this, preventDefault() {}, ...event });
   }
   closest(selector: string) {
+    if (selector === "li") return this.row ?? null;
     return selector === "button[data-item]" && this.dataset.item ? this : null;
+  }
+  querySelector(selector: string) {
+    return this.find((element) => `.${element.className}` === selector)[0] ?? null;
   }
   /** Every element below this one, this one included, that a test asks for. */
   find(match: (element: FakeElement) => boolean): FakeElement[] {
@@ -88,14 +95,19 @@ async function loadPage(
   const form = Object.assign(new FakeElement(), { elements: fields, hidden: true });
   const elements: Record<string, FakeElement> = {
     order: form,
-    "order-status": new FakeElement(),
+    "order-error": new FakeElement(),
     "order-cancel": new FakeElement(),
+    "order-scrim": new FakeElement(),
     "cart-open": Object.assign(new FakeElement(), { hidden: true }),
+    "cart-count": new FakeElement(),
+    "cart-items": new FakeElement(),
     cart: new FakeElement(),
     tracker: Object.assign(new FakeElement(), { hidden: true }),
+    "tracker-confirm": new FakeElement(),
     "tracker-state": new FakeElement(),
     "tracker-list": new FakeElement(),
     "call-waiter": Object.assign(new FakeElement(), { hidden: true }),
+    "waiter-status": new FakeElement(),
   };
   const document = Object.assign(new FakeElement(), {
     hidden: false,
@@ -105,10 +117,13 @@ async function loadPage(
   });
   const addButtons: FakeElement[] = [];
   const addButton = (id: string, name: string, price = "$8.00") => {
+    const left = Object.assign(new FakeElement(), { tagName: "div", className: "left" });
+    const row = Object.assign(new FakeElement(), { tagName: "li", children: [left] });
     const button = Object.assign(new FakeElement(), {
       tagName: "button",
       hidden: true,
       dataset: { item: id, name, price },
+      row,
     });
     addButtons.push(button);
     return button;
@@ -182,9 +197,15 @@ async function loadPage(
     rice,
     name: fields.name,
     form,
-    status: elements["order-status"],
+    /** Where a problem with the order shows: inside the sheet, above its buttons. */
+    error: elements["order-error"],
+    /** Where a placed order is confirmed: at the top of the tracker. */
+    confirmation: elements["tracker-confirm"],
     open: elements["cart-open"],
+    count: elements["cart-count"],
     waiter: elements["call-waiter"],
+    /** Where the waiter's answer shows: under the header. */
+    waiterStatus: elements["waiter-status"],
     cart: elements.cart,
     tracker: elements.tracker,
     trackerState: elements["tracker-state"],
@@ -192,6 +213,16 @@ async function loadPage(
     cartText,
     buttonLabelled,
     noteInputs: () => elements.cart.find((el) => el.tagName === "input"),
+    /** The quantity each cart line shows in its stepper, by name. */
+    quantities: () =>
+      Object.fromEntries(
+        elements.cart.children.map((line) => [
+          line.find((el) => el.className === "name")[0]?.textContent,
+          Number(line.find((el) => el.className === "q")[0]?.textContent),
+        ]),
+      ),
+    /** What an Add button's row says about the cart. */
+    inOrder: (button: FakeElement) => button.row!.querySelector(".left")!.textContent,
     document,
     async add(button: FakeElement) {
       await document.dispatch("click", { target: button });
@@ -267,7 +298,8 @@ describe("the table page remembers the customer's name", () => {
     await page.placeAs("   ");
 
     expect(page.state.requests.filter((request) => request.path === "/orders")).toEqual([]);
-    expect(page.status.textContent).toMatch(/name/i);
+    expect(page.error.textContent).toMatch(/name/i);
+    expect(page.form.hidden).toBe(false);
   });
 });
 
@@ -287,7 +319,22 @@ describe("the cart", () => {
     await page.add(page.rice);
 
     expect(page.open.hidden).toBe(false);
-    expect(page.open.textContent).toBe("Your order (3)");
+    expect(page.count.textContent).toBe("3");
+    expect(page.open.attributes["aria-label"]).toBe("Your order, 3 items");
+  });
+
+  it("says on each item's row how many are in the order, and clears it once ordered", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    expect(page.inOrder(page.stew)).toBe("");
+
+    await page.add(page.stew);
+    await page.add(page.stew);
+
+    expect(page.inOrder(page.stew)).toBe("2 in your order");
+    expect(page.inOrder(page.rice)).toBe("");
+
+    await page.placeAs("Tariro");
+    expect(page.inOrder(page.stew)).toBe("");
   });
 
   it("holds several items with their quantities, one line per item, with its price", async () => {
@@ -298,9 +345,8 @@ describe("the cart", () => {
     await page.add(page.rice);
 
     expect(page.cart.children).toHaveLength(2);
-    expect(page.cartText()).toContain("2 × Beef stew");
+    expect(page.quantities()).toEqual({ "Beef stew": 2, Rice: 1 });
     expect(page.cartText()).toContain("$8.00 each");
-    expect(page.cartText()).toContain("1 × Rice");
     expect(page.cartText()).toContain("$3.00");
   });
 
@@ -310,7 +356,7 @@ describe("the cart", () => {
 
     page.buttonLabelled("+")!.dispatch("click");
     page.buttonLabelled("+")!.dispatch("click");
-    expect(page.cartText()).toContain("3 × Beef stew");
+    expect(page.quantities()).toEqual({ "Beef stew": 3 });
 
     for (let n = 0; n < 3; n++) page.buttonLabelled("−")?.dispatch("click");
     expect(page.cart.children).toHaveLength(0);
@@ -321,7 +367,7 @@ describe("the cart", () => {
     const page = await loadPage(new Map(), "session-1");
     await page.add(page.stew);
     for (let n = 0; n < 25; n++) page.buttonLabelled("+")?.dispatch("click");
-    expect(page.cartText()).toContain("20 × Beef stew");
+    expect(page.quantities()).toEqual({ "Beef stew": 20 });
 
     const many = Array.from({ length: 25 }, (_, n) => {
       const button = Object.assign(new FakeElement(), {
@@ -333,7 +379,8 @@ describe("the cart", () => {
     for (const button of many) await page.add(button);
 
     expect(page.cart.children).toHaveLength(20);
-    expect(page.status.textContent).toMatch(/20/);
+    expect(page.error.textContent).toMatch(/20/);
+    expect(page.form.hidden).toBe(false);
   });
 
   it("removes a line", async () => {
@@ -354,6 +401,10 @@ describe("the cart", () => {
     page.open.dispatch("click");
     expect(page.form.hidden).toBe(false);
     page.document.getElementById("order-cancel").dispatch("click");
+    expect(page.form.hidden).toBe(true);
+
+    page.open.dispatch("click");
+    page.document.getElementById("order-scrim").dispatch("click");
     expect(page.form.hidden).toBe(true);
   });
 });
@@ -392,7 +443,7 @@ describe("placing the order", () => {
     expect([...new Set(body.keys())].sort()).toEqual(["item", "name", "note", "quantity", "session"]);
   });
 
-  it("empties the cart, closes it, and says there is nothing to pay on the page", async () => {
+  it("empties the cart, closes it, and confirms at the top of the tracker that there is nothing to pay on the page", async () => {
     const page = await loadPage(new Map(), "session-1");
     await page.add(page.stew);
     await page.add(page.rice);
@@ -403,8 +454,13 @@ describe("placing the order", () => {
     expect(page.cart.children).toHaveLength(0);
     expect(page.open.hidden).toBe(true);
     expect(page.form.hidden).toBe(true);
-    expect(page.status.textContent).toContain("1 × Dish 1, 1 × Dish 2");
-    expect(page.status.textContent).toContain("Pay at the table with your waiter as usual");
+    expect(page.confirmation.textContent).toContain("1 × Dish 1, 1 × Dish 2");
+    expect(page.confirmation.textContent).toContain("Pay at the table with your waiter as usual");
+    expect(page.tracker.hidden).toBe(false);
+    expect(page.error.textContent).toBe("");
+
+    await page.add(page.rice);
+    expect(page.confirmation.textContent).toBe("");
   });
 
   it("keeps the cart when the order doesn't go through", async () => {
@@ -415,7 +471,9 @@ describe("placing the order", () => {
     await page.placeAs("Tariro");
 
     expect(page.cart.children).toHaveLength(1);
-    expect(page.status.textContent).toBe("That's a lot of orders at once.");
+    expect(page.error.textContent).toBe("That's a lot of orders at once.");
+    expect(page.form.hidden).toBe(false);
+    expect(page.confirmation.textContent).toBe("");
   });
 
   it("takes out an item that is no longer available, and keeps the rest", async () => {
@@ -431,7 +489,7 @@ describe("placing the order", () => {
 
     expect(page.cartText()).toContain("Beef stew");
     expect(page.cartText()).not.toContain("Rice");
-    expect(page.status.textContent).toContain("isn't available");
+    expect(page.error.textContent).toContain("isn't available");
   });
 
   it("rejoins the table's session when the order says it has changed", async () => {
@@ -515,7 +573,13 @@ describe("the order tracker", () => {
       expect.stringContaining("Ordered"),
       expect.stringContaining("Cooking"),
       expect.stringContaining("Ready"),
-      expect.stringContaining("Delivered"),
+      expect.stringContaining("Served"),
+    ]);
+    expect(page.trackerList.children.map((row) => row.children[1].className)).toEqual([
+      "pill pill-placed",
+      "pill pill-cooking",
+      "pill pill-done",
+      "pill pill-served ico",
     ]);
   });
 
@@ -646,8 +710,9 @@ describe("Call a waiter", () => {
     await settle();
 
     expect(waiterCalls(page)).toEqual([expect.objectContaining({ method: "POST", body: undefined })]);
-    expect(page.status.textContent).toMatch(/waiter/i);
-    expect(page.status.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toMatch(/waiter/i);
+    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiter.dataset).toHaveProperty("called");
   });
 
   it("says so when it didn't go through, and can be tried again", async () => {
@@ -656,12 +721,14 @@ describe("Call a waiter", () => {
 
     await page.waiter.dispatch("click");
     await settle();
-    expect(page.status.textContent).toMatch(/didn't go through/i);
+    expect(page.waiterStatus.textContent).toMatch(/didn't go through/i);
+    expect(page.waiterStatus.dataset.tone).toBe("error");
 
     page.state.waiterReply = undefined;
     await page.waiter.dispatch("click");
     await settle();
-    expect(page.status.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
   });
 
   it("is one call at a time: a second tap while the first is in flight sends nothing", async () => {
@@ -699,6 +766,6 @@ describe("Call a waiter", () => {
     const page = await loadPage(new Map(), "session-1");
     await page.waiter.dispatch("click");
     await settle();
-    expect(page.status.children).toEqual([]);
+    expect(page.waiterStatus.children).toEqual([]);
   });
 });
