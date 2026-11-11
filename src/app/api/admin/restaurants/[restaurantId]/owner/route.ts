@@ -1,26 +1,13 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
+import { newOwner } from "@/lib/new-restaurant";
 import {
   createFirstOwner,
   getPlatformAdminContext,
 } from "@/lib/tenant/platform-admin";
 
 const restaurantIdParam = z.uuid();
-
-const newOwner = z.object({
-  // Lowercased because sign-in matches on it and the unique index is exact.
-  email: z
-    .string("Enter an email address.")
-    .trim()
-    .toLowerCase()
-    .pipe(z.email("Enter an email address.")),
-  displayName: z
-    .string("Enter a name.")
-    .trim()
-    .min(1, "Enter a name.")
-    .max(200, "That name is too long."),
-});
 
 /** Creates a restaurant's first staff record, who is its owner (S-26). */
 export async function POST(

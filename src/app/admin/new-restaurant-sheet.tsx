@@ -7,24 +7,13 @@ import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Field, Input, Select, inputClassName } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
+import { slugFrom } from "@/lib/slug";
 import { cn } from "@/lib/utils";
 import { pressable, Reveal } from "../motion";
 import { CopyMessage } from "./copy-message";
 import { ownerSignInMessage } from "./sign-in-message";
 
 type Step = "restaurant" | "owner" | "done";
-
-/** The public address follows the name until the admin edits it. */
-export function slugFrom(name: string) {
-  return name
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63)
-    .replace(/-+$/, "");
-}
 
 /** The iOS drawer curve: quick to move, long to settle. */
 const easeDrawer = "ease-[cubic-bezier(0.32,0.72,0,1)]";

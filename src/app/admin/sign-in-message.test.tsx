@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { CopyMessage } from "./copy-message";
-import { slugFrom } from "./new-restaurant-sheet";
+import { slugFrom } from "@/lib/slug";
 import { ownerSignInMessage } from "./sign-in-message";
 
 describe("the owner's sign-in message", () => {

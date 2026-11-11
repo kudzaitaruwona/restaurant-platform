@@ -1,6 +1,7 @@
 import { BookOpen, Ban, ChevronUp, ExternalLink, ImageIcon, Info, Package, Pencil, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Card } from "@/components/ui/card";
 import { IconButton } from "@/components/ui/icon-button";
 import { PageHeader } from "@/components/ui/page-header";
@@ -80,6 +81,22 @@ export async function MenuScreen() {
               <ExternalLink aria-hidden />
               See what customers see
             </a>
+            {isOwner && (
+              <CsvImportDialog
+                kind="menu"
+                action="/api/menu/import"
+                title="Import menu items"
+                noun={{ one: "item", other: "items" }}
+                intro={
+                  <p>
+                    Columns: category, name, description, price_usd, price_zig and available (yes
+                    or no, blank is yes). Each item needs a USD price, a ZiG price, or both; leave
+                    price_zig blank to calculate it from the rate. New categories are added, and
+                    an item already in its category is skipped.
+                  </p>
+                }
+              />
+            )}
             {canAddItem && (
               <a
                 href="#add-item"

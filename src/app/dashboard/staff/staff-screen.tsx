@@ -1,4 +1,5 @@
 import { UserCog, UserX } from "lucide-react";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/input";
@@ -31,6 +32,20 @@ export async function StaffScreen() {
       <PageHeader
         title="Staff"
         subtitle={`${active} ${active === 1 ? "person" : "people"} can sign in. They sign in with their email address.`}
+        actions={
+          <CsvImportDialog
+            kind="staff"
+            action="/api/staff/import"
+            title="Import staff"
+            noun={{ one: "person", other: "people" }}
+            intro={
+              <p>
+                Columns: email, name and role (owner or staff, blank is staff). Each person is added
+                as if by hand, and invited by email. Someone already on your staff is skipped.
+              </p>
+            }
+          />
+        }
       />
 
       {ownerLogins > OWNER_LOGIN_SOFT_LIMIT && (

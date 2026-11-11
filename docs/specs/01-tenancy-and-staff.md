@@ -55,6 +55,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Platform admin and onboarding
 - Admin screen: create a restaurant (name, slug, timezone, currency mode), then create its first staff record, who is its owner (S-26).
+- *(Proposed, S-43)* The admin can also create restaurants with their first owners from a CSV on `/admin` (`restaurant_name`, `slug` blank to make it from the name, `timezone` blank for Africa/Harare, `currency_mode` blank for `usd_primary`, `owner_email`, `owner_name`), with a preview first. Each row goes through the same `platform_*` functions as the single forms (S-28), and each owner is invited as per S-42. A slug in use is skipped; a restaurant whose owner's email turns out to be taken is still created, and the admin adds the owner from its card.
 - The admin screen also shows each restaurant's booking success metrics (spec 04) without entering it. This is a cross-tenant read, through `platform_list_booking_metrics`, and it isn't audited, like other reads *(proposed, S-34)*.
 - "Enter restaurant" switches the admin into that tenant's staff UI, with a persistent banner reading "Acting as admin in {restaurant}".
 - A restaurant can be entered before it has an owner. Its first staff record is still its owner (S-26), so until there is one the staff screen adds only an owner.
@@ -69,6 +70,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 ### Restaurant settings and staff management (owner only)
 - Restaurant settings: name, `contact_phone`, Wi-Fi details, `currency_mode`, timezone.
 - Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
+- *(Proposed, S-43)* Staff can also be added from a CSV (`email`, `name`, `role`, blank role is staff), with the same preview and confirm as the menu import (spec 02). Each person goes through the single add, one at a time, so is audited and invited as per S-42. An email already on the staff or earlier in the file is skipped and reported, never duplicated; one another restaurant has shows on import. With no owner yet, an owner row must come before any staff row.
 
 ### Audit log
 Write an entry for: exchange rate changes, staff created, deactivated or role-changed, QR regeneration, booking cancellations and moves by staff, and (phase 6) force-close, void, reject an order (S-36) and reopen.
@@ -77,6 +79,7 @@ Write an entry for: exchange rate changes, staff created, deactivated or role-ch
 - *(proposed, #74)* force-close as `session.force_close` on the session (the reason and the items it voided), besides each item's `order_item.void`. Clear table isn't on the list, so a staff member's isn't audited; an entered platform admin's is, as `session.clear`, like every admin write (S-28).
 - *(proposed, #77)* dismissing a table's "Call a waiter" (`session.waiter_dismiss`, on the session), only when a call was pending; a dismissal with nothing pending writes no entry.
 - *(proposed, #76)* reopen as `session.reopen` on the session (when it had closed and how), for owner and staff alike; a refused reopen writes no entry.
+- *(proposed, S-43)* a menu or tables import, once per import (`menu.import`, `table.import`, with the counts), for owners as well as an entered admin. A staff import is audited per person as `staff.create`.
 - *(proposed, #75)* idle expiry isn't on the list and isn't audited: no one acted, and the session's `close_reason = idle_expiry` with `closed_by` null records it.
 
 ## Stack (decided, D-07)

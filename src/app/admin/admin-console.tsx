@@ -1,4 +1,5 @@
 import { ArrowRight, Circle, CircleCheck } from "lucide-react";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Button } from "@/components/ui/button";
 import { cardClassName } from "@/components/ui/card";
 import { Field, Input } from "@/components/ui/input";
@@ -250,14 +251,31 @@ export async function AdminConsole() {
             : `${restaurants.length} restaurants`
         }
         actions={
-          <NewRestaurantSheet
-            timezone={DEFAULT_TIMEZONE}
-            currencyModes={currencyMode.enumValues.map((mode) => ({
-              value: mode,
-              label: currencyModeLabels[mode],
-            }))}
-            appUrl={appUrl}
-          />
+          <>
+            <CsvImportDialog
+              kind="restaurants"
+              action="/api/admin/restaurants/import"
+              title="Import restaurants"
+              noun={{ one: "restaurant", other: "restaurants" }}
+              triggerSize="compact"
+              intro={
+                <p>
+                  Columns: restaurant_name, slug (blank makes one from the name), timezone (blank is{" "}
+                  {DEFAULT_TIMEZONE}), currency_mode (usd_only, zig_only, usd_primary, zig_primary or
+                  both; blank is usd_primary), owner_email and owner_name. Each restaurant is created
+                  with its owner, and the owner is invited by email.
+                </p>
+              }
+            />
+            <NewRestaurantSheet
+              timezone={DEFAULT_TIMEZONE}
+              currencyModes={currencyMode.enumValues.map((mode) => ({
+                value: mode,
+                label: currencyModeLabels[mode],
+              }))}
+              appUrl={appUrl}
+            />
+          </>
         }
       />
 
