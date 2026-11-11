@@ -2,6 +2,7 @@ import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { pressable } from "./motion";
 
 export default function Home() {
   return (
@@ -25,7 +26,7 @@ export default function Home() {
             View the project
             <ArrowUpRight aria-hidden strokeWidth={1.75} />
           </Button>
-          <Link href="/login" className={cn(buttonVariants({ variant: "secondary" }))}>
+          <Link href="/login" className={cn(buttonVariants({ variant: "secondary" }), pressable)}>
             Staff sign-in
           </Link>
         </div>

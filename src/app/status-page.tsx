@@ -4,7 +4,9 @@ import type { ReactNode } from "react";
  * The calm centred page (S-41) behind sign-in, signed-out, no-access and
  * not-found: a quiet icon, a title, a line of help, then the way on. No staff
  * shell, so it reads the same to a guest who wandered in and to a waiter whose
- * session ended.
+ * session ended. Pinned from the top, not centred: when a step in the card
+ * grows or shrinks (sign-in's "check your email"), the card's top stays put
+ * and only its bottom edge moves.
  */
 export function StatusPage({
   icon,
@@ -22,7 +24,7 @@ export function StatusPage({
   footer?: ReactNode;
 }) {
   return (
-    <main className="flex w-full flex-1 flex-col items-center justify-center bg-page px-4 py-12 sm:py-20">
+    <main className="flex w-full flex-1 flex-col items-center bg-page px-4 pt-[max(48px,14vh)] pb-12">
       <div className="flex w-full max-w-[400px] flex-col gap-4">
         <div className="flex flex-col gap-6 rounded-card border border-line bg-surface p-6 text-ink sm:p-8">
           <div className="flex flex-col gap-4">

@@ -15,6 +15,7 @@ import {
   onboardingItems,
 } from "@/lib/tenant/platform-admin";
 import { BookingMetricsPanel } from "../dashboard/booking-metrics";
+import { easeOut } from "../motion";
 import { AdminForm } from "./admin-form";
 
 const currencyModeLabels: Record<CurrencyMode, string> = {
@@ -87,9 +88,13 @@ function Onboarding({
         aria-hidden
         className="h-1.5 overflow-hidden rounded-full bg-surface-2"
       >
+        {/* scaleX, not width: it eases along on the GPU when a tick refreshes it. */}
         <div
-          className="h-full rounded-full bg-accent"
-          style={{ width: `${(done / onboardingItems.length) * 100}%` }}
+          className={cn(
+            "h-full origin-left rounded-full bg-accent transition-transform duration-300 motion-reduce:transition-none",
+            easeOut,
+          )}
+          style={{ transform: `scaleX(${done / onboardingItems.length})` }}
         />
       </div>
       <ul className="grid gap-x-6 sm:grid-cols-2">
@@ -171,6 +176,7 @@ function RestaurantItem({
           <AdminForm
             action={`/api/admin/restaurants/${restaurant.id}/owner`}
             submitLabel="Create owner"
+            pendingLabel="Creating owner"
             className="grid gap-3 sm:grid-cols-2"
           >
             <Field label="Owner's email">
@@ -247,6 +253,7 @@ export async function AdminConsole() {
           <AdminForm
             action="/api/admin/restaurants"
             submitLabel="Create restaurant"
+            pendingLabel="Creating restaurant"
           >
             <Field label="Name">
               <Input name="name" required maxLength={200} />

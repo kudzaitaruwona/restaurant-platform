@@ -4,7 +4,9 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
+import { LoaderCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { pressable, Reveal } from "../motion";
 
 /**
  * Posts to an admin route and keeps what was typed when the route says no, which
@@ -13,6 +15,7 @@ import { cn } from "@/lib/utils";
 export function AdminForm({
   action,
   submitLabel,
+  pendingLabel,
   submitVariant = "primary",
   inline = false,
   className,
@@ -20,6 +23,8 @@ export function AdminForm({
 }: {
   action: string;
   submitLabel: string;
+  /** What the button says while the post is out ("Creating restaurant"). */
+  pendingLabel?: string;
   submitVariant?: ButtonProps["variant"];
   /** A one-button form sitting in a row (e.g. a checklist item). */
   inline?: boolean;
@@ -28,7 +33,13 @@ export function AdminForm({
   children: ReactNode;
 }) {
   const router = useRouter();
-  const [error, setError] = useState<string>();
+  // Kept after it's dismissed, so the closing Reveal still has words in it.
+  const [message, setMessage] = useState<string>();
+  const [showError, setShowError] = useState(false);
+  const setError = (next: string | undefined) => {
+    if (next) setMessage(next);
+    setShowError(Boolean(next));
+  };
   const [pending, setPending] = useState(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -43,6 +54,8 @@ export function AdminForm({
       });
       if (response.ok) {
         form.reset();
+        // Ready for the next one: back to the first field.
+        if (!inline) form.querySelector<HTMLElement>("input:not([type=hidden])")?.focus();
         router.refresh();
         return;
       }
@@ -61,34 +74,48 @@ export function AdminForm({
       variant={submitVariant}
       size="compact"
       disabled={pending}
-      className={inline ? undefined : "self-start"}
+      aria-busy={pending || undefined}
+      className={cn(inline ? undefined : "self-start", pressable)}
     >
-      {submitLabel}
+      {pending && !inline && (
+        <LoaderCircle
+          aria-hidden
+          className="animate-spin [animation-duration:700ms] motion-reduce:animate-none"
+        />
+      )}
+      {pending ? (pendingLabel ?? submitLabel) : submitLabel}
     </Button>
   );
 
   if (inline) {
     return (
-      <form onSubmit={submit} className="flex flex-col items-end gap-1">
+      <form onSubmit={submit} className="flex flex-col items-end">
         {children}
         {button}
-        {error && (
-          <p role="alert" className="text-caption text-danger">
-            {error}
+        <Reveal open={showError}>
+          <p role={showError ? "alert" : undefined} className="pt-1 text-caption text-danger">
+            {message}
           </p>
-        )}
+        </Reveal>
       </form>
     );
   }
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      <div className={cn("flex flex-col gap-4", className)}>{children}</div>
-      {error && (
-        <Notice role="alert" tone="danger">
-          {error}
-        </Notice>
-      )}
+      <div className="flex flex-col">
+        <div className={cn("flex flex-col gap-4", className)}>{children}</div>
+        <Reveal open={showError}>
+          <div className="pt-4">
+            {/* Nothing in the markup until there's something to say. */}
+            {message && (
+              <Notice role={showError ? "alert" : undefined} tone="danger">
+                {message}
+              </Notice>
+            )}
+          </div>
+        </Reveal>
+      </div>
       {button}
     </form>
   );
