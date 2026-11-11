@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { getBoard } from "@/lib/kitchen";
 import { getTenantContext } from "@/lib/tenant";
 import { KitchenBoard } from "./kitchen-board";
@@ -12,15 +11,5 @@ export async function KitchenScreen() {
   const tenant = await getTenantContext();
   const board = await getBoard(tenant);
 
-  return (
-    <>
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="font-heading text-3xl font-semibold tracking-tight">Kitchen</h1>
-        <Link className="underline" href="/dashboard">
-          Dashboard
-        </Link>
-      </div>
-      <KitchenBoard initial={board} />
-    </>
-  );
+  return <KitchenBoard initial={board} />;
 }
