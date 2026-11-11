@@ -89,7 +89,11 @@ export function ConfirmDialog({
       event.preventDefault(); // stay in charge of `open`
       if (!pending) onCancel();
     };
-    const closed = () => setProblem(undefined);
+    // Clear the reason too, so reopening the same form doesn't show the last one.
+    const closed = () => {
+      setProblem(undefined);
+      if (field.current) field.current.value = "";
+    };
     element.addEventListener("cancel", cancel);
     element.addEventListener("close", closed);
     return () => {
@@ -114,11 +118,14 @@ export function ConfirmDialog({
       ref={dialog}
       aria-labelledby={`${id}title`}
       aria-describedby={description ? `${id}desc` : undefined}
-      className="ui-dialog m-auto w-[min(440px,calc(100vw-32px))] max-w-none rounded-card border-0 bg-surface p-6 text-body text-ink shadow-float"
+      className="ui-dialog m-auto w-[min(440px,calc(100vw-32px))] max-w-none rounded-card border-0 bg-surface p-0 text-body text-ink shadow-float"
+      // Only the backdrop is the dialog itself: the content sits in a padded
+      // inner box, so a tap on the padding or between fields doesn't cancel.
       onClick={(event) => {
         if (event.target === event.currentTarget && !pending) onCancel();
       }}
     >
+      <div className="p-6">
       <h2 id={`${id}title`} className="text-title font-semibold">
         {title}
       </h2>
@@ -162,6 +169,7 @@ export function ConfirmDialog({
         >
           {confirmLabel}
         </Button>
+      </div>
       </div>
     </dialog>
   );

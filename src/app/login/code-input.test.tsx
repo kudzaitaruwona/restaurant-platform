@@ -15,6 +15,11 @@ describe("the code input", () => {
     expect(html).toContain('<div aria-hidden="true" class="grid grid-cols-6');
   });
 
+  it("sets no maxlength, which would cut a pasted \"123 456\" before the space is dropped", () => {
+    const html = renderToStaticMarkup(<CodeInput value="" onChange={noop} onComplete={noop} />);
+    expect(html).not.toMatch(/maxLength|maxlength/);
+  });
+
   it.each([
     ["123456", "123456"],
     ["123 456", "123456"],

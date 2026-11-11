@@ -77,7 +77,8 @@ export function CodeInput({
         inputMode="numeric"
         autoComplete="one-time-code"
         pattern="[0-9]*"
-        maxLength={LENGTH}
+        // No maxLength: the browser would cut a pasted "123 456" to "123 45"
+        // before codeFrom could drop the space. codeFrom caps it at 6 digits.
         required
         autoFocus
         // Read-only rather than disabled while checking, so focus stays put.

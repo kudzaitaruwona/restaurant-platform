@@ -33,6 +33,13 @@ describe("the confirm dialog", () => {
     expect(html).toMatch(new RegExp(`id="${describedBy}"[^>]*>Blessing Moyo, 19:00`));
   });
 
+  it("pads an inner box, not the dialog, so only a tap on the backdrop cancels", () => {
+    const html = render();
+    expect(html).toMatch(/^<dialog[^>]*class="[^"]*\bp-0\b/);
+    expect(html).not.toMatch(/^<dialog[^>]*class="[^"]*\bp-6\b/);
+    expect(html).toMatch(/^<dialog[^>]*><div class="p-6"><h2/);
+  });
+
   it("offers the way back first and the action by name, in red by default", () => {
     const html = render();
     expect(html.indexOf("Keep booking")).toBeLessThan(html.indexOf("Cancel booking"));
