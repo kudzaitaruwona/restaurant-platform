@@ -40,8 +40,9 @@ describe("the booking metrics panel", () => {
     const shown = text(none);
 
     expect(shown).not.toContain("0%");
-    expect(shown).toContain("Booked online – No bookings yet");
-    expect(shown).toContain("No-show rate – No finished bookings yet");
+    expect(shown).not.toMatch(/[–—]/);
+    expect(shown).toContain("Booked online Not yet No bookings yet");
+    expect(shown).toContain("No-show rate Not yet No finished bookings yet");
   });
 
   it("shows a real 0% no-show rate as 0%", () => {
