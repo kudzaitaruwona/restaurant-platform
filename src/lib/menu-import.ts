@@ -1,5 +1,5 @@
 import "server-only";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { categories, menuItems, restaurants } from "@/db/schema";
 import { readCsvTable, yesNo } from "@/lib/csv";
 import {
@@ -10,7 +10,7 @@ import {
   reportRow,
   unique,
 } from "@/lib/csv-import";
-import { hasAPrice, insertCategory, insertMenuItem, itemFields, newCategory, noPrice } from "@/lib/menu";
+import { hasAPrice, itemFields, newCategory, noPrice } from "@/lib/menu";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -18,10 +18,11 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
 /**
  * Menu import from CSV (S-43, spec 02). Owner only, as the menu is (S-26):
  * callers check requireOwner(ctx). Each row goes through the item form's own
- * rules (itemFields, hasAPrice) and the same inserts (insertCategory,
- * insertMenuItem), so prices, limits and sort order can't differ from adding
- * one by hand. Nothing is overwritten or deleted: a row naming an item already
- * in that category is skipped.
+ * rules (itemFields, hasAPrice), so prices and limits can't differ from adding
+ * one by hand, and lands where adding it by hand would: a new category after
+ * the last one, an item at the end of its category. The rows go in with one
+ * insert per kind, not one per row (S-43). Nothing is overwritten or deleted: a
+ * row naming an item already in that category is skipped.
  */
 
 type Importer = Pick<TenantContext, "restaurantId" | "staffId" | "platformAdminId">;
@@ -178,23 +179,56 @@ export async function importMenu(
     for (const category of live) {
       if (!categoryIds.has(nameKey(category.name))) categoryIds.set(nameKey(category.name), category.id);
     }
-    let newCategories = 0;
-    for (const { category, ...item } of ready) {
-      let categoryId = categoryIds.get(nameKey(category));
-      if (!categoryId) {
-        ({ id: categoryId } = await insertCategory(tx, ctx, { name: category }, { audit: false }));
-        categoryIds.set(nameKey(category), categoryId);
-        newCategories++;
+
+    // The categories the file names that don't exist yet, in file order, after
+    // the last one (archived ones included, as for adding one by hand).
+    const newNames = new Map<string, string>();
+    for (const { category } of ready) {
+      if (!categoryIds.has(nameKey(category)) && !newNames.has(nameKey(category))) {
+        newNames.set(nameKey(category), category);
       }
-      await insertMenuItem(tx, ctx, { ...item, categoryId }, { audit: false });
     }
+    if (newNames.size > 0) {
+      const [{ next }] = await tx
+        .select({ next: sql<number>`coalesce(max(${categories.sortOrder}), -1) + 1` })
+        .from(categories)
+        .where(eq(categories.restaurantId, restaurantId));
+      const added = await tx
+        .insert(categories)
+        .values([...newNames.values()].map((name, i) => ({ restaurantId, name, sortOrder: next + i })))
+        .returning({ id: categories.id, name: categories.name });
+      for (const category of added) categoryIds.set(nameKey(category.name), category.id);
+    }
+
+    // Each item at the end of its category, in file order. A new category
+    // starts at 0; an existing one after its last item, archived ones included.
+    const existingIds = live.map((category) => category.id);
+    const ends = existingIds.length
+      ? await tx
+          .select({
+            categoryId: menuItems.categoryId,
+            next: sql<number>`max(${menuItems.sortOrder}) + 1`,
+          })
+          .from(menuItems)
+          .where(and(eq(menuItems.restaurantId, restaurantId), inArray(menuItems.categoryId, existingIds)))
+          .groupBy(menuItems.categoryId)
+      : [];
+    const nextIn = new Map(ends.map((end) => [end.categoryId, end.next]));
+    await tx.insert(menuItems).values(
+      ready.map(({ category, ...item }) => {
+        const categoryId = categoryIds.get(nameKey(category))!;
+        const sortOrder = nextIn.get(categoryId) ?? 0;
+        nextIn.set(categoryId, sortOrder + 1);
+        return { ...item, restaurantId, categoryId, sortOrder };
+      }),
+    );
     await recordAudit(tx, ctx, {
       action: "menu.import",
       entityType: "restaurant",
       entityId: restaurantId,
       details: {
         items: ready.length,
-        categories: newCategories,
+        categories: newNames.size,
         skipped: planned.length - ready.length,
       },
     });
