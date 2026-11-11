@@ -43,3 +43,12 @@ export async function findPlatformAdminId(
   );
   return rows[0].id ?? undefined;
 }
+
+/**
+ * Marks a staff member as joined on their first sign-in (S-42). Only the first
+ * one counts: the function leaves a time already there alone. Only sign-in's
+ * login may run it, and only the table's owner can write the column otherwise.
+ */
+export async function recordFirstSignIn(email: string) {
+  await getStaffAuthDb().execute(sql`select staff_record_first_sign_in(${email})`);
+}

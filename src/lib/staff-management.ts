@@ -1,9 +1,19 @@
 import "server-only";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { staff, staffRole } from "@/db/schema";
-import { type TenantContext, withTenant } from "@/lib/tenant";
+import { restaurants, staff, staffInvites, staffRole } from "@/db/schema";
+import { APP_NAME, staffInviteEmail } from "@/lib/auth/email";
+import {
+  appUrl,
+  deliverInvite,
+  type ResendOutcome,
+  sqlStateOf,
+  TOO_MANY_INVITES,
+} from "@/lib/invites";
+import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant";
 import { type Acting, recordAudit } from "@/lib/tenant/audit";
+
+export { INVITES_PER_HOUR } from "@/lib/invites";
 
 /**
  * Staff management, owner only (S-26): callers check requireOwner(ctx). Only
@@ -77,20 +87,38 @@ const managed = (ctx: Acting, staffId: string) =>
     eq(staff.kind, "staff"),
   );
 
+/**
+ * The team, with whether each person has joined (signed in at least once) and
+ * their latest invite, for Invited or Joined (S-42).
+ */
 export async function listStaff(ctx: Pick<Acting, "restaurantId">) {
-  return withTenant(ctx, (tx) =>
-    tx
-      .select({
-        id: staff.id,
-        email: staff.email,
-        displayName: staff.displayName,
-        role: staff.role,
-        active: staff.active,
-      })
-      .from(staff)
-      .where(and(eq(staff.restaurantId, ctx.restaurantId), eq(staff.kind, "staff")))
-      .orderBy(asc(staff.createdAt), asc(staff.id)),
-  );
+  return withTenant(ctx, async (tx) => {
+    const [team, invites] = await Promise.all([
+      tx
+        .select({
+          id: staff.id,
+          email: staff.email,
+          displayName: staff.displayName,
+          role: staff.role,
+          active: staff.active,
+          firstSignedInAt: staff.firstSignedInAt,
+        })
+        .from(staff)
+        .where(and(eq(staff.restaurantId, ctx.restaurantId), eq(staff.kind, "staff")))
+        .orderBy(asc(staff.createdAt), asc(staff.id)),
+      tx
+        .selectDistinctOn([staffInvites.staffId], {
+          staffId: staffInvites.staffId,
+          sentAt: staffInvites.sentAt,
+          delivered: staffInvites.delivered,
+        })
+        .from(staffInvites)
+        .where(eq(staffInvites.restaurantId, ctx.restaurantId))
+        .orderBy(staffInvites.staffId, desc(staffInvites.sentAt)),
+    ]);
+    const latest = new Map(invites.map(({ staffId, ...invite }) => [staffId, invite]));
+    return team.map((member) => ({ ...member, invite: latest.get(member.id) ?? null }));
+  });
 }
 
 /** What the soft limit counts, given listStaff(): shadow rows are already out. */
@@ -106,8 +134,9 @@ export async function addStaff(
   ctx: Acting,
   person: NewStaff,
 ): Promise<"added" | "email_taken" | "needs_owner_first"> {
+  let added: Awaited<ReturnType<typeof startInvite>> | undefined;
   try {
-    return await withTenant(ctx, async (tx) => {
+    const outcome = await withTenant(ctx, async (tx) => {
       if (person.role !== "owner") {
         const [owner] = await tx
           .select({ id: staff.id })
@@ -134,8 +163,12 @@ export async function addStaff(
         entityId: created.id,
         details: { role: person.role },
       });
+      added = await startInvite(tx, ctx, created.id);
       return "added";
     });
+    // After the commit: the person stays whatever the email does (S-42).
+    if (added) await sendInvite(ctx, added);
+    return outcome;
   } catch (error) {
     const constraint = constraintOf(error);
     // An exact match can trip the first, a match in another case only the second.
@@ -187,4 +220,99 @@ export async function changeStaffRole(ctx: Acting, staffId: string, to: Role) {
       return "done";
     }),
   );
+}
+
+/**
+ * Records an invite to someone in the transaction, which Postgres refuses past
+ * the hourly limit, and gathers what the email says. Who added them is the
+ * person acting, by the name their colleagues know; an entered platform admin
+ * is the platform, not the shadow row's "Platform admin".
+ */
+async function startInvite(tx: TenantTransaction, ctx: Acting, staffId: string) {
+  const [invite] = await tx
+    .insert(staffInvites)
+    .values({ restaurantId: ctx.restaurantId, staffId })
+    .returning({ id: staffInvites.id });
+  const [person] = await tx
+    .select({
+      email: staff.email,
+      name: staff.displayName,
+      role: staff.role,
+      restaurantName: restaurants.name,
+    })
+    .from(staff)
+    .innerJoin(restaurants, eq(restaurants.id, staff.restaurantId))
+    .where(and(eq(staff.restaurantId, ctx.restaurantId), eq(staff.id, staffId)));
+  let addedBy = `The ${APP_NAME} team`;
+  if (!ctx.platformAdminId) {
+    const [actor] = await tx
+      .select({ name: staff.displayName })
+      .from(staff)
+      .where(and(eq(staff.restaurantId, ctx.restaurantId), eq(staff.id, ctx.staffId)));
+    if (actor) addedBy = actor.name;
+  }
+  return { inviteId: invite.id, ...person, email: person.email!, addedBy };
+}
+
+/** Sends a recorded invite, outside any transaction, and records how it went. */
+async function sendInvite(
+  ctx: Pick<Acting, "restaurantId">,
+  invite: Awaited<ReturnType<typeof startInvite>>,
+) {
+  const delivered = await deliverInvite(
+    staffInviteEmail({
+      to: invite.email,
+      name: invite.name,
+      restaurantName: invite.restaurantName,
+      addedBy: invite.addedBy,
+      role: invite.role,
+      appUrl: appUrl(),
+    }),
+  );
+  // The person is already saved: failing to note how the email went must not
+  // turn that into an error. The row stays "not known", shown as not delivered.
+  await withTenant(ctx, (tx) =>
+    tx
+      .update(staffInvites)
+      .set({ delivered })
+      .where(
+        and(eq(staffInvites.restaurantId, ctx.restaurantId), eq(staffInvites.id, invite.inviteId)),
+      ),
+  ).catch((error: unknown) => {
+    console.error("Couldn't record how an invite went (S-42):", error instanceof Error ? error.message : error);
+  });
+  return delivered;
+}
+
+/**
+ * "Send invite again" (S-42), for an active colleague who hasn't signed in yet.
+ * Audited, by whoever asked. Postgres refuses more than INVITES_PER_HOUR to one
+ * person in an hour, the first included.
+ */
+export async function resendInvite(ctx: Acting, staffId: string): Promise<ResendOutcome> {
+  let invite: Awaited<ReturnType<typeof startInvite>> | undefined;
+  try {
+    const refused = await withTenant(ctx, async (tx) => {
+      const [member] = await tx
+        .select({ joined: staff.firstSignedInAt })
+        .from(staff)
+        .where(and(managed(ctx, staffId), eq(staff.active, true)))
+        .for("no key update");
+      if (!member) return "not_found" as const;
+      if (member.joined) return "joined" as const;
+
+      invite = await startInvite(tx, ctx, staffId);
+      await recordAudit(tx, ctx, {
+        action: "staff.invite_resend",
+        entityType: "staff",
+        entityId: staffId,
+      });
+      return undefined;
+    });
+    if (refused) return refused;
+  } catch (error) {
+    if (sqlStateOf(error) === TOO_MANY_INVITES) return "too_many";
+    throw error;
+  }
+  return (await sendInvite(ctx, invite!)) ? "sent" : "not_sent";
 }

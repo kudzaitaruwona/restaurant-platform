@@ -1,4 +1,5 @@
 import { ArrowRight, Circle, CircleCheck } from "lucide-react";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Button } from "@/components/ui/button";
 import { cardClassName } from "@/components/ui/card";
 import { Field, Input } from "@/components/ui/input";
@@ -12,11 +13,15 @@ import {
   DEFAULT_TIMEZONE,
   getPlatformAdminContext,
   listBookingMetrics,
+  listOwners,
   listRestaurants,
   onboardingChecklists,
   onboardingItems,
+  type OwnerOnCard,
 } from "@/lib/tenant/platform-admin";
+import { inviteStatus } from "@/lib/invite-status";
 import { BookingMetricsPanel } from "../dashboard/booking-metrics";
+import { InviteStatusLabel } from "../dashboard/staff/invite-status";
 import { easeOut, pressable } from "../motion";
 import { AdminForm } from "./admin-form";
 import { CopyMessage } from "./copy-message";
@@ -147,17 +152,50 @@ function Onboarding({
   );
 }
 
+/** Each active owner: who, Invited or Joined (S-42), and the invite again until they join. */
+function Owners({ restaurant, owners }: { restaurant: Restaurant; owners: OwnerOnCard[] }) {
+  return (
+    <ul className="flex flex-col divide-y divide-line">
+      {owners.map((owner) => {
+        const status = inviteStatus(owner, restaurant.timezone);
+        return (
+          <li key={owner.id} className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 first:pt-0">
+            <div className="flex min-w-0 flex-1 basis-56 flex-col gap-0.5">
+              <span className="text-body font-medium">{owner.displayName}</span>
+              <span className="text-caption [overflow-wrap:anywhere] text-ink-2">{owner.email}</span>
+              <InviteStatusLabel status={status} className="mt-1" />
+            </div>
+            {status.kind !== "joined" && (
+              <AdminForm
+                action={`/api/admin/restaurants/${restaurant.id}/invite`}
+                submitLabel="Send invite again"
+                pendingLabel="Sending"
+                submitVariant="secondary"
+                inline
+              >
+                <input type="hidden" name="staffId" value={owner.id} />
+              </AdminForm>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /**
  * One restaurant. The order matters to the screen's tests and to reading it:
  * who it is and the way in, its numbers, then what's left to set up.
  */
 function RestaurantItem({
   restaurant,
+  owners,
   metrics,
   checklist,
   appUrl,
 }: {
   restaurant: Restaurant;
+  owners: OwnerOnCard[];
   metrics: Metrics | undefined;
   checklist: Checklist | undefined;
   appUrl: string;
@@ -192,14 +230,17 @@ function RestaurantItem({
       <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
         <h4 className="text-body font-semibold">Owner</h4>
         {restaurant.hasOwner ? (
-          <div className="flex max-w-2xl flex-col gap-2">
-            <p className="text-caption text-ink-2">
-              Send the owner this on WhatsApp. No invite email goes out.
-            </p>
-            <CopyMessage
-              text={ownerSignInMessage({ restaurantName: restaurant.name, appUrl })}
-            />
-          </div>
+          <>
+            <Owners restaurant={restaurant} owners={owners} />
+            <div className="flex max-w-2xl flex-col gap-2">
+              <p className="text-caption text-ink-2">
+                They get an invite by email. You can also send them this on WhatsApp.
+              </p>
+              <CopyMessage
+                text={ownerSignInMessage({ restaurantName: restaurant.name, appUrl })}
+              />
+            </div>
+          </>
         ) : (
           <>
             <Notice tone="attention">No owner yet. Nobody can sign in to this restaurant.</Notice>
@@ -212,7 +253,7 @@ function RestaurantItem({
               <Field label="Owner's name">
                 <Input name="displayName" required maxLength={200} />
               </Field>
-              <Field label="Owner's email" hint="They sign in with this email. No invite is sent; you tell them.">
+              <Field label="Owner's email" hint="We email them an invite. They sign in with this address.">
                 <Input name="email" type="email" required />
               </Field>
             </AdminForm>
@@ -233,8 +274,9 @@ function RestaurantItem({
 /** Creates restaurants and their first owners, and enters them (spec 01, S-26). */
 export async function AdminConsole() {
   const admin = await getPlatformAdminContext();
-  const [restaurants, metrics, checklists] = await Promise.all([
+  const [restaurants, owners, metrics, checklists] = await Promise.all([
     listRestaurants(admin),
+    listOwners(admin),
     listBookingMetrics(admin),
     onboardingChecklists(admin),
   ]);
@@ -250,14 +292,31 @@ export async function AdminConsole() {
             : `${restaurants.length} restaurants`
         }
         actions={
-          <NewRestaurantSheet
-            timezone={DEFAULT_TIMEZONE}
-            currencyModes={currencyMode.enumValues.map((mode) => ({
-              value: mode,
-              label: currencyModeLabels[mode],
-            }))}
-            appUrl={appUrl}
-          />
+          <>
+            <CsvImportDialog
+              kind="restaurants"
+              action="/api/admin/restaurants/import"
+              title="Import restaurants"
+              noun={{ one: "restaurant", other: "restaurants" }}
+              triggerSize="compact"
+              intro={
+                <p>
+                  Columns: restaurant_name, slug (blank makes one from the name), timezone (blank is{" "}
+                  {DEFAULT_TIMEZONE}), currency_mode (usd_only, zig_only, usd_primary, zig_primary or
+                  both; blank is usd_primary), owner_email and owner_name. Each restaurant is created
+                  with its owner, and the owner is invited by email.
+                </p>
+              }
+            />
+            <NewRestaurantSheet
+              timezone={DEFAULT_TIMEZONE}
+              currencyModes={currencyMode.enumValues.map((mode) => ({
+                value: mode,
+                label: currencyModeLabels[mode],
+              }))}
+              appUrl={appUrl}
+            />
+          </>
         }
       />
 
@@ -271,6 +330,7 @@ export async function AdminConsole() {
             <RestaurantItem
               key={restaurant.id}
               restaurant={restaurant}
+              owners={owners.get(restaurant.id) ?? []}
               metrics={metrics.get(restaurant.id)}
               checklist={checklists.get(restaurant.id)}
               appUrl={appUrl}

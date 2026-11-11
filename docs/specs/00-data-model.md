@@ -46,6 +46,14 @@ staff
   -- permission checks but never count as owners for this rule or the soft limit.
   active                bool default true
   created_at
+  first_signed_in_at    timestamptz null     -- (proposed, S-42) "Joined"; set once by staff sign-in, refused from app_tenant by a trigger
+
+staff_invites                                 -- (proposed, S-42) each invite email to a person
+  id, restaurant_id
+  (restaurant_id, staff_id) → staff           -- cascade: goes with the person
+  sent_at               timestamptz default now()   -- stamped by the trigger
+  delivered             bool null            -- null while sending, then whether the provider took it
+  -- a trigger refuses a fourth row for one person within an hour; app_tenant may only update `delivered`
 
 platform_admins                               -- Kudzai, for hand-onboarding
   id, email unique, created_at                -- case-insensitive; passwordless sign-in (S-27)

@@ -96,6 +96,8 @@ Staff and the platform admin sign in with a magic link, an emailed code or Googl
 
 Each session type has its own database login: the staff audience connects as `app_staff_auth` (`src/db/staff-auth.ts`) and the admin audience as `app_admin`. `app_tenant` holds no privilege on `staff_auth_*` or `admin_auth_*`, because a magic link is only a row there, and it can't run the lookups either (S-28, S-30). ESLint and `access.int.test.ts` keep `getStaffAuthDb` to `src/lib/auth/database.ts` and `src/lib/auth/identity.ts`.
 
+Adding someone, or a restaurant's first owner, emails them an invite: a link to `/login?email=...` that only fills in the address (S-42). It goes through the same sender, so with `RESEND_API_KEY` blank it's printed to the server console. "Joined" is `staff.first_signed_in_at`, which sign-in sets on the first session; nothing else can.
+
 `src/proxy.ts` refuses cross-site writes under `/api` and keeps session cookies alive. A staff page outside `/dashboard` or `/admin` needs adding to its matcher. It also runs on public pages, but only to refuse methods the cache can't take (S-32).
 
 ### Environment

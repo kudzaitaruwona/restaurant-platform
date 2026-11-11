@@ -32,6 +32,7 @@ import {
   specials,
   staff,
   staffAuthUser,
+  staffInvites,
   tableSessions,
 } from "@/db/schema";
 import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
@@ -601,6 +602,16 @@ const routes: TenantRoute[] = [
       ),
   },
   {
+    // Before deactivate: the harness runs them in this order, and it needs them active.
+    name: "POST /api/staff/[staffId]/invite",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/staff/[staffId]/invite/route")).POST(
+        request(`/api/staff/${target.staffId}/invite`, { method: "POST" }),
+        staffParams(target),
+      ),
+  },
+  {
     name: "POST /api/staff/[staffId]/deactivate",
     ownerOnly: true,
     call: async (target) =>
@@ -1053,6 +1064,8 @@ type SessionRoute = {
 };
 
 const addedEmailPrefix = "harness-added-";
+/** Menu items the import route adds, under the harness's category. */
+const importedItemPrefix = "Harness imported ";
 const addedPeriodPrefix = "Harness added period ";
 
 const sessionRoutes: SessionRoute[] = [
@@ -1201,6 +1214,53 @@ const sessionRoutes: SessionRoute[] = [
             startTime: "03:00",
             endTime: "03:30",
             reason: addedClosureReason,
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  // The imports (S-43): one valid row each, confirmed, so each call adds something
+  // and audits it. Each row is new, so a repeat call isn't a duplicate.
+  {
+    name: "POST /api/menu/import",
+    call: async (fields, init) =>
+      (await import("@/app/api/menu/import/route")).POST(
+        request(init?.path ?? "/api/menu/import", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            intent: "confirm",
+            csv: `category,name,price_usd\n${harnessCategory},${importedItemPrefix}${crypto.randomUUID()},5`,
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  {
+    name: "POST /api/tables/import",
+    call: async (fields, init) =>
+      (await import("@/app/api/tables/import/route")).POST(
+        request(init?.path ?? "/api/tables/import", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            intent: "confirm",
+            csv: `label,seats\n${harnessTablePrefix}${crypto.randomUUID()},4`,
+            ...fields,
+          }),
+        }),
+      ),
+  },
+  {
+    name: "POST /api/staff/import",
+    call: async (fields, init) =>
+      (await import("@/app/api/staff/import/route")).POST(
+        request(init?.path ?? "/api/staff/import", {
+          method: "POST",
+          headers: init?.headers,
+          body: form({
+            intent: "confirm",
+            csv: `email,name,role\n${addedEmailPrefix}${crypto.randomUUID()}@example.test,Imported by the harness,staff`,
             ...fields,
           }),
         }),
@@ -1396,6 +1456,18 @@ const postBooking = async (
 type AdminRoute = {
   name: string;
   call: (restaurantId: string) => Promise<Response>;
+  /** What the route needs in a restaurant before the admin can get through. */
+  prepare?: (restaurantId: string) => Promise<void>;
+};
+
+/** The restaurant's owner, if it has one: who the owner card's invite is for. */
+const ownerOf = async (restaurantId: string) => {
+  const [row] = await owner.db
+    .select({ id: staff.id })
+    .from(staff)
+    .where(and(eq(staff.restaurantId, restaurantId), eq(staff.kind, "staff"), eq(staff.role, "owner")))
+    .limit(1);
+  return row?.id ?? crypto.randomUUID();
 };
 
 const HARNESS_SLUG_PREFIX = "harness-";
@@ -1430,6 +1502,27 @@ const adminRoutes: AdminRoute[] = [
       ),
   },
   {
+    name: "POST /api/admin/restaurants/[restaurantId]/invite",
+    call: async (restaurantId) =>
+      (await import("@/app/api/admin/restaurants/[restaurantId]/invite/route")).POST(
+        request(`/api/admin/restaurants/${restaurantId}/invite`, {
+          method: "POST",
+          body: form({ staffId: await ownerOf(restaurantId) }),
+        }),
+        { params: Promise.resolve({ restaurantId }) },
+      ),
+    prepare: async (restaurantId) => {
+      const id = crypto.randomUUID();
+      await owner.db.insert(staff).values({
+        id,
+        restaurantId,
+        email: `${id}@example.test`,
+        displayName: "Owner by the harness",
+        role: "owner",
+      });
+    },
+  },
+  {
     name: "POST /api/admin/restaurants/[restaurantId]/qr-codes-printed",
     call: async (restaurantId) =>
       (
@@ -1440,6 +1533,22 @@ const adminRoutes: AdminRoute[] = [
           body: form({ printed: "true" }),
         }),
         { params: Promise.resolve({ restaurantId }) },
+      ),
+  },
+  {
+    // No restaurant id in it: the id the harness passes goes nowhere.
+    name: "POST /api/admin/restaurants/import",
+    call: async () =>
+      (await import("@/app/api/admin/restaurants/import/route")).POST(
+        request("/api/admin/restaurants/import", {
+          method: "POST",
+          body: form({
+            intent: "confirm",
+            csv:
+              "restaurant_name,slug,owner_email,owner_name\n" +
+              `Imported by the harness,${HARNESS_SLUG_PREFIX}${crypto.randomUUID()},${crypto.randomUUID()}@example.test,Owner by the harness`,
+          }),
+        }),
       ),
   },
   {
@@ -1473,6 +1582,9 @@ const outsideTheHarness = [
   // and src/lib/whatsapp/delivery-status.int.test.ts.
   "GET /api/webhooks/whatsapp",
   "POST /api/webhooks/whatsapp",
+  // An import's template (S-43): the same fixed text for everyone, no session and
+  // no tenant: src/app/api/csv-templates/[kind]/route.test.ts.
+  "GET /api/csv-templates/[kind]",
 ];
 
 const [aOwner, aStaff, bOwner, bStaff] = devIdentities;
@@ -1613,6 +1725,8 @@ afterEach(async () => {
     .update(staff)
     .set({ displayName: fixtureName, role: "staff", active: true })
     .where(eq(staff.id, fixtures.a.staffId));
+  // "Send invite again" is limited per hour, and the harness calls it often.
+  await owner.db.delete(staffInvites).where(eq(staffInvites.staffId, fixtures.a.staffId));
   await resetMenuFixtures();
 });
 
@@ -1644,7 +1758,12 @@ afterAll(async () => {
     .where(inArray(specials.title, [harnessSpecial, fixtureName]));
   await owner.db
     .delete(menuItems)
-    .where(inArray(menuItems.name, [harnessItem, harnessBundle, fixtureName]));
+    .where(
+      or(
+        inArray(menuItems.name, [harnessItem, harnessBundle, fixtureName]),
+        like(menuItems.name, `${importedItemPrefix}%`),
+      ),
+    );
   await owner.db.delete(bookings).where(like(bookings.guestName, `${plantedBookingPrefix}%`));
   // Walk-ins and bookings made on the tables the harness planted, before those go.
   if (planted.length > 0) {
@@ -2963,9 +3082,9 @@ describe("platform-admin routes", () => {
     "%s: the platform admin gets through, so the refusals above mean something",
     async (_name, route) => {
       session.identity = devPlatformAdmin.key;
-      expect(
-        await statusOf(async () => route.call(await emptyRestaurant())),
-      ).toBeLessThan(400);
+      const restaurantId = await emptyRestaurant();
+      await route.prepare?.(restaurantId);
+      expect(await statusOf(() => route.call(restaurantId))).toBeLessThan(400);
     },
   );
 });

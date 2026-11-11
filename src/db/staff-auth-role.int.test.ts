@@ -123,7 +123,11 @@ describe("app_staff_auth", () => {
       where n.nspname = 'public' and p.prosecdef
         and has_function_privilege('app_staff_auth', p.oid, 'execute')
     `);
-    expect(rows.map(({ name }) => name)).toEqual(["staff_identity_by_email"]);
+    expect(rows.map(({ name }) => name).sort()).toEqual([
+      "staff_identity_by_email",
+      // Marks the person as joined on their first sign-in (S-42).
+      "staff_record_first_sign_in",
+    ]);
   });
 
   it("can write a sign-in link outside a tenant, as Better Auth does", async () => {
@@ -193,6 +197,18 @@ describe("app_tenant, with app.restaurant_id cleared", () => {
       ),
     ).rejects.toMatchObject(refused);
   });
+
+  it.each(["app_tenant", "app_admin"] as const)(
+    "%s can't mark someone as joined (S-42)",
+    async (login) => {
+      await expect(
+        withNoTenant(
+          login,
+          sql`select staff_record_first_sign_in(${`${aOwner.key}@dev.example.test`})`,
+        ),
+      ).rejects.toMatchObject(refused);
+    },
+  );
 
   it("holds no privilege at all on any staff auth table, whatever arrives later", async () => {
     const reachable = await tablesReachableBy("app_tenant");

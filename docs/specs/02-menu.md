@@ -25,6 +25,14 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 - **Available toggle on the item list itself**, one tap, for "we've run out tonight." This is the action staff use most.
 - Archive instead of delete.
 
+### Import from CSV *(proposed, S-43)*
+- Owners, and the platform admin inside a restaurant, can add many items at once from a CSV: columns `category`, `name`, `description`, `price_usd`, `price_zig` and `available` (yes or no, blank is yes). A template is downloadable from the import dialog.
+- Upload or paste the file, then a preview lists every row with its problems (a bad or missing price, a name or description too long, a missing category, a duplicate). Nothing is saved until "Import N rows", which adds every valid row in one transaction and skips the rest, listed so they can be fixed and the file imported again.
+- Each row follows the item form's rules exactly: at least one price, a blank ZiG price is calculated from the rate and rounded up at display, the same limits, and each item goes at the end of its category. New categories are created in file order, after the existing ones; a category is matched to a live one by name, whatever its case.
+- Nothing is overwritten or deleted. An item with the same name (any case) already in that category, or earlier in the file, is skipped as a duplicate.
+- Nothing is refused for `currency_mode`, as with the form; a price the restaurant's mode doesn't show gets a note in the preview.
+- 1 MB and 500 rows at most, UTF-8, comma or semicolon separated, with a header row (names in any case). One audit entry per import, `menu.import`, with the counts.
+
 ### Photos
 - Upload from a phone camera. Resize and convert to WebP on the server, at 800px for the item view and 320px for the thumbnail, aiming for under 60KB each.
 - **Request size.** Vercel refuses a request body over 4.5MB, and a phone original can be larger. The editor shrinks the photo to a 1600px JPEG *(proposed)* in the browser before sending it, and the server turns that into the two WebP files. The server also refuses anything over 4MB *(proposed)*. That script is in the editor only; the public page stays script-free.

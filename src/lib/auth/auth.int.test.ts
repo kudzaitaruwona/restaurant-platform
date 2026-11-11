@@ -48,6 +48,9 @@ const people = {
   deactivated: `deactivated-${tag}@example.test`,
   admin: `admin-${tag}@example.test`,
   stranger: `stranger-${tag}@example.test`,
+  joinByCode: `join-code-${tag}@example.test`,
+  joinByLink: `join-link-${tag}@example.test`,
+  joinByGoogle: `join-google-${tag}@example.test`,
 };
 const activeId = crypto.randomUUID();
 const deactivatedId = crypto.randomUUID();
@@ -73,6 +76,13 @@ beforeAll(async () => {
       active: false,
     },
   ]);
+  await owner.db.insert(staff).values(
+    [people.joinByCode, people.joinByLink, people.joinByGoogle].map((email) => ({
+      restaurantId: aOwner.restaurantId,
+      email,
+      displayName: "Newcomer",
+    })),
+  );
   await owner.db.insert(platformAdmins).values({ email: people.admin });
 });
 
@@ -279,6 +289,46 @@ describe("Google", () => {
       .where(eq(staffAuthAccount.accountId, `google-${people.active}`));
     expect(rows).toHaveLength(1);
     expect(JSON.stringify(rows)).not.toContain("fake-google-access-token");
+  });
+});
+
+describe("joining (S-42)", () => {
+  const firstSignedInAt = async (email: string) =>
+    (await owner.db.select().from(staff).where(eq(staff.email, email)))[0].firstSignedInAt;
+
+  it("is unset until someone signs in", async () => {
+    expect(await firstSignedInAt(people.joinByCode)).toBeNull();
+  });
+
+  it("is set on the first sign-in by code, and kept on the next", async () => {
+    await signIn(services, "staff", people.joinByCode);
+    const first = await firstSignedInAt(people.joinByCode);
+    expect(first).toBeInstanceOf(Date);
+
+    await signIn(services, "staff", people.joinByCode);
+
+    expect(await firstSignedInAt(people.joinByCode)).toEqual(first);
+  });
+
+  it("is set by a magic link", async () => {
+    await requestLink("staff", people.joinByLink);
+    await getAuthUrl("staff", linkIn(await services.emailTo(people.joinByLink)));
+    expect(await firstSignedInAt(people.joinByLink)).toBeInstanceOf(Date);
+  });
+
+  it("is set by Google", async () => {
+    await googleSignIn("staff", {
+      sub: `google-${people.joinByGoogle}`,
+      email: people.joinByGoogle,
+      email_verified: true,
+    });
+    expect(await firstSignedInAt(people.joinByGoogle)).toBeInstanceOf(Date);
+  });
+
+  it("isn't set by a refused sign-in", async () => {
+    await requestCode("staff", people.deactivated);
+    await settled();
+    expect(await firstSignedInAt(people.deactivated)).toBeNull();
   });
 });
 

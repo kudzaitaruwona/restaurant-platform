@@ -1,6 +1,7 @@
 import { Archive, ArrowDown, ArrowUp, Plus, Printer, QrCode, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Card } from "@/components/ui/card";
 import { IconButton } from "@/components/ui/icon-button";
 import { PageHeader } from "@/components/ui/page-header";
@@ -42,6 +43,18 @@ export async function TablesScreen() {
         subtitle="Each table has its own QR code. Guests scan it to see the menu and order."
         actions={
           <>
+            <CsvImportDialog
+              kind="tables"
+              action="/api/tables/import"
+              title="Import tables"
+              noun={{ one: "table", other: "tables" }}
+              intro={
+                <p>
+                  Columns: label, seats (1 to 100) and bookable (yes or no, blank is yes). Each
+                  table gets its own QR code. A label already in use is skipped.
+                </p>
+              }
+            />
             {tables.length > 0 && (
               <Link
                 href="/dashboard/tables/print"

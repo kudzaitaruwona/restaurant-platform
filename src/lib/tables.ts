@@ -92,32 +92,50 @@ export async function addTable(
   ctx: Writer,
   table: NewTable,
 ): Promise<"saved" | "label_taken"> {
-  const { restaurantId } = ctx;
   try {
-    await withTenant(ctx, async (tx) => {
-      const [added] = await tx
-        .insert(diningTables)
-        .values({
-          ...table,
-          restaurantId,
-          qrToken: mintQrToken(),
-          sortOrder: sql`(
-            select coalesce(max(${diningTables.sortOrder}), -1) + 1 from ${diningTables}
-            where ${eq(diningTables.restaurantId, restaurantId)}
-          )`,
-        })
-        .returning({ id: diningTables.id });
-      await recordAdminAction(tx, ctx, {
-        action: "table.create",
-        entityType: "table",
-        entityId: added.id,
-      });
-    });
+    await withTenant(ctx, (tx) => insertTable(tx, ctx, table));
   } catch (error) {
-    if (constraintOf(error) === LABEL_INDEX) return "label_taken";
+    if (isLabelTaken(error)) return "label_taken";
     throw error;
   }
   return "saved";
+}
+
+/** Whether the database refused a label already on a live table. */
+export const isLabelTaken = (error: unknown) => constraintOf(error) === LABEL_INDEX;
+
+/**
+ * Inserts a table after the last one, with a token of its own. Audited for a
+ * platform admin unless the caller audits the whole change itself (an import,
+ * S-43). A label already on a live table throws: see isLabelTaken.
+ */
+export async function insertTable(
+  tx: TenantTransaction,
+  ctx: Writer,
+  table: NewTable & { bookable?: boolean },
+  { audit = true }: { audit?: boolean } = {},
+) {
+  const { restaurantId } = ctx;
+  const [added] = await tx
+    .insert(diningTables)
+    .values({
+      ...table,
+      restaurantId,
+      qrToken: mintQrToken(),
+      sortOrder: sql`(
+        select coalesce(max(${diningTables.sortOrder}), -1) + 1 from ${diningTables}
+        where ${eq(diningTables.restaurantId, restaurantId)}
+      )`,
+    })
+    .returning({ id: diningTables.id });
+  if (audit) {
+    await recordAdminAction(tx, ctx, {
+      action: "table.create",
+      entityType: "table",
+      entityId: added.id,
+    });
+  }
+  return added;
 }
 
 export type TableChange = "saved" | "not_found";

@@ -7,24 +7,13 @@ import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Field, Input, Select, inputClassName } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
+import { slugFrom } from "@/lib/slug";
 import { cn } from "@/lib/utils";
 import { pressable, Reveal } from "../motion";
 import { CopyMessage } from "./copy-message";
 import { ownerSignInMessage } from "./sign-in-message";
 
 type Step = "restaurant" | "owner" | "done";
-
-/** The public address follows the name until the admin edits it. */
-export function slugFrom(name: string) {
-  return name
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63)
-    .replace(/-+$/, "");
-}
 
 /** The iOS drawer curve: quick to move, long to settle. */
 const easeDrawer = "ease-[cubic-bezier(0.32,0.72,0,1)]";
@@ -57,7 +46,7 @@ export function NewRestaurantSheet({
   const [slug, setSlug] = useState("");
   const [slugEdited, setSlugEdited] = useState(false);
   const [restaurant, setRestaurant] = useState<{ id: string; name: string }>();
-  const [owner, setOwner] = useState<{ name: string; email: string }>();
+  const [owner, setOwner] = useState<{ name: string; email: string; invited: boolean }>();
   const [pending, setPending] = useState(false);
   // Kept after it's dismissed, so the closing Reveal still has words in it.
   const [error, setError] = useState<string>();
@@ -93,7 +82,7 @@ export function NewRestaurantSheet({
     try {
       const response = await fetch(action, { method: "POST", body: new FormData(form) });
       const body = await response.json().catch(() => undefined);
-      if (response.ok) return body as { id: string };
+      if (response.ok) return body as { id: string; invited?: boolean };
       setError(body?.error ?? "That didn't work. Try again.");
     } catch {
       setError("That didn't work. Try again.");
@@ -124,6 +113,7 @@ export function NewRestaurantSheet({
     setOwner({
       name: String(data.get("displayName") ?? ""),
       email: String(data.get("email") ?? "").trim().toLowerCase(),
+      invited: created.invited === true,
     });
     setStep("done");
     router.refresh();
@@ -286,7 +276,7 @@ export function NewRestaurantSheet({
               </Field>
               <Field
                 label="Owner's email"
-                hint="They sign in with this email. No invite is sent; you tell them."
+                hint="We email them an invite. They sign in with this address."
               >
                 <Input name="email" type="email" required autoComplete="off" />
               </Field>
@@ -302,9 +292,17 @@ export function NewRestaurantSheet({
                   <b className="font-semibold">{restaurant?.name}</b>.
                 </h3>
               </Notice>
-              <p className="text-body text-ink-2">
-                Send them this on WhatsApp. It tells them how to sign in.
-              </p>
+              {owner?.invited && (
+                <p className="text-body text-ink-2">
+                  We emailed them an invite to sign in. You can also send them this on WhatsApp.
+                </p>
+              )}
+              {owner && !owner.invited && (
+                <Notice tone="attention" role="status">
+                  The invite email didn&apos;t go. Send it again from the owner card, or send them
+                  this on WhatsApp.
+                </Notice>
+              )}
               {restaurant && owner && (
                 <CopyMessage
                   text={ownerSignInMessage({
