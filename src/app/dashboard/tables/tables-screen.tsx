@@ -1,10 +1,11 @@
-import { Archive, ArrowDown, ArrowUp, Plus, Printer, RefreshCw } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, Plus, Printer, QrCode, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { IconButton } from "@/components/ui/icon-button";
 import { PageHeader } from "@/components/ui/page-header";
 import { RowMenu, RowMenuItem, RowMenuSeparator } from "@/components/ui/row-menu";
+import { Stepper } from "@/components/ui/stepper";
 import { getBookingSettings } from "@/lib/booking-settings";
 import { listTables } from "@/lib/tables";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
@@ -50,27 +51,26 @@ export async function TablesScreen() {
                 Print QR codes
               </Link>
             )}
-            <a
-              href="#add-table"
-              className={cn(buttonVariants({ variant: "primary", size: "staff" }), "hidden md:inline-flex")}
-            >
-              <Plus aria-hidden />
-              Add table
-            </a>
+            {tables.length > 0 && (
+              <a
+                href="#add-table"
+                className={cn(buttonVariants({ variant: "primary", size: "staff" }), "hidden md:inline-flex")}
+              >
+                <Plus aria-hidden />
+                Add table
+              </a>
+            )}
           </>
         }
       />
-      <StaffTopBarAction>
-        <IconButton label="Add table" icon={<Plus />} href="#add-table" variant="ghost" />
-      </StaffTopBarAction>
+      {tables.length > 0 && (
+        <StaffTopBarAction>
+          <IconButton label="Add table" icon={<Plus />} href="#add-table" variant="ghost" />
+        </StaffTopBarAction>
+      )}
 
       {tables.length === 0 ? (
-        <Card className="flex flex-col items-start gap-1 px-5 py-8">
-          <p className="text-lead font-semibold">No tables yet.</p>
-          <p className="text-ink-2">
-            Add your first table below. Its QR code is ready to print straight away.
-          </p>
-        </Card>
+        <FirstTable />
       ) : (
         <Card className="overflow-hidden">
           <div
@@ -216,39 +216,100 @@ export async function TablesScreen() {
         </Card>
       )}
 
-      <Card as="section" id="add-table" className="flex scroll-mt-20 flex-col gap-3 p-4 sm:p-5">
-        <h2 className="text-lead font-semibold">Add a table</h2>
-        <ActionForm
-          action="/api/tables"
-          savedMessage="Table added. Its QR code is on the print sheet."
-          resetOnSuccess
-          className="flex flex-col gap-2"
-        >
-          <div className="flex flex-wrap items-start gap-3">
-            <Field
-              label="Label"
-              hint="What staff call it, like 7, B2 or Patio 1."
-              className="min-w-48 flex-1"
-            >
-              <input name="label" required maxLength={50} className={inputClassName} />
-            </Field>
-            <Field label="Seats" className="w-24">
-              <input
-                name="capacity"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={100}
-                required
-                className={inputClassName}
-              />
-            </Field>
-            <Button type="submit" size="staff" className="mt-[26px]">
-              Add table
-            </Button>
-          </div>
-        </ActionForm>
-      </Card>
+      {tables.length > 0 && (
+        <Card as="section" id="add-table" className="flex scroll-mt-20 flex-col gap-3 p-4 sm:p-5">
+          <h2 className="text-lead font-semibold">Add a table</h2>
+          <ActionForm
+            action="/api/tables"
+            savedMessage="Table added. Its QR code is on the print sheet."
+            resetOnSuccess
+            className="flex flex-col gap-2"
+          >
+            <div className="flex flex-wrap items-start gap-3">
+              <Field
+                label="Label"
+                hint="What staff call it, like 7, B2 or Patio 1."
+                className="min-w-48 flex-1"
+              >
+                <input name="label" required maxLength={50} className={inputClassName} />
+              </Field>
+              <Field label="Seats" className="w-24">
+                <input
+                  name="capacity"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={100}
+                  required
+                  className={inputClassName}
+                />
+              </Field>
+              <Button type="submit" size="staff" className="mt-[26px]">
+                Add table
+              </Button>
+            </div>
+          </ActionForm>
+        </Card>
+      )}
     </div>
+  );
+}
+
+/**
+ * No tables yet: the add form is the empty state, with the first label already
+ * suggested. Once a table exists, the list and the usual add form take over.
+ */
+function FirstTable() {
+  return (
+    <Card
+      as="section"
+      id="add-table"
+      aria-labelledby="first-table-title"
+      className="flex scroll-mt-20 flex-col gap-4 p-5 sm:p-8"
+    >
+      <div className="flex flex-col items-start gap-4 sm:flex-row">
+        <span aria-hidden className="grid size-12 shrink-0 place-items-center rounded-card bg-surface-2 text-ink [&_svg]:size-6">
+          <QrCode strokeWidth={1.75} />
+        </span>
+        <div className="flex flex-col gap-1">
+          <h2 id="first-table-title" className="text-title font-semibold">
+            Add your first table
+          </h2>
+          <p className="max-w-[56ch] text-ink-2">
+            Each table gets its own QR code. Guests scan it to open the menu and order from their seat.
+          </p>
+        </div>
+      </div>
+      <ActionForm
+        action="/api/tables"
+        savedMessage="Table added. Its QR code is on the print sheet."
+        resetOnSuccess
+        className="flex w-full flex-col gap-2"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+          <Field label="Label" className="sm:w-52">
+            <input name="label" required maxLength={50} defaultValue="T1" className={inputClassName} />
+          </Field>
+          <div className="flex flex-col gap-1.5 text-caption font-medium text-ink-2">
+            <span id="first-table-seats">Seats</span>
+            <Stepper
+              name="capacity"
+              aria-labelledby="first-table-seats"
+              min={1}
+              max={100}
+              required
+              defaultValue={2}
+              decreaseLabel="Fewer seats"
+              increaseLabel="More seats"
+              className="self-start"
+            />
+          </div>
+          <Button type="submit" size="staff" className="w-full sm:w-auto">
+            Add table
+          </Button>
+        </div>
+      </ActionForm>
+      <p className="text-caption text-ink-2">The label is what staff call it, like 7, B2 or Patio 1.</p>
+    </Card>
   );
 }

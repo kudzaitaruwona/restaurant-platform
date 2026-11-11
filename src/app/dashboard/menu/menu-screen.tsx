@@ -1,4 +1,4 @@
-import { Ban, ChevronUp, ExternalLink, ImageIcon, Package, Pencil, Plus } from "lucide-react";
+import { BookOpen, Ban, ChevronUp, ExternalLink, ImageIcon, Info, Package, Pencil, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -27,6 +27,7 @@ import { ItemPriceFields } from "./item-price-fields";
 import { Pill } from "./pill";
 import { SpecialsSection } from "./specials-section";
 import { PhotoForm } from "./photo-form";
+import { QuickPicks } from "./quick-picks";
 
 /**
  * The menu. Owners and staff both see the item list, because the sold-out toggle
@@ -105,14 +106,14 @@ export async function MenuScreen() {
       >
         <div className="flex min-w-0 flex-col gap-4">
           {sections.length === 0 ? (
-            <Card className="flex flex-col items-start gap-1 px-5 py-8">
-              <p className="text-lead font-semibold">No categories yet</p>
-              <p className="text-ink-2">
-                {isOwner
-                  ? "Start with a category, like Starters or Mains, then add its items."
-                  : "The owner hasn't added anything to the menu."}
-              </p>
-            </Card>
+            isOwner ? (
+              <FirstCategory />
+            ) : (
+              <Card className="flex flex-col items-start gap-1 px-5 py-8">
+                <p className="text-lead font-semibold">No categories yet</p>
+                <p className="text-ink-2">The owner hasn&apos;t added anything to the menu.</p>
+              </Card>
+            )
           ) : isOwner ? (
             <SortableCategories entries={sections} />
           ) : (
@@ -150,67 +151,120 @@ export async function MenuScreen() {
               </ActionForm>
             </SideCard>
 
-            <SideCard title="Add an item" id="add-item">
-              {menu.categories.length === 0 ? (
-                <p className="text-ink-2">Add a category first.</p>
-              ) : (
-                <ActionForm
-                  action="/api/menu/items"
-                  savedMessage="Item added."
-                  resetOnSuccess
-                  className="@container flex flex-col gap-4"
-                >
-                  <Field label="Name">
-                    <input name="name" required maxLength={200} className={inputClassName} />
-                  </Field>
-                  <Field label="Description">
-                    <textarea
-                      name="description"
-                      rows={2}
-                      maxLength={1000}
-                      className={cn(inputClassName, "min-h-20 resize-y")}
-                    />
-                  </Field>
-                  <ItemPriceFields pricing={menu.pricing} />
-                  <Field label="Category">
-                    <CategorySelect categories={menu.categories} />
-                  </Field>
-                  <Button type="submit" size="staff" className="self-start">
-                    Add item
-                  </Button>
-                </ActionForm>
-              )}
-            </SideCard>
+            {menu.categories.length === 0 && specials.length === 0 ? (
+              // The empty state holds the first action; what needs dishes waits until it can work.
+              <p className="flex items-start gap-2 px-1 text-caption text-ink-2">
+                <Info aria-hidden className="mt-px size-4 shrink-0" />
+                Dishes, specials and bundles can be added once you have a category.
+              </p>
+            ) : (
+              <>
+                <SideCard title="Add an item" id="add-item">
+                  {menu.categories.length === 0 ? (
+                    <p className="text-ink-2">Add a category first.</p>
+                  ) : (
+                    <ActionForm
+                      action="/api/menu/items"
+                      savedMessage="Item added."
+                      resetOnSuccess
+                      className="@container flex flex-col gap-4"
+                    >
+                      <Field label="Name">
+                        <input name="name" required maxLength={200} className={inputClassName} />
+                      </Field>
+                      <Field label="Description">
+                        <textarea
+                          name="description"
+                          rows={2}
+                          maxLength={1000}
+                          className={cn(inputClassName, "min-h-20 resize-y")}
+                        />
+                      </Field>
+                      <ItemPriceFields pricing={menu.pricing} />
+                      <Field label="Category">
+                        <CategorySelect categories={menu.categories} />
+                      </Field>
+                      <Button type="submit" size="staff" className="self-start">
+                        Add item
+                      </Button>
+                    </ActionForm>
+                  )}
+                </SideCard>
 
-            <SideCard title="Add a category">
-              <ActionForm
-                action="/api/menu/categories"
-                savedMessage="Category added."
-                resetOnSuccess
-                className="flex flex-col gap-2"
-              >
-                <div className="flex items-end gap-2">
-                  <Field label="Name" className="flex-1">
-                    <input name="name" required maxLength={200} className={inputClassName} />
-                  </Field>
-                  <Button type="submit" variant="secondary" size="staff">
-                    Add category
-                  </Button>
-                </div>
-              </ActionForm>
-            </SideCard>
+                {menu.categories.length > 0 && (
+                  <SideCard title="Add a category">
+                    <ActionForm
+                      action="/api/menu/categories"
+                      savedMessage="Category added."
+                      resetOnSuccess
+                      className="flex flex-col gap-2"
+                    >
+                      <div className="flex items-end gap-2">
+                        <Field label="Name" className="flex-1">
+                          <input name="name" required maxLength={200} className={inputClassName} />
+                        </Field>
+                        <Button type="submit" variant="secondary" size="staff">
+                          Add category
+                        </Button>
+                      </div>
+                    </ActionForm>
+                  </SideCard>
+                )}
 
-            <SpecialsSection
-              specials={specials}
-              items={menu.categories.flatMap((category) => category.items)}
-              timezone={menu.timezone}
-            />
+                <SpecialsSection
+                  specials={specials}
+                  items={menu.categories.flatMap((category) => category.items)}
+                  timezone={menu.timezone}
+                />
 
-            <BundleForm categories={menu.categories} pricing={menu.pricing} timezone={menu.timezone} />
+                <BundleForm categories={menu.categories} pricing={menu.pricing} timezone={menu.timezone} />
+              </>
+            )}
           </aside>
         )}
       </div>
     </div>
+  );
+}
+
+const CATEGORY_PICKS = ["Starters", "Mains", "Sides", "Drinks", "Desserts"];
+
+/**
+ * The owner's empty menu: the first category's form is the empty state. Once
+ * there is a category, the list and the side column's forms take over.
+ */
+function FirstCategory() {
+  return (
+    <Card as="section" aria-labelledby="first-category-title" className="flex flex-col gap-4 p-5 sm:p-8">
+      <span aria-hidden className="grid size-12 place-items-center rounded-card bg-surface-2 text-ink [&_svg]:size-6">
+        <BookOpen strokeWidth={1.75} />
+      </span>
+      <div className="flex flex-col gap-1">
+        <h2 id="first-category-title" className="text-title font-semibold">
+          Start your menu with a category
+        </h2>
+        <p className="max-w-[56ch] text-ink-2">
+          Categories are the headings guests scroll through, like Starters or Mains. Add one, then add
+          dishes to it.
+        </p>
+      </div>
+      <ActionForm
+        action="/api/menu/categories"
+        savedMessage="Category added. Now add its first dish."
+        resetOnSuccess
+        className="flex w-full flex-col gap-2"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <Field label="Category name" className="sm:w-80">
+            <input id="first-category" name="name" required maxLength={200} className={inputClassName} />
+          </Field>
+          <Button type="submit" size="staff" className="w-full sm:w-auto">
+            Add category
+          </Button>
+        </div>
+      </ActionForm>
+      <QuickPicks fieldId="first-category" names={CATEGORY_PICKS} />
+    </Card>
   );
 }
 
