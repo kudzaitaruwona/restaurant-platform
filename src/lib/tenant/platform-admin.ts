@@ -122,7 +122,12 @@ export async function createFirstOwner(
     },
   );
   if ("problem" in created) return created;
-  const invited = await inviteOwner(admin, restaurantId, created.id, false);
+  // The owner is saved; an error inviting them is reported as "not sent" (the
+  // card offers Send invite again), never as a failed create.
+  const invited = await inviteOwner(admin, restaurantId, created.id, false).catch((error: unknown) => {
+    console.error("Couldn't invite a new owner (S-42):", error instanceof Error ? error.message : error);
+    return "failed" as const;
+  });
   return { id: created.id, invited: invited === "sent" };
 }
 

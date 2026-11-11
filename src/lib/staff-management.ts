@@ -269,6 +269,8 @@ async function sendInvite(
       appUrl: appUrl(),
     }),
   );
+  // The person is already saved: failing to note how the email went must not
+  // turn that into an error. The row stays "not known", shown as not delivered.
   await withTenant(ctx, (tx) =>
     tx
       .update(staffInvites)
@@ -276,7 +278,9 @@ async function sendInvite(
       .where(
         and(eq(staffInvites.restaurantId, ctx.restaurantId), eq(staffInvites.id, invite.inviteId)),
       ),
-  );
+  ).catch((error: unknown) => {
+    console.error("Couldn't record how an invite went (S-42):", error instanceof Error ? error.message : error);
+  });
   return delivered;
 }
 

@@ -106,7 +106,21 @@ const toReport = (planned: Planned[], imported: number | null): ImportReport =>
     imported,
   );
 
-const read = (csv: string) => readCsvTable(csv, importColumns.restaurants);
+/** Each owner is emailed during the import, so the same reasoning as staff (S-43). */
+export const RESTAURANTS_MAX_ROWS = 100;
+const INVITE_SPACING_MS = 550;
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const read = (csv: string) => {
+  const table = readCsvTable(csv, importColumns.restaurants);
+  if (table.ok && table.rows.length > RESTAURANTS_MAX_ROWS) {
+    return {
+      ok: false as const,
+      error: `The file has ${table.rows.length} restaurants. Import at most ${RESTAURANTS_MAX_ROWS} at a time, since each owner is emailed.`,
+    };
+  }
+  return table;
+};
 
 /** What importing would do, row by row. Writes nothing. */
 export async function previewRestaurantsImport(
@@ -141,6 +155,7 @@ export async function importRestaurants(
       );
       continue;
     }
+    if (imported > 0) await pause(INVITE_SPACING_MS);
     imported++;
     const first = await createFirstOwner(admin, created.id, owner);
     if ("problem" in first) {

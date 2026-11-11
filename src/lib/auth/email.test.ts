@@ -69,6 +69,25 @@ describe("resendSender", () => {
 });
 
 describe("the emails", () => {
+  it("keeps an invite's subject on one line, whatever the names hold", () => {
+    const staffEmail = staffInviteEmail({
+      to: "a@example.test",
+      name: "Rudo",
+      restaurantName: "Msasa\r\nGrill",
+      addedBy: "Tendai\nMoyo",
+      role: "staff",
+      appUrl: "https://app.example.test",
+    });
+    expect(staffEmail.subject).toBe("Tendai Moyo added you to Msasa Grill");
+    const ownerEmail = ownerInviteEmail({
+      to: "a@example.test",
+      name: "Rudo",
+      restaurantName: "  Msasa\n\nGrill ",
+      appUrl: "https://app.example.test",
+    });
+    expect(ownerEmail.subject).toBe("Msasa Grill is ready for you");
+  });
+
   it("a link email has the link on a line of its own and says it expires", () => {
     const { text } = signInLinkEmail("a@example.test", "https://x.test/v?t=1", 10);
     expect(text).toContain("\nhttps://x.test/v?t=1\n");

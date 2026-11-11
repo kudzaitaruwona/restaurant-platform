@@ -16,13 +16,46 @@ const tooBig = () =>
 /** Room for the form's own framing around a CSV at the limit. */
 const BODY_SLACK = 64 * 1024;
 
+/** The body's bytes, or null once more than `limit` have arrived. */
+async function readCapped(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
 export async function readImportRequest(
   request: Request,
 ): Promise<{ csv: string; intent: ImportIntent } | Response> {
-  const declared = Number(request.headers.get("content-length"));
-  if (declared > CSV_MAX_BYTES + BODY_SLACK) return tooBig();
-
-  const form = await request.formData().catch(() => new FormData());
+  const limit = CSV_MAX_BYTES + BODY_SLACK;
+  // A body that declares itself too big is refused unread.
+  if (Number(request.headers.get("content-length")) > limit) return tooBig();
+  // One that declares nothing (chunked) or lies is counted as it arrives and
+  // dropped past the limit, so the server never buffers more than that.
+  const body = await readCapped(request, limit);
+  if (body === null) return tooBig();
+  const form = await new Response(body, {
+    headers: { "content-type": request.headers.get("content-type") ?? "" },
+  })
+    .formData()
+    .catch(() => new FormData());
   const intent = form.get("intent");
   if (intent !== "preview" && intent !== "confirm") {
     return Response.json({ error: "Choose preview or confirm." }, { status: 400 });

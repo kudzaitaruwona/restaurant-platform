@@ -48,6 +48,15 @@ const report = <T,>(result: T) => {
 };
 
 describe("previewStaffImport", () => {
+  it("refuses more than 50 people in one file, since each is emailed an invite", async () => {
+    const tenant = await newRestaurant();
+    const csv = ["email,name,role", ...Array.from({ length: 51 }, () => `${email()},Someone,staff`)].join("\n");
+
+    expect(await previewStaffImport(tenant, csv)).toEqual({
+      error: "The file has 51 people. Invite at most 50 at a time, since each one is emailed.",
+    });
+  });
+
   it("checks each row with the staff form's rules and writes nothing", async () => {
     const tenant = await newRestaurant();
     const repeated = email();

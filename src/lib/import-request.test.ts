@@ -24,6 +24,29 @@ describe("readImportRequest", () => {
     expect(input).toEqual({ csv: expect.stringMatching(/^\uFEFF?a,b\n1,2$/), intent: "confirm" });
   });
 
+  it("refuses a body with no declared length once it passes the limit, without reading the rest", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(256 * 1024).fill(97);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    const request = new Request("http://localhost/api/menu/import", {
+      method: "POST",
+      body: endless,
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      duplex: "half",
+    } as RequestInit);
+    expect(request.headers.get("content-length")).toBeNull();
+
+    const answer = (await readImportRequest(request)) as Response;
+
+    expect(answer.status).toBe(413);
+    expect(pulled * chunk.byteLength).toBeLessThan(CSV_MAX_BYTES * 2);
+  });
+
   it("answers 400 for anything but preview or confirm", async () => {
     const answer = await readImportRequest(post({ csv: "a", intent: "delete" }));
     expect(answer).toBeInstanceOf(Response);

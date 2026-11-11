@@ -253,7 +253,13 @@ function createAuth(audience: Audience) {
             const user = await context?.context.internalAdapter.findUserById(
               session.userId,
             );
-            if (user) await recordFirstSignIn(user.email);
+            // "Joined" is only shown, so a failure here must never fail a sign-in.
+            // Better Auth rethrows an after-hook's error. No address in the log.
+            if (user) {
+              await recordFirstSignIn(user.email).catch((error: unknown) => {
+                console.error("Couldn't record a first sign-in (S-42):", error instanceof Error ? error.message : error);
+              });
+            }
           },
         },
       },

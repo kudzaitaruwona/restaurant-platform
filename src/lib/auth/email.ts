@@ -84,6 +84,12 @@ const howToSignIn = (to: string, appUrl: string) =>
   `Sign in with this email address, ${to}:\n\n${inviteLink(appUrl, to)}\n\n` +
   "You will get a sign-in link or a code by email. There is no password.";
 
+/**
+ * A subject is one line: names can hold line breaks (a quoted CSV cell, say),
+ * and a provider may refuse a subject that has them.
+ */
+export const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
 /** To someone a restaurant has just added (S-42). */
 export function staffInviteEmail({
   to,
@@ -104,7 +110,7 @@ export function staffInviteEmail({
   const joining = role === "owner" ? " as an owner" : "";
   return {
     to,
-    subject: `${addedBy} added you to ${restaurantName}`,
+    subject: oneLine(`${addedBy} added you to ${restaurantName}`),
     text:
       `Hi ${firstNameOf(name)},\n\n${addedBy} added you to ${restaurantName}${joining} on ${APP_NAME}.\n\n` +
       howToSignIn(to, appUrl),
@@ -125,7 +131,7 @@ export function ownerInviteEmail({
 }): Email {
   return {
     to,
-    subject: `${restaurantName} is ready for you`,
+    subject: oneLine(`${restaurantName} is ready for you`),
     text:
       `Hi ${firstNameOf(name)},\n\n${restaurantName} is set up for you on ${APP_NAME}. You are its owner.\n\n` +
       howToSignIn(to, appUrl),

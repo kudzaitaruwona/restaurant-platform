@@ -63,7 +63,26 @@ const toReport = (planned: Planned[], imported: number | null): ImportReport =>
     imported,
   );
 
-const read = (csv: string) => readCsvTable(csv, importColumns.staff);
+/**
+ * Each person is emailed an invite during the import, one after another, so a
+ * staff file is capped well below the 500 the other imports take, and the sends
+ * are spaced to stay under the email provider's rate limit (S-43).
+ */
+export const STAFF_MAX_ROWS = 50;
+export const INVITE_SPACING_MS = 550;
+
+const read = (csv: string) => {
+  const table = readCsvTable(csv, importColumns.staff);
+  if (table.ok && table.rows.length > STAFF_MAX_ROWS) {
+    return {
+      ok: false as const,
+      error: `The file has ${table.rows.length} people. Invite at most ${STAFF_MAX_ROWS} at a time, since each one is emailed.`,
+    };
+  }
+  return table;
+};
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * What importing would do, row by row. Writes nothing. An email another
@@ -90,6 +109,7 @@ export async function importStaff(
   let imported = 0;
   for (const entry of planned) {
     if (!entry.person) continue;
+    if (imported > 0) await pause(INVITE_SPACING_MS);
     const result = await addStaff(ctx, entry.person);
     if (result === "added") imported++;
     else entry.problems.push(result === "email_taken" ? messages.emailTaken : messages.ownerFirst);
