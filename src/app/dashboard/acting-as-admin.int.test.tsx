@@ -20,12 +20,19 @@ import { ActingAsAdminBanner } from "./acting-as-admin-banner";
 import { Dashboard } from "./dashboard";
 import DashboardLayout from "./layout";
 import { SessionControls } from "./session-controls";
+import { StaffNav } from "./shell/staff-shell";
 
 /** The staff UI for a platform admin who has entered, on a real session. */
 const browser = vi.hoisted(() => ({ cookie: "" }));
 
 vi.mock("next/headers", () => ({
   headers: async () => new Headers({ cookie: browser.cookie }),
+}));
+
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  usePathname: () => "/dashboard",
+  useRouter: () => ({ replace() {}, refresh() {} }),
 }));
 
 vi.mock("next/server", async (importOriginal) => ({
@@ -146,13 +153,25 @@ describe("signing out", () => {
 });
 
 describe("the dashboard, for an admin inside a restaurant", () => {
-  it("shows that restaurant's team and owner tools, without the shadow row", async () => {
+  it("shows that restaurant's team, without the shadow row", async () => {
     browser.cookie = adminCookie;
     const html = renderToStaticMarkup(await Dashboard());
 
     expect(html).toContain("The real owner");
-    expect(html).toContain("/dashboard/settings");
     expect(html).toContain("Signed in as platform admin (owner)");
     expect(html.match(/Platform admin/g)).toBeNull();
+  });
+
+  it("gives the admin the owner tools in the rail, named as the admin, with the admin's sign-out", async () => {
+    browser.cookie = adminCookie;
+    const element = await StaffNav();
+    const html = renderToStaticMarkup(element);
+
+    expect(html).toContain('href="/dashboard/settings"');
+    expect(html).toContain('href="/dashboard/staff"');
+    expect(html).toContain("Platform admin");
+    expect(html).toContain("Owner access");
+    expect(html).not.toContain("The real owner");
+    expect(element.props.session.props.audience).toBe("admin");
   });
 });

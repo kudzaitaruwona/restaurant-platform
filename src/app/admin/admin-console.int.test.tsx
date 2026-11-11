@@ -195,12 +195,12 @@ describe("the admin page", () => {
   it("offers sign-out on a real session", async () => {
     const html = await renderPage("");
     expect(html).toContain("Sign out");
-    expect(html).not.toContain("Dev switcher");
+    expect(html).not.toContain("Dev: act as");
   });
 
   it("offers the dev switcher instead under the bypass", async () => {
     const html = await renderPage("1");
-    expect(html).toContain("Dev switcher");
+    expect(html).toContain("Dev: act as");
     expect(html).not.toContain("Sign out");
   });
 });

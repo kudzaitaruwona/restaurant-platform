@@ -1,8 +1,8 @@
 "use client";
 
+import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 
 type Audience = "staff" | "admin";
 
@@ -41,12 +41,22 @@ export function SignOutButton({ audience }: { audience: Audience }) {
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <Button variant="outline" size="sm" disabled={pending} onClick={click}>
-        {pending ? "Signing out…" : "Sign out"}
-      </Button>
+    <div className="relative mx-2 mt-1">
+      <button
+        type="button"
+        disabled={pending}
+        onClick={click}
+        className="flex h-12 w-full items-center gap-3.5 rounded-control px-3 text-body font-medium text-ink-2 outline-none hover:bg-surface-2 hover:text-ink focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      >
+        <LogOut aria-hidden className="size-[22px] shrink-0" strokeWidth={1.75} />
+        <span className="rail-fade">{pending ? "Signing out…" : "Sign out"}</span>
+      </button>
       {problem && (
-        <p role="alert" className="text-sm text-destructive">
+        // Beside the rail, so a collapsed rail can't hide it.
+        <p
+          role="alert"
+          className="mt-1 rounded-control bg-danger-soft p-3 text-caption text-ink md:absolute md:bottom-0 md:left-full md:mt-0 md:ml-4 md:w-64 md:shadow-float"
+        >
           {problem}
         </p>
       )}

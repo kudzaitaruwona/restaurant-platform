@@ -22,11 +22,17 @@ export async function ActingAsAdminBanner() {
   return (
     <div
       role="status"
-      className="flex flex-wrap print:hidden items-center justify-between gap-2 bg-primary px-4 py-2 text-sm text-primary-foreground"
+      data-admin-bar
+      className="sticky top-0 z-50 flex h-11 shrink-0 items-center justify-between gap-3 bg-ink pr-2 pl-4 text-caption font-medium text-page md:pl-5 md:text-body print:hidden"
     >
-      <p>Acting as admin in {restaurant.name}</p>
+      <p className="min-w-0 truncate">Acting as admin in {restaurant.name}</p>
       <form method="post" action="/api/admin/leave">
-        <Button type="submit" variant="secondary" size="sm">
+        <Button
+          type="submit"
+          variant="ghost"
+          size="compact"
+          className="h-9 border-page/40 text-caption text-page hover:bg-page/15"
+        >
           Leave restaurant
         </Button>
       </form>
