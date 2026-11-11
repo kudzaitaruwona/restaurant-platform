@@ -32,14 +32,14 @@ export function ItemPriceFields({
   const note = calculatedZigNote(usd, pricing);
 
   return (
-    <div ref={anchor} className="flex flex-col gap-4">
+    <div ref={anchor} className="grid gap-4 @md:grid-cols-2 @md:items-start">
       <Field label="Price (USD)">
         <input
           name="priceUsd"
           inputMode="decimal"
           value={usd}
           onChange={(event) => setUsd(event.target.value)}
-          className={inputClassName}
+          className={`${inputClassName} tabular-nums`}
         />
       </Field>
       <Field
@@ -50,7 +50,7 @@ export function ItemPriceFields({
           name="priceZig"
           inputMode="decimal"
           defaultValue={saved?.priceZig ?? ""}
-          className={inputClassName}
+          className={`${inputClassName} tabular-nums`}
         />
       </Field>
     </div>
