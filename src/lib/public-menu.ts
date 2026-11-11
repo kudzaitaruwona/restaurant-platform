@@ -1,6 +1,7 @@
 import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
 import { bookAgainPath } from "@/lib/booking-link";
+import { guestThemeCss } from "@/lib/guest-theme";
 import { html, trusted } from "@/lib/html";
 import { getMenu, type Menu } from "@/lib/menu";
 import { menuTag } from "@/lib/menu-cache";
@@ -25,36 +26,49 @@ export const BUILD_SAMPLE_TOKEN = "build-sample";
 /** Issue 24: a special starts or ends within this long of its window. */
 const FRESH_FOR_SECONDS = 5 * 60;
 
+/**
+ * The page's own layout, on top of the guest theme (S-41): a header with the
+ * restaurant's name, sticky category chips, and card-less rows split by
+ * hairlines, with the photo on the left and the price on the right.
+ */
 const styles = `
-:root{color-scheme:light dark;--muted:#5f5f5f;--line:#e2e2e2}
-@media (prefers-color-scheme:dark){:root{--muted:#a8a8a8;--line:#3a3a3a}}
-*{box-sizing:border-box}
-body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:40rem;margin:0 auto;padding:1.5rem 1rem 3rem}
-h1{margin:0;font-size:1.75rem;line-height:1.2}
-.wifi{margin:.25rem 0 0;font-size:.9rem}
-.book-again{margin:.5rem 0 0}
-nav{position:sticky;top:0;z-index:1;display:flex;gap:.5rem;margin:1rem -1rem 0;padding:.5rem 1rem;overflow-x:auto;background:Canvas;border-bottom:1px solid var(--line)}
-nav a{flex:none;padding:.25rem .75rem;border:1px solid var(--line);border-radius:999px;color:inherit;font-size:.9rem;text-decoration:none;white-space:nowrap}
-section{scroll-margin-top:3.5rem}
+[hidden]{display:none!important}
 html{scroll-behavior:smooth}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
-h2{margin:1.5rem 0 0;padding-bottom:.25rem;border-bottom:1px solid var(--line);font-size:1.25rem}
+main{max-width:40rem;margin:0 auto;padding-bottom:40px}
+.head{padding:24px 16px 16px}
+.hrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01em;text-wrap:balance}
+.head p{margin:4px 0 0;font-size:15px;color:var(--ink-2)}
+.wifi{display:flex;align-items:center;gap:6px}
+.wifi .icon{width:16px;height:16px}
+.head .book-again{margin-top:8px}
+.book-again a{color:var(--ink);font-weight:600;text-underline-offset:3px}
+nav{position:sticky;top:0;z-index:2;display:flex;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav a{display:inline-flex;align-items:center;flex:none;min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none;white-space:nowrap}
+nav a:active{background:var(--surface-2)}
+.sections section{padding:0 16px;scroll-margin-top:61px}
+.sections h2{margin:28px 0 4px;font-size:20px;font-weight:600;line-height:1.3}
+.sections>p{padding:0 16px;color:var(--ink-2)}
 ul{margin:0;padding:0;list-style:none}
-li{display:flex;align-items:flex-start;gap:.75rem;padding:.75rem 0;border-bottom:1px solid var(--line)}
-.text{flex:1;min-width:0}
-.thumb{flex:none;width:64px;height:64px;object-fit:cover;border-radius:.375rem;background:var(--line)}
-.item{display:flex;justify-content:space-between;gap:1rem;font-weight:600}
-.price{white-space:nowrap;text-align:right}
-.sub{display:block;font-size:.8rem;font-weight:400;color:var(--muted)}
-.sold-out{color:var(--muted)}
+.sections li{display:flex;gap:12px;padding:16px 0}
+.sections li+li{border-top:1px solid var(--line)}
+.thumb{flex:none;width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surface-2)}
+.body{flex:1;min-width:0;display:flex;justify-content:space-between;gap:12px}
+.left{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none;max-width:50%}
+.name{font-weight:600;line-height:1.35}
+.price{font-weight:600;line-height:1.35;text-align:right;font-variant-numeric:tabular-nums}
+.sub{display:block;font-size:13px;font-weight:400;color:var(--ink-2)}
+.desc{margin:2px 0 0;font-size:15px;line-height:1.45;color:var(--ink-2)}
+.tag{display:inline-flex;align-items:center;height:22px;margin-left:8px;padding:0 8px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);font-size:13px;font-style:normal;font-weight:600;vertical-align:2px}
+.sold-out .name,.sold-out .price{color:var(--ink-2)}
 .sold-out .thumb{opacity:.5}
-s{font-weight:400;color:var(--muted)}
-.tag{margin-left:.5rem;padding:0 .3rem;border:1px solid currentColor;border-radius:.25rem;font-size:.75rem;font-style:normal;font-weight:600;text-transform:uppercase;letter-spacing:.04em;vertical-align:middle}
-p{margin:.25rem 0 0;color:var(--muted)}
+s{font-weight:400;color:var(--ink-2)}
 `;
 
-const stylesheet = trusted(styles);
+const stylesheet = trusted(guestThemeCss + styles);
 
 type Markup = ReturnType<typeof html>;
 
@@ -63,7 +77,7 @@ const page = (title: string, body: Markup, after: Markup | null = null) =>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${title}</title>
 <style>${stylesheet}</style>
 </head>
@@ -71,40 +85,106 @@ const page = (title: string, body: Markup, after: Markup | null = null) =>
 </html>
 `;
 
+/** An inline Lucide icon (S-41): its own paths, drawn by the theme's .icon. */
+const icon = (paths: string, className = "icon") =>
+  `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+
+const WIFI = trusted(
+  icon(
+    '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>',
+  ),
+);
+const BELL =
+  '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>';
+
 // --- ordering, on a table's page only (spec 06) ------------------------------
 
-const orderStyles = trusted(`[hidden]{display:none!important}
-.add{margin-top:.5rem;padding:.25rem .9rem;border:1px solid currentColor;border-radius:999px;background:none;color:inherit;font:inherit;font-size:.9rem}
-.order{position:fixed;inset:auto 0 0;display:flex;flex-direction:column;gap:.5rem;max-width:40rem;max-height:90vh;margin:0 auto;padding:1rem;overflow-y:auto;background:Canvas;border-top:1px solid var(--line);box-shadow:0 -4px 16px rgb(0 0 0/.15)}
-.order h2{margin:0;padding:0;border:0;font-size:1.1rem}
-.order label{display:flex;flex-direction:column;gap:.2rem;font-size:.9rem}
-.order input{padding:.5rem;border:1px solid var(--line);border-radius:.375rem;font:inherit;font-size:16px}
-.order .actions{display:flex;gap:.5rem}
-.order button,.bar{padding:.6rem;border-radius:.375rem;font:inherit}
-.order .actions button{flex:1}
-#cart li{flex-wrap:wrap;align-items:center;gap:.5rem;padding:.5rem 0}
-#cart .what{flex:1 1 100%}
-#cart .note{flex:1 1 8rem;min-width:0}
-#cart .step{padding:.25rem .75rem}
-.bar{position:fixed;inset:auto 1rem 1rem;max-width:38rem;margin:0 auto;border:0;background:CanvasText;color:Canvas;font-weight:600}
-.order:not([hidden])~.bar{display:none}
-.order-status{position:fixed;inset:auto 1rem 4.5rem;max-width:38rem;margin:0 auto;padding:.75rem 1rem;border-radius:.375rem;background:CanvasText;color:Canvas}
-.order-status:empty{display:none}
-.tracker{max-width:40rem;margin:0 auto;padding:0 1rem 1rem}
-.waiter{max-width:40rem;margin:0 auto;padding:0 1rem 6rem}
-.tracker h2{margin:0}
-.tracker li{flex-wrap:wrap;gap:.25rem .75rem}
-.tracker .who{flex:1 1 100%}
-.voided .what{text-decoration:line-through;color:var(--muted)}`);
+/** A Lucide icon drawn by CSS, for the elements the script makes. */
+const mask = (paths: string) =>
+  `url("data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>${paths}</svg>`,
+  )}")`;
+
+const orderStyles = trusted(`:root{--i-check:${mask("<path d='M20 6 9 17l-5-5'/>")};--i-ok:${mask("<circle cx='12' cy='12' r='10'/><path d='m9 12 2 2 4-4'/>")};--i-trash:${mask("<path d='M3 6h18'/><path d='M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6'/><path d='M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'/><path d='M10 11v6'/><path d='M14 11v6'/>")}}
+main{padding-bottom:104px}
+.ico::before{content:"";flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat}
+.waiter{display:inline-flex;align-items:center;gap:8px;flex:none;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);font-size:15px;font-weight:600;cursor:pointer;transition:background-color .18s ease-out,border-color .18s ease-out,color .18s ease-out;touch-action:manipulation}
+.waiter:active{transform:translateY(1px)}
+.waiter .ring,.waiter .w1,.waiter[data-called] .bell,.waiter[data-called] .w0{display:none}
+.waiter[data-called] .ring{display:block}.waiter[data-called] .w1{display:inline}
+.waiter[data-called]{background:var(--attention-soft);border-color:var(--attention);color:var(--attention-ink)}
+@media (prefers-reduced-motion:no-preference){.waiter[data-called] .ring{animation:ring 2.4s ease-out 3}}
+@keyframes ring{0%,60%,100%{transform:rotate(0)}10%{transform:rotate(-14deg)}20%{transform:rotate(12deg)}30%{transform:rotate(-8deg)}40%{transform:rotate(4deg)}}
+.said{margin:-4px 16px 16px;padding:10px 12px;border-radius:10px;background:var(--attention-soft);color:var(--attention-ink);font-size:15px;font-weight:600}
+.said:empty,.confirm:empty,.err:empty,.tstate:empty,.inorder:empty{display:none}
+.tracker{margin:0 16px 16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
+.tracker h2{margin:0;font-size:17px;font-weight:600}
+.tstate{margin:8px 0 0;color:var(--ink-2);font-size:15px}
+.tracker ul{margin-top:8px}
+.tracker li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0}
+.tracker li+li{border-top:1px solid var(--line)}
+.tw{display:flex;flex-direction:column;min-width:0}
+.tn{font-size:15px;font-weight:600}
+.tm,.tnote{font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.tnote{color:var(--attention-ink)}
+.voided .tn{text-decoration:line-through;color:var(--ink-2)}
+.pill-served{--i:var(--i-check);padding:0 2px}.pill-served::before{background:var(--accent)}
+.pay{margin:4px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-2)}
+.confirm{--i:var(--i-ok);display:grid;grid-template-columns:20px 1fr;column-gap:10px;margin:-4px -4px 16px;padding:12px;border-radius:10px;background:var(--accent-soft)}
+.confirm::before{width:20px;height:20px;margin-top:1px;background:var(--accent);grid-row:span 2}
+.confirm p{margin:0}
+.ct{font-size:15px;font-weight:600}
+.cs{margin-top:2px!important;font-size:13px;color:var(--ink-2)}
+@media (prefers-reduced-motion:no-preference){.confirm,.inorder{animation:in .2s ease-out}.order{animation:up .2s ease-out}}
+@keyframes in{from{translate:0 -4px;opacity:.4}}
+@keyframes up{from{translate:0 32px}}
+.add{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px 0 10px;border:1px solid var(--brand);border-radius:10px;background:var(--surface);color:var(--brand);font-size:15px;font-weight:600;cursor:pointer;transition:background-color .15s ease-out;touch-action:manipulation}
+.add:active{background:var(--surface-2);transform:translateY(1px)}
+.inorder{--i:var(--i-check);display:inline-flex;align-items:center;gap:4px;margin-top:8px;font-size:13px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.dock{position:fixed;inset:auto 0 0;z-index:30;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);border-top:1px solid var(--line);box-shadow:0 -8px 24px -16px rgb(var(--shadow)/.3)}
+.dock:has(>[hidden]),.order:not([hidden])~.dock{display:none}
+.bar{display:flex;align-items:center;gap:12px;width:100%;max-width:38rem;min-height:52px;margin:0 auto;padding:0 16px;border:0;border-radius:10px;background:var(--brand);color:var(--brand-ink);font-size:16px;font-weight:600;text-align:left;cursor:pointer;touch-action:manipulation}
+.bar:active{transform:translateY(1px)}
+.count{display:inline-grid;place-items:center;min-width:26px;height:26px;padding:0 6px;border-radius:999px;background:var(--brand-ink);color:var(--brand);font-size:13px;font-variant-numeric:tabular-nums}
+.bl{flex:1}
+.bv{display:inline-flex;align-items:center;gap:4px;font-size:15px}
+.scrim{display:none}.order:not([hidden])~.scrim{display:block}
+body:has(.order:not([hidden])){overflow:hidden}
+.grab{flex:none;width:36px;height:4px;margin:8px auto 0;border-radius:999px;background:var(--line)}
+.shead{display:flex;align-items:baseline;justify-content:space-between;padding:12px 16px 4px}
+.shead h2{margin:0;font-size:20px;font-weight:600}
+.order .sheet-body{min-height:0;padding:0 16px 16px;overscroll-behavior:contain}
+.cl{padding:16px 0}
+.cl+.cl{border-top:1px solid var(--line)}
+.ctop{display:flex;justify-content:space-between;gap:12px}
+.cprice{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.crow{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+.stepper{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+.step{display:grid;place-items:center;width:44px;height:44px;border:0;background:none;color:var(--ink);font-size:20px;line-height:1;cursor:pointer;touch-action:manipulation}
+.q{min-width:28px;text-align:center;font-weight:600;font-variant-numeric:tabular-nums}
+.rm{--i:var(--i-trash);display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 4px 0 8px;border:0;background:none;color:var(--ink-2);font-size:15px;cursor:pointer}
+.fl{display:flex;flex-direction:column;gap:4px;margin-top:12px;font-size:13px;color:var(--ink-2)}
+.fname{padding-top:16px;border-top:1px solid var(--line);font-size:15px;font-weight:600;color:var(--ink)}
+.cl+.fname,#cart:empty+.fname{margin-top:8px}
+.order .sheet-foot{display:block}
+.order .pay{margin:0 0 12px;padding:0;border:0}
+.err{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:var(--attention-soft);color:var(--attention-ink);font-size:15px;font-weight:600}
+.actions{display:grid;grid-template-columns:1fr 1.3fr;gap:8px}
+.actions .btn{min-height:52px;font-size:16px}
+.said[data-tone]{background:var(--surface-2);color:var(--ink)}`);
 
 /**
  * The cart, the name, placing the order, and the order tracker (spec 06, steps 1,
  * 2, 3 and 5; #70, proposed, S-40). Plain DOM, no framework, so it costs about
- * 5KB on the page (spec 02's budget). The token comes from the address, the
+ * 6KB on the page (spec 02's budget). The token comes from the address, the
  * session from the scan it makes on load: the page itself carries neither.
  * Everything a customer typed or a menu says is put on the page as text, never
  * as markup. The cart lives in the page only; what the phone remembers is the
  * customer's name, per session, so the next party at the table starts blank.
+ * Messages go where they belong, never over the page (S-41): the order's
+ * confirmation at the top of the tracker, a problem with the order inside the
+ * sheet above its buttons, the waiter's answer under the header. Each row that is
+ * in the cart says how many.
  * The tracker is polled from an uncached endpoint every 5 seconds *(proposed)*,
  * only while the page is showing, one poll at a time, each given up after 4
  * seconds, so a slow line can't pile them up or land an older answer over a newer
@@ -120,20 +200,25 @@ export const ORDER_SCRIPT = `(() => {
   const $ = (id) => document.getElementById(id);
   const form = $("order");
   const fields = form.elements;
-  const status = $("order-status");
+  const error = $("order-error");
   const bar = $("cart-open");
+  const count = $("cart-count");
+  const size = $("cart-items");
   const list = $("cart");
   const tracker = $("tracker");
+  const confirmed = $("tracker-confirm");
   const waiter = $("call-waiter");
+  const waiterSaid = $("waiter-status");
   const feedList = $("tracker-list");
   const feedState = $("tracker-state");
-  const say = (text) => { status.textContent = text; };
+  const adds = [...document.querySelectorAll("button[data-item]")];
   const make = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = text;
     if (className) element.className = className;
     return element;
   };
+  const fail = (text) => { error.textContent = text; form.hidden = false; };
   const times = (quantity, name) => quantity + " \\u00d7 " + name;
   let session = null;
   let ended = false;
@@ -149,13 +234,26 @@ export const ORDER_SCRIPT = `(() => {
   };
 
   const draw = () => {
+    const total = cart.reduce((sum, line) => sum + line.quantity, 0);
     bar.hidden = cart.length === 0;
-    bar.textContent = "Your order (" + cart.reduce((sum, line) => sum + line.quantity, 0) + ")";
+    count.textContent = String(total);
+    size.textContent = total + (total === 1 ? " item" : " items");
+    bar.setAttribute("aria-label", "Your order, " + size.textContent);
     if (cart.length === 0) form.hidden = true;
+    for (const button of adds) {
+      const line = cart.find((other) => other.id === button.dataset.item);
+      if (!button.mark) {
+        const left = line && button.closest("li") && button.closest("li").querySelector(".left");
+        if (!left) continue;
+        button.mark = left.appendChild(make("span", "", "inorder ico"));
+      }
+      button.mark.textContent = line ? line.quantity + " in your order" : "";
+    }
     list.replaceChildren(...cart.map((line) => {
-      const row = make("li");
-      const what = make("span", times(line.quantity, line.name), "what");
-      if (line.price) what.textContent += " \\u00b7 " + line.price + (line.quantity > 1 ? " each" : "");
+      const row = make("li", undefined, "cl");
+      const top = make("div", undefined, "ctop");
+      top.append(make("span", line.name, "name"));
+      if (line.price) top.append(make("span", line.price + (line.quantity > 1 ? " each" : ""), "cprice"));
       const change = (by, label) => {
         const button = make("button", by < 0 ? "\\u2212" : "+", "step");
         button.type = "button";
@@ -163,25 +261,33 @@ export const ORDER_SCRIPT = `(() => {
         button.addEventListener("click", () => {
           line.quantity = Math.min(20, line.quantity + by);
           if (line.quantity < 1) cart = cart.filter((other) => other !== line);
+          error.textContent = "";
           draw();
         });
         return button;
       };
-      const note = make("input", undefined, "note");
+      const stepper = make("div", undefined, "stepper");
+      stepper.append(change(-1, "One fewer "), make("span", String(line.quantity), "q"), change(1, "One more "));
+      const remove = make("button", "Remove", "rm ico");
+      remove.type = "button";
+      remove.addEventListener("click", () => { cart = cart.filter((other) => other !== line); error.textContent = ""; draw(); });
+      const controls = make("div", undefined, "crow");
+      controls.append(stepper, remove);
+      const note = make("input", undefined, "input note");
       note.maxLength = 200;
-      note.placeholder = "Note for the kitchen (optional)";
+      note.placeholder = "For example, no onions";
       note.value = line.note;
       note.setAttribute("aria-label", "Note for " + line.name);
       note.addEventListener("input", () => { line.note = note.value; });
-      const remove = make("button", "Remove");
-      remove.type = "button";
-      remove.addEventListener("click", () => { cart = cart.filter((other) => other !== line); draw(); });
-      row.append(what, change(-1, "One fewer "), change(1, "One more "), remove, note);
+      const label = make("label", undefined, "fl");
+      label.append(make("span", "Kitchen note (optional)"), note);
+      row.append(top, controls, label);
       return row;
     }));
   };
 
-  const words = { placed: "Ordered", cooking: "Cooking", done: "Ready", delivered: "Delivered", voided: "Voided" };
+  const words = { placed: "Ordered", cooking: "Cooking", done: "Ready", delivered: "Served", voided: "Voided" };
+  const pills = { placed: "placed", cooking: "cooking", done: "done", delivered: "served ico", voided: "voided" };
   let shown = false;
   let last = "";
   let polling = false;
@@ -200,15 +306,15 @@ export const ORDER_SCRIPT = `(() => {
       ended = feed.session !== session;
       const items = ended ? [] : feed.items;
       if (!ended) shown = items.length > 0;
-      tracker.hidden = !shown;
+      if (ended) confirmed.replaceChildren();
+      tracker.hidden = !shown && !confirmed.textContent;
       feedState.textContent = ended ? "This table's session has ended. Add an item to start a new one." : "";
       feedList.replaceChildren(...items.map((item) => {
         const row = make("li", undefined, item.status === "voided" ? "voided" : "");
-        row.append(
-          make("span", times(item.quantity, item.name), "what"),
-          make("em", words[item.status] || item.status, "tag"),
-          make("span", (item.note ? "Note: " + item.note + " \\u00b7 " : "") + item.customer + " \\u00b7 " + item.time, "sub who"),
-        );
+        const what = make("div", undefined, "tw");
+        what.append(make("span", times(item.quantity, item.name), "tn"), make("span", item.customer + " at " + item.time, "tm"));
+        if (item.note) what.append(make("span", "Note: " + item.note, "tnote"));
+        row.append(what, make("span", words[item.status] || item.status, "pill pill-" + (pills[item.status] || "neutral")));
         return row;
       }));
     } catch {} finally {
@@ -218,7 +324,7 @@ export const ORDER_SCRIPT = `(() => {
   };
 
   join().then(() => {
-    for (const button of document.querySelectorAll("button[data-item]")) button.hidden = false;
+    for (const button of adds) button.hidden = false;
     waiter.hidden = false;
     poll();
     setInterval(() => { if (!document.hidden) poll(); }, 5000);
@@ -230,12 +336,14 @@ export const ORDER_SCRIPT = `(() => {
     if (!button) return;
     const line = cart.find((other) => other.id === button.dataset.item);
     if (line) line.quantity = Math.min(20, line.quantity + 1);
-    else if (cart.length >= 20) return say("An order can have up to 20 different items.");
+    else if (cart.length >= 20) return fail("An order can have up to 20 different items.");
     else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "" });
-    say("");
+    error.textContent = "";
+    confirmed.replaceChildren();
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
   });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") form.hidden = true; });
   waiter.addEventListener("click", async () => {
     if (waiter.disabled) return;
     waiter.disabled = true;
@@ -250,20 +358,24 @@ export const ORDER_SCRIPT = `(() => {
         last = "";
         poll(true);
       }
-      say("A waiter has been called and is on the way.");
+      waiter.dataset.called = "";
+      delete waiterSaid.dataset.tone;
+      waiterSaid.textContent = "A waiter is on the way.";
     } catch {
-      say("That didn't go through. Check your connection and try again.");
+      waiterSaid.dataset.tone = "error";
+      waiterSaid.textContent = "That didn't go through. Check your connection and try again.";
     } finally {
       waiter.disabled = false;
     }
   });
-  bar.addEventListener("click", () => { form.hidden = false; say(""); });
+  bar.addEventListener("click", () => { form.hidden = false; error.textContent = ""; });
   $("order-cancel").addEventListener("click", () => { form.hidden = true; });
+  $("order-scrim").addEventListener("click", () => { form.hidden = true; });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = fields.name.value.trim();
     if (cart.length === 0) return;
-    if (!name) return say("Enter a name for the waiter.");
+    if (!name) return fail("Enter a name for the waiter.");
     fields.place.disabled = true;
     try {
       if (ended) await join();
@@ -280,8 +392,14 @@ export const ORDER_SCRIPT = `(() => {
       if (response.status === 201) {
         try { localStorage.setItem("order-name:" + session, name); } catch {}
         cart = [];
+        error.textContent = "";
         draw();
-        say("Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ". Pay at the table with your waiter as usual.");
+        confirmed.replaceChildren(
+          make("p", "Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ".", "ct"),
+          make("p", "Pay at the table with your waiter as usual.", "cs"),
+        );
+        tracker.hidden = false;
+        if (tracker.scrollIntoView) tracker.scrollIntoView({ block: "start" });
         last = "";
         poll(true);
         return;
@@ -291,9 +409,9 @@ export const ORDER_SCRIPT = `(() => {
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
       }
-      say(answer.error || "That didn't go through. Try again.");
+      fail(answer.error || "That didn't go through. Try again.");
     } catch {
-      say("That didn't go through. Check your connection and try again.");
+      fail("That didn't go through. Check your connection and try again.");
     } finally {
       fields.place.disabled = false;
     }
@@ -302,24 +420,40 @@ export const ORDER_SCRIPT = `(() => {
 
 const orderScript = trusted(ORDER_SCRIPT);
 
+/**
+ * Under the header, on a table's page only: the waiter's answer, then the
+ * table's orders, above the chips so a guest who just ordered finds them first.
+ * Both stay empty and hidden until the script fills them.
+ */
+const trackerBlock = html`<p id="waiter-status" class="said" role="status"></p>
+<section id="tracker" class="tracker" aria-live="polite" hidden><div id="tracker-confirm" class="confirm ico"></div><h2>Your table's orders</h2><p id="tracker-state" class="tstate"></p><ul id="tracker-list"></ul><p class="pay">Pay at the table with your waiter as usual.</p></section>
+`;
+
+const waiterButton = trusted(
+  `<button type="button" id="call-waiter" class="waiter" hidden>${icon(BELL, "icon bell")}${icon(
+    `${BELL}<path d="M22 8c0-2.3-.8-4.3-2-6"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/>`,
+    "icon ring",
+  )}<span class="w0">Call a waiter</span><span class="w1">Waiter called</span></button>`,
+);
+
+/**
+ * The sheet owns the bottom of the screen while it is open (S-41): a scrim over
+ * the menu, the lines and the name scrolling, and Keep browsing and Place order
+ * pinned in its own footer, so nothing can cover them. The cart bar hides.
+ */
 const orderBlock = html`
 <style>${orderStyles}</style>
-<section id="tracker" class="tracker" aria-live="polite" hidden>
-<h2>Your table's orders</h2>
-<p id="tracker-state"></p>
-<ul id="tracker-list"></ul>
-<p>Pay at the table with your waiter as usual.</p>
-</section>
-<p class="waiter"><button type="button" id="call-waiter" class="add" hidden>Call a waiter</button></p>
-<form id="order" class="order" hidden>
-<h2>Your order</h2>
-<ul id="cart"></ul>
-<label>Name for the waiter <input name="name" maxlength="100" required autocomplete="given-name"></label>
-<p>Pay at the table with your waiter as usual.</p>
-<div class="actions"><button type="button" id="order-cancel">Keep browsing</button><button name="place">Place order</button></div>
+<svg hidden><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol></svg>
+<form id="order" class="sheet order" aria-label="Your order" hidden>
+<div class="grab"></div>
+<div class="shead"><h2>Your order</h2><span id="cart-items" class="muted"></span></div>
+<div class="sheet-body"><ul id="cart"></ul>
+<label class="fl fname">Name for the waiter <input name="name" maxlength="100" required autocomplete="given-name" class="input"></label></div>
+<div class="sheet-foot"><p id="order-error" class="err" role="alert"></p><p class="pay">Pay at the table with your waiter as usual.</p>
+<div class="actions"><button type="button" id="order-cancel" class="btn btn-secondary">Keep browsing</button><button name="place" class="btn btn-primary">Place order</button></div></div>
 </form>
-<button type="button" id="cart-open" class="bar" hidden></button>
-<p id="order-status" class="order-status" role="status"></p>
+<div id="order-scrim" class="scrim"></div>
+<div class="dock"><button type="button" id="cart-open" class="bar" hidden><span id="cart-count" class="count"></span><span class="bl">Your order</span><span class="bv">View${trusted(icon('<path d="m18 15-6-6-6 6"/>'))}</span></button></div>
 <script>${orderScript}</script>
 `;
 
@@ -352,6 +486,8 @@ const thumbnail = ({ photoKey }: Item) =>
   photoKey !== null &&
   html`<img class="thumb" src="${photoUrls(photoKey).thumb}" width="64" height="64" loading="lazy" decoding="async" alt="">`;
 
+const PLUS = trusted('<svg class="icon"><use href="#i-plus"/></svg>');
+
 /**
  * Hidden until the script has joined the table's session: without JavaScript, or
  * with a code that no longer works, the page is the plain menu. Only on an item
@@ -360,14 +496,12 @@ const thumbnail = ({ photoKey }: Item) =>
 const addButton = (item: Item, menu: Menu, ordering: boolean) =>
   ordering &&
   item.available &&
-  html`<button type="button" class="add" data-item="${item.id}" data-name="${item.name}" data-price="${shownPrice(item, menu)}" hidden>Add</button>`;
+  html`<button type="button" class="add" data-item="${item.id}" data-name="${item.name}" data-price="${shownPrice(item, menu)}" hidden>${PLUS}Add</button>`;
 
-const itemRow = (item: Item, menu: Menu, ordering: boolean) => html`<li class="${item.available ? "" : "sold-out"}">
-<div class="text">
-<div class="item"><span>${item.name}${item.special && html`<em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html`<em class="tag">Sold out</em>`}</span>${priceCell(item, menu)}</div>
-${item.description && html`<p>${item.description}</p>`}${addButton(item, menu, ordering)}
-</div>
-${thumbnail(item)}
+/** Photo on the left; name and description, then price and Add on the right (S-41). */
+const itemRow = (item: Item, menu: Menu, ordering: boolean) => html`<li${!item.available && html` class="sold-out"`}>
+${thumbnail(item)}<div class="body"><div class="left"><span class="name">${item.name}${item.special && html`<em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html`<em class="tag">Sold out</em>`}</span>${item.description && html`<p class="desc">${item.description}</p>`}</div>
+<div class="right">${priceCell(item, menu)}${addButton(item, menu, ordering)}</div></div>
 </li>`;
 
 /** Only on a table's page (spec 03), and only while booking is on. */
@@ -417,26 +551,27 @@ function menuPage(menu: Menu, bookAgain: string | null, ordering: boolean) {
 
   return page(
     menu.restaurantName,
-    html`<h1>${menu.restaurantName}</h1>
-${menu.wifiName && html`<p class="wifi">Wi-Fi: ${menu.wifiName}</p>`}
-${bookAgainLine(bookAgain)}${jumpBar}
-${specials}
-${sections.length > 0 || specials ? sections : html`<p>This menu isn't up yet.</p>`}`,
+    html`<header class="head"><div class="hrow"><div><h1>${menu.restaurantName}</h1>
+${menu.wifiName && html`<p class="wifi">${WIFI}Wi-Fi: ${menu.wifiName}</p>`}
+${bookAgainLine(bookAgain)}</div>${ordering && waiterButton}</div></header>
+${ordering && trackerBlock}${jumpBar}
+<div class="sections">${specials}
+${sections.length > 0 || specials ? sections : html`<p>This menu isn't up yet.</p>`}</div>`,
     ordering ? orderBlock : null,
   );
 }
 
 const noSuchMenu = page(
   "Menu not found",
-  html`<h1>Menu not found</h1>
-<p>Check the link, or ask a member of staff for the menu.</p>`,
+  html`<header class="head"><h1>Menu not found</h1>
+<p>Check the link, or ask a member of staff for the menu.</p></header>`,
 );
 
 /** A table's code that no longer leads anywhere: regenerated, archived or never made. */
 const codeOutOfDate = page(
   "Code out of date",
-  html`<h1>This code is out of date</h1>
-<p>Ask a member of staff for help.</p>`,
+  html`<header class="head"><h1>This code is out of date</h1>
+<p>Ask a member of staff for help.</p></header>`,
 );
 
 /**

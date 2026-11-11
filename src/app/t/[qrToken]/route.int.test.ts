@@ -115,10 +115,18 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
-/** Each Add button, the order form, its styles and its script: all ordering adds. */
-const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden>Add<\/button>/g;
-const orderBlock = /\n<style>[^<]*<\/style>\n<section id="tracker"[\s\S]*<\/script>\n/;
-const withoutOrdering = (body: string) => body.replace(addButton, "").replace(orderBlock, "");
+/**
+ * Each Add button, Call a waiter in the header, the waiter's answer and the
+ * tracker above the chips, and the order sheet, its styles and its script at the
+ * end: all ordering adds.
+ */
+const plus = '<svg class="icon"><use href="#i-plus"/></svg>';
+const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<\/button>/g;
+const waiterButton = /<button type="button" id="call-waiter"[^>]* hidden>[\s\S]*?<\/button>/;
+const trackerBlock = /<p id="waiter-status"[^>]*><\/p>\n<section id="tracker"[^>]* hidden>[\s\S]*?<\/section>\n/;
+const orderBlock = /\n<style>[^<]*<\/style>\n<svg hidden>[\s\S]*<\/script>\n/;
+const withoutOrdering = (body: string) =>
+  body.replace(addButton, "").replace(waiterButton, "").replace(trackerBlock, "").replace(orderBlock, "");
 
 const genericPage = (menuToken: string) =>
   menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {
@@ -153,7 +161,7 @@ describe("/t/{qr_token}", () => {
     const body = await (await scan(qrToken)).text();
 
     expect(body).toContain(
-      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>Add</button>`,
+      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>${plus}Add</button>`,
     );
     expect(body).not.toContain(soldOut.id);
     expect(body.match(addButton)).toHaveLength(1);
@@ -167,6 +175,8 @@ describe("/t/{qr_token}", () => {
     expect(body).toMatch(/<form id="order"[^>]* hidden>/);
     expect(body).toContain('id="cart"');
     expect(body).toContain('id="tracker"');
+    // The table's orders sit above the category chips, where a guest finds them.
+    expect(body.indexOf('id="tracker"')).toBeLessThan(body.indexOf("<nav"));
     expect(body).toContain('maxLength = 200');
     expect(body).toContain("Pay at the table with your waiter as usual.");
     expect(body).toContain('name="name" maxlength="100" required');
@@ -181,10 +191,16 @@ describe("/t/{qr_token}", () => {
 
     const body = await (await scan(qrToken)).text();
 
-    // Both sit fixed at the bottom of the screen, and the bar draws on top. The
-    // rule relies on the form coming before the bar, as siblings.
-    expect(body).toContain(".order:not([hidden])~.bar{display:none}");
-    expect(body).toMatch(/<form id="order"[^]*?<\/form>\s*<button type="button" id="cart-open" class="bar"/);
+    // Both sit fixed at the bottom of the screen, and the bar's dock draws on top.
+    // The rule relies on the form coming before the dock, as siblings.
+    expect(body).toContain(".order:not([hidden])~.dock{display:none}");
+    expect(body).toMatch(
+      /<form id="order"[^]*?<\/form>\n<div id="order-scrim" class="scrim"><\/div>\n<div class="dock"><button type="button" id="cart-open" class="bar"/,
+    );
+    // Keep browsing and Place order sit in the sheet's own footer, outside what scrolls.
+    expect(body).toMatch(
+      /<div class="sheet-foot">[^]*?id="order-cancel"[^]*?Keep browsing[^]*?name="place"[^]*?Place order<\/button><\/div><\/div>\n<\/form>/,
+    );
   });
 
   it("has a Call a waiter button, hidden until the script has joined the session", async () => {
@@ -192,7 +208,7 @@ describe("/t/{qr_token}", () => {
 
     const body = await (await scan(qrToken)).text();
 
-    expect(body).toMatch(/<button type="button" id="call-waiter"[^>]* hidden>Call a waiter<\/button>/);
+    expect(body).toMatch(/<button type="button" id="call-waiter"[^>]* hidden>[^]*?Call a waiter[^]*?<\/button><\/div><\/header>/);
   });
 
   it("escapes an item's name in the Add button", async () => {
