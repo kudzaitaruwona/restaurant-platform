@@ -1,10 +1,18 @@
+import { ChevronLeft } from "lucide-react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cardClassName } from "@/components/ui/card";
+import { Field, Input, Select } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
+import { PageHeader } from "@/components/ui/page-header";
+import { Stepper } from "@/components/ui/stepper";
 import { dateLabel } from "@/lib/booking-engine";
 import { getStaffBookingForm } from "@/lib/booking-staff";
 import { getTenantContext } from "@/lib/tenant";
+import { cn } from "@/lib/utils";
 import { ActionForm } from "../../action-form";
-import { Field, inputClassName } from "../../field";
+
+const card = cn(cardClassName, "p-4 md:p-6");
 
 /**
  * Add booking (spec 04) for anyone on the team (S-26). Step one is a plain GET
@@ -20,106 +28,124 @@ export async function NewBookingScreen({
   const query = (await searchParams) ?? {};
   const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
   const form = await getStaffBookingForm(tenant, { party: first(query.party), date: first(query.date) });
+  const back = `/dashboard/bookings${form.date ? `?date=${form.date}` : ""}`;
 
   return (
-    <>
-      <h1 className="font-heading text-3xl font-semibold tracking-tight">Add booking</h1>
-      <p className="text-sm text-muted-foreground">
-        Staff can book inside the lead time, for a party over the online limit, on a table of their choice,
-        and without a phone number.
-      </p>
+    <div className="flex max-w-2xl flex-col gap-5">
+      <Link href={back} className={cn(buttonVariants({ variant: "ghost", size: "compact" }), "-ml-3 self-start text-ink-2")}>
+        <ChevronLeft aria-hidden />
+        Back to the day
+      </Link>
+      <PageHeader
+        title="Add booking"
+        subtitle="Staff can book inside the lead time, for a party over the online limit, on a table of their choice, and without a phone number."
+      />
 
-      <form method="get" action="/dashboard/bookings/new" className="flex flex-wrap items-end gap-3">
-        <Field label="Party size">
-          <input
-            type="number"
+      <form
+        method="get"
+        action="/dashboard/bookings/new"
+        aria-label="Party and date"
+        className={cn(card, "flex flex-wrap items-end gap-4")}
+      >
+        <div className="flex flex-col gap-1.5">
+          <span id="new-party" className="text-caption font-medium text-ink-2">
+            Party size
+          </span>
+          <Stepper
             name="party"
             min={1}
             max={999}
             required
             defaultValue={form.party}
-            className={inputClassName}
+            aria-labelledby="new-party"
+            decreaseLabel="One fewer guest"
+            increaseLabel="One more guest"
           />
-        </Field>
-        <Field label="Date">
-          <input
+        </div>
+        <Field label="Date" className="min-w-40 flex-1 sm:flex-none">
+          <Input
             type="date"
             name="date"
             min={form.today}
             max={form.last}
             required
             defaultValue={form.date ?? first(query.date)}
-            className={inputClassName}
+            className="tabular-nums sm:w-48"
           />
         </Field>
-        <Button type="submit" variant="outline">
+        <Button type="submit" variant="secondary" size="staff" className="w-full sm:w-auto">
           Show times
         </Button>
       </form>
 
       {form.party && form.date && form.times && (
-        <ActionForm
-          action="/api/bookings"
-          className="flex flex-col gap-4"
-          resetOnSuccess
-          savedMessage="Booking added."
-        >
-          <input type="hidden" name="party" value={form.party} />
-          <input type="hidden" name="date" value={form.date} />
-          <p className="font-medium">
-            Party of {form.party}, {dateLabel(form.date)}
-          </p>
-          {form.times.length === 0 ? (
-            <p>The restaurant has no service period on that day, or every time on it has passed.</p>
-          ) : (
-            <>
-              <Field label="Time">
-                <select name="time" required className={inputClassName}>
-                  {form.times.map(({ time, period, open }) => (
-                    <option key={time} value={time}>
-                      {time} ({period}){open ? "" : ", no bookable table free"}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Table" hint="Automatic gives the best fit, as online. Walk-in tables can be picked by hand.">
-                <select name="tableId" defaultValue="" className={inputClassName}>
-                  <option value="">Automatic</option>
-                  {form.tables.map((table) => (
-                    <option key={table.id} value={table.id}>
-                      {table.label} (seats {table.capacity}
-                      {table.bookable ? "" : ", walk-ins"})
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Name">
-                <input name="name" required maxLength={100} className={inputClassName} />
-              </Field>
-              <div className="flex gap-2">
-                <Field label="Country code">
-                  <input name="countryCode" defaultValue="+263" maxLength={8} className={`${inputClassName} w-24`} />
+        <section aria-labelledby="booking-details" className={card}>
+          <ActionForm
+            action="/api/bookings"
+            className="flex flex-col gap-4"
+            resetOnSuccess
+            savedMessage="Booking added."
+          >
+            <input type="hidden" name="party" value={form.party} />
+            <input type="hidden" name="date" value={form.date} />
+            <h2 id="booking-details" className="text-title font-semibold tabular-nums">
+              Party of {form.party}, {dateLabel(form.date)}
+            </h2>
+            {form.times.length === 0 ? (
+              <Notice>The restaurant has no service period on that day, or every time on it has passed.</Notice>
+            ) : (
+              <>
+                <div className="grid items-start gap-4 sm:grid-cols-2">
+                  <Field label="Time">
+                    <Select name="time" required className="tabular-nums">
+                      {form.times.map(({ time, period, open }) => (
+                        <option key={time} value={time}>
+                          {time} ({period}){open ? "" : ", no bookable table free"}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field
+                    label="Table"
+                    hint="Automatic gives the best fit, as online. Walk-in tables can be picked by hand."
+                  >
+                    <Select name="tableId" defaultValue="">
+                      <option value="">Automatic</option>
+                      {form.tables.map((table) => (
+                        <option key={table.id} value={table.id}>
+                          {table.label} (seats {table.capacity}
+                          {table.bookable ? "" : ", walk-ins"})
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+                <Field label="Name">
+                  <Input name="name" required maxLength={100} />
                 </Field>
-                <Field label="Phone (optional)">
-                  <input name="phone" type="tel" maxLength={40} className={inputClassName} />
+                <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-3">
+                  <Field label="Country code">
+                    <Input name="countryCode" defaultValue="+263" maxLength={8} className="tabular-nums" />
+                  </Field>
+                  <Field label="Phone (optional)">
+                    <Input name="phone" type="tel" maxLength={40} className="tabular-nums" />
+                  </Field>
+                </div>
+                <label className="flex min-h-12 cursor-pointer items-center gap-3 rounded-control border border-line px-3 py-2 text-body has-checked:border-ink">
+                  <input type="checkbox" name="whatsapp" className="size-5 shrink-0 accent-brand" />
+                  The guest agreed to confirmation and reminders on WhatsApp
+                </label>
+                <Field label="Note (optional)">
+                  <Input name="note" maxLength={200} />
                 </Field>
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" name="whatsapp" />
-                The guest agreed to confirmation and reminders on WhatsApp
-              </label>
-              <Field label="Note (optional)">
-                <input name="note" maxLength={200} className={inputClassName} />
-              </Field>
-              <Button type="submit">Add booking</Button>
-            </>
-          )}
-        </ActionForm>
+                <Button type="submit" size="staff" className="w-full sm:w-auto sm:self-start">
+                  Add booking
+                </Button>
+              </>
+            )}
+          </ActionForm>
+        </section>
       )}
-
-      <Link className="underline" href={`/dashboard/bookings${form.date ? `?date=${form.date}` : ""}`}>
-        Back to the day
-      </Link>
-    </>
+    </div>
   );
 }

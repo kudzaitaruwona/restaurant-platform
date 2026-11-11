@@ -1,5 +1,6 @@
 "use client";
 
+import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -22,11 +23,12 @@ export function CopyLinkButton({ text }: { text: string }) {
 
   return (
     <div className="flex flex-col gap-1">
-      <Button type="button" variant="outline" size="sm" className="self-start" onClick={copy}>
+      <Button type="button" variant="secondary" size="staff" className="self-start" onClick={copy}>
+        {state === "copied" ? <Check aria-hidden className="text-accent" /> : <Copy aria-hidden />}
         {state === "copied" ? "Copied" : "Copy link"}
       </Button>
       {state === "failed" && (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-caption text-danger">
           Couldn&apos;t copy. Select the link above and copy it yourself.
         </p>
       )}
