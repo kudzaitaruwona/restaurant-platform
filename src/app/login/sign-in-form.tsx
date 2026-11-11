@@ -2,7 +2,10 @@
 
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { MailCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/input";
+import { Notice } from "@/components/ui/notice";
 
 type Props = {
   /** Which session this signs in to: "staff" or "admin". */
@@ -104,95 +107,109 @@ export function SignInForm({ audience, destination, page }: Props) {
   }
 
   const notice = error && (
-    <p role="alert" className="text-sm text-destructive">
+    <Notice role="alert" tone="danger">
       {error}
-    </p>
+    </Notice>
+  );
+
+  const differentEmail = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="staff"
+      className="w-full"
+      onClick={() => setStep({ name: "start" })}
+    >
+      Use a different email
+    </Button>
   );
 
   if (step.name === "link-sent") {
     return (
-      <div className="flex flex-col gap-3">
-        <p>
-          If {email} can sign in here, a link is on its way. It expires in 10
-          minutes.
-        </p>
-        <Button variant="outline" onClick={() => setStep({ name: "start" })}>
-          Use a different email
-        </Button>
+      <div className="flex flex-col gap-4">
+        <Notice role="status" icon={<MailCheck />}>
+          If <span className="font-semibold break-all">{email}</span> can sign in
+          here, a link is on its way. It expires in 10 minutes.
+        </Notice>
+        {differentEmail}
       </div>
     );
   }
 
   if (step.name === "enter-code") {
     return (
-      <form onSubmit={signInWithCode} className="flex flex-col gap-3">
-        <p>
-          If {email} can sign in here, a 6-digit code is on its way. It expires
-          in 10 minutes.
-        </p>
-        <label className="flex flex-col gap-1 text-sm">
-          Code
-          <input
+      <form onSubmit={signInWithCode} className="flex flex-col gap-4">
+        <Notice role="status" icon={<MailCheck />}>
+          If <span className="font-semibold break-all">{email}</span> can sign in
+          here, a 6-digit code is on its way. It expires in 10 minutes.
+        </Notice>
+        <Field label="Code">
+          <Input
             value={code}
             onChange={(event) => setCode(event.target.value.trim())}
             inputMode="numeric"
             autoComplete="one-time-code"
             required
             autoFocus
-            className="rounded-md border px-3 py-2 text-base tracking-widest"
+            className="text-center text-title font-semibold tracking-[0.4em] tabular-nums"
           />
-        </label>
+        </Field>
         {notice}
-        <Button type="submit" disabled={busy}>
-          Sign in
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => setStep({ name: "start" })}
-        >
-          Use a different email
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button type="submit" size="staff" className="w-full" disabled={busy}>
+            Sign in
+          </Button>
+          {differentEmail}
+        </div>
       </form>
     );
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void sendLink();
         }}
-        className="flex flex-col gap-3"
+        className="flex flex-col gap-4"
       >
-        <label className="flex flex-col gap-1 text-sm">
-          Email
-          <input
+        <Field label="Email">
+          <Input
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             autoComplete="email"
             required
-            className="rounded-md border px-3 py-2 text-base"
           />
-        </label>
+        </Field>
         {notice}
-        <Button type="submit" disabled={busy}>
-          Email me a sign-in link
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={busy || !email}
-          onClick={sendCode}
-        >
-          Email me a code instead
-        </Button>
+        <div className="flex flex-col gap-2">
+          <Button type="submit" size="staff" className="w-full" disabled={busy}>
+            Email me a sign-in link
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="staff"
+            className="w-full"
+            disabled={busy || !email}
+            onClick={sendCode}
+          >
+            Email me a code instead
+          </Button>
+        </div>
       </form>
+      <div className="flex items-center gap-3 text-caption text-ink-2" aria-hidden>
+        <span className="h-px flex-1 bg-line" />
+        or
+        <span className="h-px flex-1 bg-line" />
+      </div>
       <Button
         type="button"
-        variant="outline"
+        variant="secondary"
+        size="staff"
+        className="w-full"
         disabled={busy}
         onClick={signInWithGoogle}
       >

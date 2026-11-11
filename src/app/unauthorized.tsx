@@ -1,15 +1,30 @@
+import { LogIn } from "lucide-react";
 import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { StatusPage } from "./status-page";
 
 /** What unauthorized() shows: on /dashboard, usually a session that has ended. */
 export default function Unauthorized() {
   return (
-    <main className="mx-auto flex w-full max-w-sm flex-1 flex-col gap-4 px-4 py-12">
-      <h1 className="font-heading text-3xl font-semibold tracking-tight">
-        You&apos;re signed out
-      </h1>
-      <Link href="/login" className="underline">
-        Sign in
-      </Link>
-    </main>
+    <StatusPage
+      icon={<LogIn strokeWidth={1.75} />}
+      title="You're signed out"
+      actions={
+        <Link href="/login" className={cn(buttonVariants({ size: "staff", className: "w-full" }))}>
+          Sign in
+        </Link>
+      }
+      footer={
+        <>
+          Run the platform?{" "}
+          <Link href="/login/admin" className="font-medium text-ink underline underline-offset-4">
+            Platform admin sign-in
+          </Link>
+        </>
+      }
+    >
+      Sign in again to carry on.
+    </StatusPage>
   );
 }
