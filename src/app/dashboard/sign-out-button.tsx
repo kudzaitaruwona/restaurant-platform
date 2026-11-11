@@ -43,7 +43,7 @@ export function SignOutProblem({ message, onDismiss }: { message: string; onDism
         type="button"
         aria-label="Dismiss message"
         onClick={onDismiss}
-        className="-m-1 grid size-6 shrink-0 place-items-center rounded-control outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring"
+        className="-m-3 grid size-11 shrink-0 place-items-center rounded-control outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring"
       >
         <X aria-hidden className="size-4" strokeWidth={1.75} />
       </button>
