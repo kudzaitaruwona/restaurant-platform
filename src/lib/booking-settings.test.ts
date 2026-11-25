@@ -4,7 +4,13 @@ import {
   missingForBooking,
   parseBookingSettings,
   parseNewPeriod,
+  parseCopyDays,
   parsePeriodEdit,
+  ruleWarnings,
+  rulesSavedMessage,
+  settingFields,
+  gateLinks,
+  copyOverlapMessage,
 } from "./booking-settings";
 
 const form = (fields: Record<string, string>) => {
@@ -195,5 +201,74 @@ describe("enableBlockedMessage", () => {
     expect(message).toContain("service period");
     expect(message).toContain("table");
     expect(message).toContain("contact phone");
+  });
+});
+
+describe("ruleWarnings", () => {
+  const values = (over: Record<string, string>) => {
+    const parsed = parseBookingSettings(form({ ...defaults, ...over }));
+    if (!parsed.success) throw new Error(parsed.message);
+    return parsed.data;
+  };
+
+  it("warns when the large party's sitting is shorter than the normal one, naming both", () => {
+    const [warning, ...rest] = ruleWarnings(values({ sittingMinutes: "90", largePartySittingMinutes: "60" }));
+    expect(rest).toEqual([]);
+    expect(warning).toContain("5 or more");
+    expect(warning).toContain("60 minutes");
+    expect(warning).toContain("90 minutes");
+  });
+
+  it("is quiet when it is equal or longer", () => {
+    expect(ruleWarnings(values({ sittingMinutes: "90", largePartySittingMinutes: "90" }))).toEqual([]);
+    expect(ruleWarnings(values({}))).toEqual([]);
+  });
+});
+
+describe("the rules screen's words", () => {
+  it("explains every rule", () => {
+    for (const field of settingFields) expect(field.help.length).toBeGreaterThan(10);
+  });
+
+  it("says the cutoff reaches bookings already made, and the rest don't", () => {
+    expect(rulesSavedMessage).toContain("cancellation cutoff");
+    expect(rulesSavedMessage).toContain("already made");
+    expect(rulesSavedMessage).toContain("from now on");
+  });
+
+  it("links every gate item to where it is fixed", () => {
+    expect(gateLinks.service_period.href).toBe("#service-periods");
+    expect(gateLinks.table.href).toBe("/dashboard/tables");
+    expect(gateLinks.contact_phone.href).toBe("/dashboard/settings");
+  });
+});
+
+describe("parseCopyDays", () => {
+  it("reads the ticked days once each, and needs at least one", () => {
+    expect(parseCopyDays(Object.assign(new FormData(), {}))).toMatchObject({ success: false });
+    const body = new FormData();
+    for (const day of ["2", "3", "2"]) body.append("weekdays", day);
+    expect(parseCopyDays(body)).toEqual({ success: true, data: [2, 3] });
+  });
+
+  it.each(["7", "-1", "x", "1e0"])("refuses day %j", (day) => {
+    const body = new FormData();
+    body.append("weekdays", day);
+    expect(parseCopyDays(body).success).toBe(false);
+  });
+});
+
+describe("copyOverlapMessage", () => {
+  it("says nothing was copied and names each day in the way", () => {
+    const message = copyOverlapMessage({
+      outcome: "overlaps",
+      source: { name: "Lunch", opensAt: "12:00", closesAt: "15:00" },
+      clashes: [
+        { weekday: 2, name: "Brunch" },
+        { weekday: 0, name: "Late lunch" },
+      ],
+    });
+    expect(message).toContain("Nothing was copied");
+    expect(message).toContain("Tuesday (Brunch), Sunday (Late lunch)");
   });
 });

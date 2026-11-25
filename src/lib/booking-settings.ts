@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { bookingSettings, diningTables, restaurants, servicePeriods } from "@/db/schema";
@@ -25,16 +25,16 @@ type Writer = Tenant & Pick<TenantContext, "platformAdminId">;
 
 /** One whole-number setting: bounds as in the table's CHECKs (booking_settings_*). */
 const numbers = {
-  slotIntervalMinutes: { label: "Time between bookable slots, in minutes", min: 1, max: 240 },
-  sittingMinutes: { label: "Sitting length, in minutes", min: 1, max: 720 },
-  largePartySize: { label: "Large party size", min: 1, max: 100 },
-  largePartySittingMinutes: { label: "Large party sitting length, in minutes", min: 1, max: 720 },
-  bufferMinutes: { label: "Buffer between bookings, in minutes", min: 0, max: 240 },
-  minLeadMinutes: { label: "Lead time, in minutes", min: 0, max: 10080 },
-  maxDaysAhead: { label: "Days ahead guests can book", min: 0, max: 365 },
-  maxOnlinePartySize: { label: "Largest party that can book online", min: 1, max: 100 },
-  guestCancelCutoffMinutes: { label: "Cancellation cutoff, in minutes", min: 0, max: 10080 },
-  maxActiveBookingsPerPhone: { label: "Upcoming bookings allowed per phone number", min: 1, max: 20 },
+  slotIntervalMinutes: { label: "Time between bookable slots, in minutes", min: 1, max: 240, help: "How far apart the times guests can pick are. 15 gives 18:00, 18:15, 18:30." },
+  sittingMinutes: { label: "Sitting length, in minutes", min: 1, max: 720, help: "How long a table is kept for a party smaller than the large party size." },
+  largePartySize: { label: "Large party size", min: 1, max: 100, help: "A party this size or bigger gets the large party sitting." },
+  largePartySittingMinutes: { label: "Large party sitting length, in minutes", min: 1, max: 720, help: "How long a table is kept for a large party. Usually longer than the normal sitting." },
+  bufferMinutes: { label: "Buffer between bookings, in minutes", min: 0, max: 240, help: "Time kept free after each sitting to reset the table." },
+  minLeadMinutes: { label: "Lead time, in minutes", min: 0, max: 10080, help: "Guests can't book a time that is closer than this. 60 means no bookings in the next hour." },
+  maxDaysAhead: { label: "Days ahead guests can book", min: 0, max: 365, help: "How far ahead guests can book. 0 means today only." },
+  maxOnlinePartySize: { label: "Largest party that can book online", min: 1, max: 100, help: "Bigger parties are asked to contact the restaurant." },
+  guestCancelCutoffMinutes: { label: "Cancellation cutoff, in minutes", min: 0, max: 10080, help: "Guests can cancel online until this long before the booking. It applies to bookings already made too." },
+  maxActiveBookingsPerPhone: { label: "Upcoming bookings allowed per phone number", min: 1, max: 20, help: "How many upcoming bookings one phone number can hold at a time." },
 } as const;
 
 export type BookingSettingKey = keyof typeof numbers;
@@ -44,6 +44,22 @@ export const settingFields = (Object.keys(numbers) as BookingSettingKey[]).map((
   key,
   ...numbers[key],
 }));
+
+/**
+ * What a save asks about first (lib/confirmation.ts). A large party's sitting
+ * shorter than a small party's is allowed, but it is almost always a slip.
+ */
+export function ruleWarnings(values: BookingSettingsValues): string[] {
+  return values.largePartySittingMinutes < values.sittingMinutes
+    ? [
+        `Parties of ${values.largePartySize} or more would get ${values.largePartySittingMinutes} minutes, less than the ${values.sittingMinutes} minutes smaller parties get.`,
+      ]
+    : [];
+}
+
+/** What a save of the rules changes for bookings already made: only the cancel cutoff. */
+export const rulesSavedMessage =
+  "Saved. The new rules apply to bookings made from now on, except the cancellation cutoff, which applies to every upcoming booking, including ones already made.";
 
 // Messages are fixed strings, so a refused value is never echoed back.
 const numberField = ({ label, min, max }: (typeof numbers)[BookingSettingKey]) => {
@@ -128,6 +144,13 @@ export const gateMessages: Record<GateItem, string> = {
   service_period: "add at least one service period",
   table: "add a table that can be booked online",
   contact_phone: "set the restaurant's contact phone in Restaurant settings",
+};
+
+/** Where each gate item is fixed: the periods are on this page. */
+export const gateLinks: Record<GateItem, { href: string; label: string }> = {
+  service_period: { href: "#service-periods", label: "Go to service periods" },
+  table: { href: "/dashboard/tables", label: "Go to tables" },
+  contact_phone: { href: "/dashboard/settings", label: "Go to Restaurant settings" },
 };
 
 /** The sentence a refusal to enable carries. */
@@ -417,4 +440,117 @@ export function deleteServicePeriod(ctx: Writer, periodId: string): Promise<"sav
     });
     return "saved" as const;
   });
+}
+
+// --- copying a period to other days -----------------------------------------
+
+/** The weekdays ticked on a copy form: whole numbers 0 to 6, each once. */
+export function parseCopyDays(form: FormData) {
+  const days = form.getAll("weekdays");
+  const parsed = z
+    .array(z.string().regex(/^[0-6]$/))
+    .min(1, "Choose the days to copy it to.")
+    .safeParse(days);
+  return parsed.success
+    ? ({ success: true, data: [...new Set(parsed.data.map(Number))] } as const)
+    : ({ success: false, message: "Choose the days to copy it to." } as const);
+}
+
+export type CopyOutcome =
+  | { outcome: "saved"; copied: number }
+  | { outcome: "not_found" }
+  | { outcome: "no_days" }
+  | {
+      outcome: "overlaps";
+      source?: { name: string; opensAt: string; closesAt: string };
+      clashes: { weekday: number; name: string }[];
+    };
+
+/**
+ * Copies one period (name and times) to other weekdays, all or none: if any
+ * chosen day already has a period overlapping it, nothing is copied and the
+ * clashes come back. The same check is Postgres's exclusion constraint, which
+ * also settles two copies racing, and rolls the whole copy back. The source is
+ * read by restaurant and id, so another restaurant's period is "not found".
+ */
+export async function copyServicePeriod(
+  ctx: Writer,
+  periodId: string,
+  weekdays: readonly number[],
+): Promise<CopyOutcome> {
+  try {
+    return await withTenant(ctx, async (tx): Promise<CopyOutcome> => {
+      const [source] = await tx
+        .select()
+        .from(servicePeriods)
+        .where(
+          and(eq(servicePeriods.restaurantId, ctx.restaurantId), eq(servicePeriods.id, periodId)),
+        );
+      if (!source) return { outcome: "not_found" };
+      const targets = weekdays.filter((weekday) => weekday !== source.weekday);
+      if (targets.length === 0) return { outcome: "no_days" };
+
+      const clashes = await tx
+        .select({ weekday: servicePeriods.weekday, name: servicePeriods.name })
+        .from(servicePeriods)
+        .where(
+          and(
+            eq(servicePeriods.restaurantId, ctx.restaurantId),
+            inArray(servicePeriods.weekday, targets),
+            lt(servicePeriods.opensAt, source.closesAt),
+            gt(servicePeriods.closesAt, source.opensAt),
+          ),
+        );
+      if (clashes.length > 0) {
+        return {
+          outcome: "overlaps",
+          source: {
+            name: source.name,
+            opensAt: hoursAndMinutes(source.opensAt),
+            closesAt: hoursAndMinutes(source.closesAt),
+          },
+          clashes: clashes.sort(
+            (a, b) => weekdayOrder.indexOf(a.weekday as 0) - weekdayOrder.indexOf(b.weekday as 0),
+          ),
+        };
+      }
+
+      const added = await tx
+        .insert(servicePeriods)
+        .values(
+          targets.map((weekday) => ({
+            restaurantId: ctx.restaurantId,
+            weekday,
+            name: source.name,
+            opensAt: source.opensAt,
+            lastBookingAt: source.lastBookingAt,
+            closesAt: source.closesAt,
+          })),
+        )
+        .returning({ id: servicePeriods.id });
+      for (const { id } of added) {
+        await recordAdminAction(tx, ctx, {
+          action: "service_period.create",
+          entityType: "service_period",
+          entityId: id,
+        });
+      }
+      return { outcome: "saved", copied: added.length };
+    });
+  } catch (error) {
+    // Two copies at once: the constraint refused one, and the copy rolled back whole.
+    if (dbErrorOf(error)?.constraint === OVERLAP) return { outcome: "overlaps", clashes: [] };
+    throw error;
+  }
+}
+
+/** The 409's sentence: says nothing was copied, and which days are in the way. */
+export function copyOverlapMessage(outcome: Extract<CopyOutcome, { outcome: "overlaps" }>) {
+  const { source, clashes } = outcome;
+  if (!source || clashes.length === 0) {
+    return "Nothing was copied: a chosen day already has a period that overlaps it. Try again.";
+  }
+  return `Nothing was copied. ${source.name} (${source.opensAt} to ${source.closesAt}) overlaps a period already on ${clashes
+    .map((clash) => `${weekdayNames[clash.weekday]} (${clash.name})`)
+    .join(", ")}. Change or delete that period, or leave the day out.`;
 }
