@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { formSaved } from "@/lib/form-response";
+import { FORM_FETCH_HEADER, formSaved } from "@/lib/form-response";
 import {
   invalidTimezoneMessage,
   parseRestaurantSettings,
@@ -16,11 +16,16 @@ export async function POST(request: NextRequest) {
     await request.formData().catch(() => new FormData()),
   );
   if (!settings.success) {
-    return Response.json({ error: settings.message }, { status: 400 });
+    return Response.json({ error: settings.message, field: settings.field }, { status: 400 });
   }
 
-  if ((await updateRestaurantSettings(tenant, settings.data)) === "invalid_timezone") {
-    return Response.json({ error: invalidTimezoneMessage }, { status: 400 });
+  const outcome = await updateRestaurantSettings(tenant, settings.data);
+  if (outcome === "invalid_timezone") {
+    return Response.json({ error: invalidTimezoneMessage, field: "timezone" }, { status: 400 });
+  }
+  // The form says what the save did, so it must be told.
+  if (outcome === "saved_booking_off" && request.headers.has(FORM_FETCH_HEADER)) {
+    return Response.json({ bookingSwitchedOff: true });
   }
 
   return formSaved(request, "/dashboard/settings");

@@ -375,7 +375,7 @@ describe("how a saved form is answered", () => {
       post("/api/restaurant", { ...settings, timezone: "Mars/Olympus" }, madeBy.actionForm),
     );
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(await response.json()).toEqual({ error: expect.any(String), field: "timezone" });
   });
 });
 
@@ -929,12 +929,52 @@ describe("the exchange rate", () => {
       .set({ createdAt: new Date(Date.now() - days * 24 * 3_600_000) })
       .where(eq(exchangeRates.restaurantId, tenant.restaurantId));
 
+  const showZig = (mode = "both") =>
+    owner.db
+      .update(restaurants)
+      .set({ currencyMode: mode as "both" })
+      .where(eq(restaurants.id, tenant.restaurantId));
+
   it("is set from the menu screen, which posts to its route", async () => {
+    await showZig();
     await newCategory();
     const html = await screen(MenuScreen);
     expect(html).toContain('action="/api/menu/exchange-rate"');
     expect(html).toContain("1 USD = ZiG");
     expect(html).toContain("No exchange rate is set");
+  });
+
+  it("doesn't nag a USD-only restaurant that never set one, on the menu screen or the dashboard", async () => {
+    await newCategory();
+
+    const menu = await screen(MenuScreen);
+    const dashboard = await screen(Dashboard);
+
+    expect(menu).toContain('action="/api/menu/exchange-rate"');
+    expect(menu).toContain("no exchange rate is needed");
+    for (const html of [menu, dashboard]) {
+      expect(html).not.toContain("No exchange rate is set");
+      expect(html).not.toContain("role=\"alert\"");
+    }
+    expect(dashboard).not.toContain("exchange rate");
+  });
+
+  it("still shows a USD-only restaurant the rate it did set", async () => {
+    await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }));
+
+    const html = await screen(Dashboard);
+
+    expect(html).toContain("1 USD = ZiG 26.2, last updated today");
+    expect(html).toContain("Change the exchange rate");
+  });
+
+  it("offers to set it, not change it, while there is none", async () => {
+    await showZig();
+
+    const html = await screen(Dashboard);
+
+    expect(html).toContain("Set the exchange rate");
+    expect(html).not.toContain("Change the exchange rate");
   });
 
   it("saves a new row and an audit entry for each change", async () => {
@@ -992,6 +1032,7 @@ describe("the exchange rate", () => {
   });
 
   it("warns on the dashboard when none was ever set", async () => {
+    await showZig("usd_primary");
     expect(await screen(Dashboard)).toContain("No exchange rate is set");
   });
 
@@ -1479,11 +1520,23 @@ describe("what the owner is told about booking switching itself off", () => {
     expect(saved).toContain("online booking has switched off");
   });
 
-  it("says so after a settings save", async () => {
-    const saved = savedMessageOf(await screen(SettingsScreen), "/api/restaurant");
+  it("tells the settings form, after a save, only what that save did", async () => {
+    await tableIdOf("7");
+    await turnBookingOn();
+    const fetched = { [FORM_FETCH_HEADER]: "1" };
 
-    expect(saved).toContain("Settings saved");
-    expect(saved).toContain("online booking has switched off");
+    const kept = await saveSettings(
+      post("/api/restaurant", { ...settings, contactPhone: "+263771234567" }, fetched),
+    );
+    expect(kept.status).toBe(204);
+
+    const cleared = await saveSettings(post("/api/restaurant", { ...settings, contactPhone: "" }, fetched));
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toEqual({ bookingSwitchedOff: true });
+
+    // Booking is off now, so clearing it again switches nothing off.
+    const again = await saveSettings(post("/api/restaurant", { ...settings, contactPhone: "" }, fetched));
+    expect(again.status).toBe(204);
   });
 });
 
@@ -2008,6 +2061,36 @@ describe("/dashboard/settings", () => {
     expect(html).toMatch(/<option[^>]*value="Africa\/Harare"[^>]*selected/);
   });
 
+  it("saves a local phone number in international form", async () => {
+    const response = await saveSettings(
+      post("/api/restaurant", { ...settings, contactPhone: "0771 234 567" }),
+    );
+
+    expect(response.status).toBe(303);
+    const [row] = await owner.db
+      .select({ contactPhone: restaurants.contactPhone })
+      .from(restaurants)
+      .where(eq(restaurants.id, tenant.restaurantId));
+    expect(row.contactPhone).toBe("+263771234567");
+  });
+
+  it("says which field a refusal belongs to, so the form can put it there", async () => {
+    const phone = await saveSettings(post("/api/restaurant", { ...settings, contactPhone: "abc" }));
+    const wifi = await saveSettings(post("/api/restaurant", { ...settings, wifiPassword: "x" }));
+    const zone = await saveSettings(post("/api/restaurant", { ...settings, timezone: "Mars/Olympus" }));
+
+    expect((await phone.json()).field).toBe("contactPhone");
+    expect((await wifi.json()).field).toBe("wifiName");
+    expect((await zone.json()).field).toBe("timezone");
+  });
+
+  it("leaves the success message to the form, which knows what happened", async () => {
+    const html = await screen(SettingsScreen);
+
+    expect(html).toContain('action="/api/restaurant"');
+    expect(html).not.toContain("online booking has switched off");
+  });
+
   it("saves what the form posts", async () => {
     const response = await saveSettings(
       post("/api/restaurant", {
@@ -2031,7 +2114,8 @@ describe("/dashboard/settings", () => {
   });
 
   it.each([
-    [{ contactPhone: "0771234567" }, "international format"],
+    [{ contactPhone: "abc" }, "phone number"],
+    [{ wifiName: "", wifiPassword: "secret" }, "Wi-Fi name"],
     [{ timezone: "Mars/Olympus" }, "timezone"],
     // Known to Node's ICU, not to this Postgres, where AT TIME ZONE would fail.
     [{ timezone: "Asia/Calcutta" }, "timezone"],

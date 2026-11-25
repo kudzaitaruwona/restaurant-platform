@@ -145,7 +145,11 @@ export async function MenuScreen() {
         {isOwner && (
           <aside className="flex min-w-0 flex-col gap-4">
             <SideCard title="Exchange rate">
-              <ExchangeRateStatus rate={menu.pricing.rate} setAt={menu.rateSetAt} />
+              <ExchangeRateStatus
+                rate={menu.pricing.rate}
+                setAt={menu.rateSetAt}
+                currencyMode={menu.currencyMode}
+              />
               <ActionForm
                 action="/api/menu/exchange-rate"
                 savedMessage="Rate saved. Calculated ZiG prices are updated."

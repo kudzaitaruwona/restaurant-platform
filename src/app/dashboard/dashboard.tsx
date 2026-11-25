@@ -38,7 +38,7 @@ export async function Dashboard() {
   const tenant = await getTenantContext();
   const { restaurant, team } = await withTenant(tenant, async (tx) => {
     const [restaurant] = await tx
-      .select({ name: restaurants.name })
+      .select({ name: restaurants.name, currencyMode: restaurants.currencyMode })
       .from(restaurants)
       .where(eq(restaurants.id, tenant.restaurantId));
     const team = await tx
@@ -66,13 +66,15 @@ export async function Dashboard() {
       : [null, null];
 
   const owner = tenant.role === "owner";
+  // A USD-only restaurant with no rate needs none, so the card would only nag.
+  const showRate = owner && (Boolean(rate) || restaurant.currencyMode !== "usd_only");
   const me = tenant.platformAdminId
     ? "platform admin"
     : team.find((member) => member.id === tenant.staffId)?.displayName;
 
   return (
     <div className="flex w-full max-w-5xl flex-col gap-8">
-      <PageHeader title={restaurant.name} subtitle={`Signed in as ${me} (${tenant.role})`} />
+      <PageHeader title={restaurant.name} subtitle={`Signed in as ${me}`} />
 
       <nav aria-label="Service">
         <ul className="grid gap-3 sm:grid-cols-3">
@@ -96,19 +98,25 @@ export async function Dashboard() {
         </ul>
       </nav>
 
-      {owner && (
+      {owner && (showRate || metrics) && (
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <Section title="Exchange rate">
-            <Card className="flex flex-col gap-4 p-5">
-              <ExchangeRateStatus rate={rate?.usdToZig ?? null} setAt={rate?.setAt ?? null} />
-              <Link
-                href="/dashboard/menu"
-                className={cn(buttonVariants({ variant: "secondary", size: "compact" }), "self-start")}
-              >
-                Change the exchange rate
-              </Link>
-            </Card>
-          </Section>
+          {showRate && (
+            <Section title="Exchange rate">
+              <Card className="flex flex-col gap-4 p-5">
+                <ExchangeRateStatus
+                  rate={rate?.usdToZig ?? null}
+                  setAt={rate?.setAt ?? null}
+                  currencyMode={restaurant.currencyMode}
+                />
+                <Link
+                  href="/dashboard/menu"
+                  className={cn(buttonVariants({ variant: "secondary", size: "compact" }), "self-start")}
+                >
+                  {rate ? "Change the exchange rate" : "Set the exchange rate"}
+                </Link>
+              </Card>
+            </Section>
+          )}
           {metrics && (
             <Section title="Booking results" detail="Every booking so far">
               <BookingMetricsPanel metrics={metrics} />

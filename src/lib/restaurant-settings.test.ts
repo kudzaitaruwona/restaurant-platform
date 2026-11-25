@@ -24,6 +24,24 @@ function parse(overrides: Record<string, string> = {}) {
 }
 
 describe("parseRestaurantSettings", () => {
+  it("refuses a Wi-Fi password with no network name, by the name's field", () => {
+    expect(parse({ wifiName: " ", wifiPassword: "sadza" })).toMatchObject({
+      success: false,
+      field: "wifiName",
+      message: expect.stringContaining("Wi-Fi name"),
+    });
+  });
+
+  it("accepts a Wi-Fi name without a password, and neither", () => {
+    expect(parse({ wifiPassword: "" })).toMatchObject({ success: true });
+    expect(parse({ wifiName: "", wifiPassword: "" })).toMatchObject({ success: true });
+  });
+
+  it("names the field a refusal is about", () => {
+    expect(parse({ contactPhone: "abc" })).toMatchObject({ success: false, field: "contactPhone" });
+    expect(parse({ name: "" })).toMatchObject({ success: false, field: "name" });
+  });
+
   it("accepts a complete form", () => {
     expect(parse()).toEqual({ success: true, data: valid });
   });
@@ -52,6 +70,12 @@ describe("parseRestaurantSettings", () => {
   });
 
   it.each([
+    ["0771234567", "+263771234567"],
+    ["077 123 4567", "+263771234567"],
+    ["(077) 123-4567", "+263771234567"],
+    ["771234567", "+263771234567"],
+    ["263771234567", "+263771234567"],
+    ["+27 82 123 4567", "+27821234567"],
     ["+263 77 123 4567", "+263771234567"],
     ["+263-77-123-4567", "+263771234567"],
   ])("saves %j in E.164", (typed, stored) => {
@@ -61,8 +85,7 @@ describe("parseRestaurantSettings", () => {
   });
 
   it.each([
-    "0771234567", // national format
-    "263771234567", // no plus
+    "07712345678901234", // too long
     "+063771234567", // no country code starts with 0
     "+2637712345678901", // 16 digits
     "+26377123abc",
