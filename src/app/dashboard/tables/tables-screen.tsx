@@ -108,7 +108,7 @@ export async function TablesScreen() {
                     <div className="flex flex-wrap items-end gap-x-3 gap-y-1 md:flex-nowrap md:items-center">
                       <div className="flex min-w-0 flex-1 basis-full items-end gap-3 md:basis-auto md:items-center">
                         <span
-                          className="flex h-12 w-7 shrink-0 items-center text-lead font-semibold text-ink-2 tabular-nums"
+                          className="flex h-12 w-7 shrink-0 items-center whitespace-nowrap text-lead font-semibold text-ink-2 tabular-nums"
                           title="Position in the list"
                         >
                           {index + 1}

@@ -1319,6 +1319,13 @@ describe("/dashboard/tables, managing", () => {
     expect(second).toContain(">2</span>");
   });
 
+  it("never splits a three-digit position number (#94)", async () => {
+    await newTable("A");
+    const html = await screen(TablesScreen);
+    const position = /<span class="([^"]*)" title="Position in the list">1<\/span>/.exec(html)![1].split(" ");
+    expect(position).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+  });
+
   it("can't move the first table up or the last down", async () => {
     await newTable("A");
     await newTable("B");
