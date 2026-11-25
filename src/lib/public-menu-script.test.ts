@@ -1491,8 +1491,82 @@ describe("a waiter call follows the server (#97)", () => {
     };
     await page.placeAs("Tariro");
     await tickWith(page, { session: "session-1", items: [], waiter: false });
-    expect(shows(page)).toEqual({ called: false, says: "Beef stew has sold out." });
+    expect(shows(page)).toEqual({ called: false, says: "Sorry, Beef stew isn't available right now. It was taken out of your order." });
     expect(page.waiterStatus.dataset.tone).toBe("error");
+  });
+
+  describe("a sold-out refusal in the shared place (#87)", () => {
+    const refused = async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      page.state.orderReply = {
+        status: 409,
+        json: { error: "Sold out.", code: "unavailable", item: "item-stew" },
+      };
+      await page.placeAs("Tariro");
+      return page;
+    };
+    const SORRY = "Sorry, Beef stew isn't available right now. It was taken out of your order.";
+
+    it("outlives polls, another phone's call among them, then gives way to it at the next Add", async () => {
+      const page = await refused();
+      await page.tick();
+      await tickWith(page, { session: "session-1", items: [], waiter: true });
+      expect(shows(page)).toEqual({ called: true, says: SORRY });
+
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(PENDING);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("is gone at the next Add with no call pending, and the waiter's words work again", async () => {
+      const page = await refused();
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(IDLE);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+      await tickWith(page, { session: "session-1", items: [], waiter: true });
+      expect(shows(page)).toEqual(PENDING);
+    });
+
+    it("goes with the session it was about", async () => {
+      const page = await refused();
+      await tickWith(page, { session: null, items: [], waiter: false });
+      expect(shows(page)).toEqual(IDLE);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("gives way to the guest's own call", async () => {
+      const page = await refused();
+      await call(page);
+      expect(shows(page)).toEqual(PENDING);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("is kept when a call was already pending and staff dismiss it", async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await call(page);
+      await page.add(page.stew);
+      page.state.orderReply = {
+        status: 409,
+        json: { error: "Sold out.", code: "unavailable", item: "item-stew" },
+      };
+      await page.placeAs("Tariro");
+      await tickWith(page, { session: "session-1", items: [], waiter: false });
+      expect(shows(page)).toEqual({ called: false, says: SORRY });
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(IDLE);
+    });
+
+    it("the ended-session prompt goes in the sheet, not over the call's words (#85)", async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      page.state.sessionId = "session-2";
+      await tickWith(page, { session: "session-2", items: [], waiter: true });
+      expect(shows(page)).toEqual(IDLE);
+      await page.placeAs("Tariro");
+      expect(page.error.textContent).toMatch(/session has ended/);
+      expect(shows(page)).toEqual(PENDING);
+    });
   });
 
   it("the join's message gives way to a pending call once the join works (#98)", async () => {

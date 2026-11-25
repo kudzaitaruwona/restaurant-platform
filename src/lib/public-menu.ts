@@ -262,6 +262,9 @@ export const ORDER_SCRIPT = `(() => {
     if (waiterSaid.textContent === own) say(text);
   };
   const sent = "Your table's call has been sent to the staff.";
+  // A refusal shown there (#87) outlives the polls, and goes at the guest's next Add
+  // or with the session, giving the line back to the call.
+  const clearRefusal = () => { if (waiterSaid.textContent !== own) say(called ? sent : ""); };
   // A poll asked before this moved on is out of date: its answer is dropped.
   let epoch = 0;
   const times = (quantity, name) => quantity + " \\u00d7 " + name;
@@ -277,7 +280,7 @@ export const ORDER_SCRIPT = `(() => {
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
   // The session the page is now in. A new one asks for the name again.
   const enter = (next) => {
-    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; showCall(false, ""); }
+    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; showCall(false, ""); clearRefusal(); }
     session = next;
     ended = false;
     for (const line of cart) line.from = line.from || next;
@@ -370,7 +373,7 @@ export const ORDER_SCRIPT = `(() => {
       ended = feed.session !== session;
       // Reopened: a line added meanwhile, whose own join failed, is this session's.
       if (!ended) for (const line of cart) line.from = line.from || session;
-      if (ended) { if (called || own) showCall(false, ""); }
+      if (ended) { if (called || own) showCall(false, ""); clearRefusal(); }
       else if (!!feed.waiter !== called) showCall(!called, called ? "The staff have seen your table's call." : sent);
       const items = ended ? [] : feed.items;
       if (!ended) shown = items.length > 0;
@@ -438,6 +441,7 @@ export const ORDER_SCRIPT = `(() => {
     else if (cart.length >= 20) return fail("An order can have up to 20 different items.");
     else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "", from: ended ? null : session });
     error.textContent = "";
+    clearRefusal();
     confirmed.replaceChildren();
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
