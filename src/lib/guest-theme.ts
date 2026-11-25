@@ -78,7 +78,7 @@ const declarations = (tokens: Record<string, string>) =>
 export const guestThemeCss = `:root{${declarations(guestTokens.light)};--float:0 12px 32px -8px rgb(var(--shadow)/.22),0 2px 6px rgb(var(--shadow)/.08);color-scheme:light}
 @media (prefers-color-scheme:dark){:root{${declarations(guestTokens.dark)};--float:0 12px 32px -8px rgb(var(--shadow)/.55),0 2px 6px rgb(var(--shadow)/.3);color-scheme:dark}}
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+body{margin:0;overflow-wrap:anywhere;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
 button,input,select,textarea{font:inherit;color:inherit}
 a{color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}

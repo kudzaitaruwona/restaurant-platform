@@ -30,7 +30,7 @@ export function Pill({
   return (
     <span
       className={cn(
-        "inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-caption font-semibold whitespace-nowrap [&_svg]:size-3.5 [&_svg]:shrink-0",
+        "inline-flex min-h-6 max-w-full shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-caption font-semibold [&_svg]:size-3.5 [&_svg]:shrink-0",
         tones[tone],
         className,
       )}

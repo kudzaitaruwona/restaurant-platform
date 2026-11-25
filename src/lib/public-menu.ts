@@ -41,13 +41,13 @@ main{max-width:40rem;margin:0 auto;padding-bottom:40px}
 h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01em;text-wrap:balance}
 .head p{margin:4px 0 0;font-size:15px;color:var(--ink-2)}
 .head .table{font-weight:600;color:var(--ink);overflow-wrap:anywhere}
-.wifi{display:flex;align-items:center;gap:6px}
+.wifi{display:flex;align-items:flex-start;gap:6px}
 .wifi .icon{width:16px;height:16px}
 .head .book-again{margin-top:8px}
 .book-again a{color:var(--ink);font-weight:600;text-underline-offset:3px}
-nav{position:sticky;top:0;z-index:2;display:flex;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
+nav{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
 nav::-webkit-scrollbar{display:none}
-nav a{display:inline-flex;align-items:center;flex:none;min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none;white-space:nowrap}
+nav a{display:inline-flex;align-items:center;justify-content:center;flex:none;max-width:100%;min-height:44px;padding:0 16px;text-align:center;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none}
 nav a:active{background:var(--surface-2)}
 .sections section{padding:0 16px;scroll-margin-top:61px}
 .sections h2{margin:28px 0 4px;font-size:20px;font-weight:600;line-height:1.3}
@@ -63,7 +63,7 @@ ul{margin:0;padding:0;list-style:none}
 .price{font-weight:600;line-height:1.35;text-align:right;font-variant-numeric:tabular-nums}
 .sub{display:block;font-size:13px;font-weight:400;color:var(--ink-2)}
 .desc{margin:2px 0 0;font-size:15px;line-height:1.45;color:var(--ink-2)}
-.tag{display:inline-flex;align-items:center;height:22px;margin-left:8px;padding:0 8px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);font-size:13px;font-style:normal;font-weight:600;vertical-align:2px}
+.tag{display:inline-flex;align-items:center;min-height:22px;margin-left:8px;padding:0 8px;line-height:1.35;border-radius:999px;background:var(--surface-2);color:var(--ink-2);font-size:13px;font-style:normal;font-weight:600;vertical-align:2px}
 .sold-out .name,.sold-out .price{color:var(--ink-2)}
 .sold-out .thumb{opacity:.5}
 s{font-weight:400;color:var(--ink-2)}

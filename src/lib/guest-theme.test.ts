@@ -29,6 +29,10 @@ describe("the guest pages' theme (S-41)", () => {
     }
   });
 
+  it("wraps unbroken text anywhere, so a long name can't widen a phone's page (#94)", () => {
+    expect(guestThemeCss).toMatch(/body\{[^}]*overflow-wrap:anywhere/);
+  });
+
   it("follows the system's light or dark", () => {
     expect(guestThemeCss).toContain("@media (prefers-color-scheme:dark)");
   });
@@ -44,5 +48,11 @@ describe("the guest pages' theme (S-41)", () => {
 
   it("can't close the <style> it goes in", () => {
     expect(guestThemeCss).not.toMatch(/<\//);
+  });
+});
+
+describe("the staff app's text wrapping (#94)", () => {
+  it("wraps unbroken text anywhere on the body, so a flex or grid cell can narrow", () => {
+    expect(globals).toMatch(/body\s*\{[^}]*\[overflow-wrap:anywhere\]/);
   });
 });
