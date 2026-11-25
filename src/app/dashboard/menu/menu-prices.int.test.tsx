@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as addBundle } from "@/app/api/menu/bundles/route";
+import { POST as archiveCategory } from "@/app/api/menu/categories/[categoryId]/archive/route";
 import { POST as renameCategory } from "@/app/api/menu/categories/[categoryId]/route";
 import { POST as addCategory } from "@/app/api/menu/categories/route";
 import { POST as setRate } from "@/app/api/menu/exchange-rate/route";
@@ -414,6 +415,45 @@ describe("duplicate names", () => {
     // Saving it as it is asks nothing, even with a twin made since.
     await newItem(sides, "Rice", "3");
     expect((await editItem(post(`/api/menu/items/${rice}`, edit(sides, "Rice")), itemParams(rice))).status).toBe(204);
+  });
+
+  it("asks before archiving a category whose items would meet a same-name item, and moves nothing", async () => {
+    const old = await newCategory("Old");
+    const target = await newCategory("New");
+    await newItem(old, "Soup", "3");
+    await newItem(old, "Stew", "4");
+    await newItem(target, "soup", "3");
+    const archive = (fields: Record<string, string>, plain = false) =>
+      archiveCategory(post(`/api/menu/categories/${old}/archive`, fields, plain), categoryParams(old));
+
+    expect(await asked(await archive({ moveItemsTo: target }))).toEqual([
+      `Moving "Soup" into New would leave two items with that name. Two with one name are hard to tell apart.`,
+    ]);
+    const rows = await owner.db.select().from(categories).where(eq(categories.id, old));
+    expect(rows[0].archivedAt).toBeNull();
+
+    // Without JavaScript the same warning is a page, with a button that posts it again.
+    const page = await archive({ moveItemsTo: target }, true);
+    expect(page.status).toBe(409);
+    expect(await page.text()).toContain('name="confirmed" value="1"');
+
+    expect((await archive({ moveItemsTo: target, ...yes })).status).toBe(204);
+  });
+
+  it("asks nothing when the moved items meet no same-name item, or none move", async () => {
+    const old = await newCategory("Old");
+    const target = await newCategory("New");
+    await newItem(old, "Soup", "3");
+    const gone = await newItem(target, "Soup", "3");
+    await owner.db.update(menuItems).set({ archivedAt: new Date() }).where(eq(menuItems.id, gone));
+
+    expect(
+      (await archiveCategory(post(`/api/menu/categories/${old}/archive`, { moveItemsTo: target }), categoryParams(old))).status,
+    ).toBe(204);
+    const empty = await newCategory("Empty");
+    expect(
+      (await archiveCategory(post(`/api/menu/categories/${empty}/archive`), categoryParams(empty))).status,
+    ).toBe(204);
   });
 
   it("asks before a duplicate bundle", async () => {

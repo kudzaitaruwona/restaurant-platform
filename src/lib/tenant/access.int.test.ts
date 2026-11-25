@@ -685,7 +685,7 @@ const routes: TenantRoute[] = [
       (await import("@/app/api/menu/categories/[categoryId]/archive/route")).POST(
         request(`/api/menu/categories/${target.categoryId}/archive`, {
           method: "POST",
-          body: form({ moveItemsTo: target.spareCategoryId }),
+          body: form({ moveItemsTo: target.spareCategoryId, confirmed: "1" }),
         }),
         { params: Promise.resolve({ categoryId: target.categoryId }) },
       ),
