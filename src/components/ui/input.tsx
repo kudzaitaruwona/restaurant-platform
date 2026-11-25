@@ -43,31 +43,46 @@ export function Select({
   );
 }
 
-/** A label above its control, with an optional hint and, when it's refused, why, below. */
+/**
+ * A label above its control, with an optional hint and, when it's refused, why, below.
+ * The refusal is outside the label, so it isn't read as part of the control's name:
+ * a field that can be refused gives an `errorId` always, and its control carries
+ * aria-invalid and an aria-describedby of it while it is.
+ */
 export function Field({
   label,
   hint,
   error,
+  errorId,
   className,
   children,
 }: {
   label: ReactNode;
   hint?: ReactNode;
-  /** Why this field was refused; the control should carry aria-invalid. */
-  error?: ReactNode;
   className?: string;
   children: ReactNode;
-}) {
-  return (
-    <label className={cn("flex flex-col gap-1.5 text-caption font-medium text-ink-2", className)}>
+} & ({ error?: undefined; errorId?: undefined } | { error: ReactNode; errorId: string })) {
+  const field = (
+    <label
+      className={cn(
+        "flex flex-col gap-1.5 text-caption font-medium text-ink-2",
+        errorId === undefined && className,
+      )}
+    >
       {label}
       {children}
       {hint && <span className="font-normal text-ink-2">{hint}</span>}
+    </label>
+  );
+  if (errorId === undefined) return field;
+  return (
+    <div className={cn("flex flex-col gap-1.5", className)}>
+      {field}
       {error && (
-        <span role="alert" className="font-normal text-danger">
+        <span id={errorId} role="alert" className="text-caption font-normal text-danger">
           {error}
         </span>
       )}
-    </label>
+    </div>
   );
 }

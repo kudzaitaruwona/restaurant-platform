@@ -286,48 +286,48 @@ function restaurantItem({
       </>
     ),
     details: (
-    <>
-      <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
-        <h4 className="text-body font-semibold">Owner</h4>
-        {restaurant.hasOwner ? (
-          <>
-            <Owners restaurant={restaurant} owners={owners} />
-            {intro && (
-              <div className="flex max-w-2xl flex-col gap-2">
-                <p className="text-caption text-ink-2">{intro}</p>
-                <CopyMessage
-                  text={ownerSignInMessage({ restaurantName: restaurant.name, appUrl })}
-                />
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <Notice tone="attention">No owner yet. Nobody can sign in to this restaurant.</Notice>
-            <AdminForm
-              action={`/api/admin/restaurants/${restaurant.id}/owner`}
-              submitLabel="Create owner"
-              pendingLabel="Creating owner"
-              className="grid gap-3 sm:grid-cols-2"
-            >
-              <Field label="Owner's name">
-                <Input name="displayName" required maxLength={200} />
-              </Field>
-              <Field label="Owner's email" hint="We email them an invite. They sign in with this address.">
-                <Input name="email" type="email" required />
-              </Field>
-            </AdminForm>
-          </>
-        )}
-      </section>
-      {metrics && (
+      <>
         <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
-          <h4 className="text-caption font-medium text-ink-2">Bookings</h4>
-          <BookingMetricsPanel metrics={metrics} />
+          <h4 className="text-body font-semibold">Owner</h4>
+          {restaurant.hasOwner ? (
+            <>
+              <Owners restaurant={restaurant} owners={owners} />
+              {intro && (
+                <div className="flex max-w-2xl flex-col gap-2">
+                  <p className="text-caption text-ink-2">{intro}</p>
+                  <CopyMessage
+                    text={ownerSignInMessage({ restaurantName: restaurant.name, appUrl })}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <Notice tone="attention">No owner yet. Nobody can sign in to this restaurant.</Notice>
+              <AdminForm
+                action={`/api/admin/restaurants/${restaurant.id}/owner`}
+                submitLabel="Create owner"
+                pendingLabel="Creating owner"
+                className="grid gap-3 sm:grid-cols-2"
+              >
+                <Field label="Owner's name">
+                  <Input name="displayName" required maxLength={200} />
+                </Field>
+                <Field label="Owner's email" hint="We email them an invite. They sign in with this address.">
+                  <Input name="email" type="email" required />
+                </Field>
+              </AdminForm>
+            </>
+          )}
         </section>
-      )}
-      {checklist && <Onboarding restaurant={restaurant} checklist={checklist} />}
-    </>
+        {metrics && (
+          <section className="flex flex-col gap-3 border-t border-line p-4 md:px-5">
+            <h4 className="text-caption font-medium text-ink-2">Bookings</h4>
+            <BookingMetricsPanel metrics={metrics} />
+          </section>
+        )}
+        {checklist && <Onboarding restaurant={restaurant} checklist={checklist} />}
+      </>
     ),
   };
 }
@@ -365,8 +365,9 @@ export async function AdminConsole() {
                 <p>
                   Columns: restaurant_name, slug (the public address; blank makes one from the name),
                   timezone (blank is {DEFAULT_TIMEZONE}), currency_mode (usd_only, zig_only,
-                  usd_primary, zig_primary or both; blank is {DEFAULT_CURRENCY_MODE}), owner_email and owner_name. Each restaurant is created
-                  with its owner, and the owner is invited by email.
+                  usd_primary, zig_primary or both; blank is {DEFAULT_CURRENCY_MODE}), owner_email and
+                  owner_name. Each restaurant is created with its owner, and the owner is invited by
+                  email.
                 </p>
               }
             />

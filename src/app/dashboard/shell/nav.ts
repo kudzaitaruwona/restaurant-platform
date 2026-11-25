@@ -66,7 +66,8 @@ export type RailRate = {
 };
 
 /**
- * A USD-only restaurant with no rate needs none: the rail has nothing to say.
+ * A USD-only restaurant with no rate needs one only for a dish priced in ZiG alone,
+ * which the menu page says: the rail has nothing to say.
  * Here, not in staff-rail.tsx: the server calls it, and can't call a client module.
  */
 export const showsRate = (rate: RailRate, currencyMode: string) =>

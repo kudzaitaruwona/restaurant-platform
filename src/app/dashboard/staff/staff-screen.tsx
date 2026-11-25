@@ -205,10 +205,15 @@ export async function StaffScreen() {
                 noOwnerYet
                   ? "This restaurant has no owner yet, so the first person added is its owner."
                   : ownerLogins >= OWNER_LOGIN_SOFT_LIMIT &&
-                "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked. Staff logins are unlimited."
+                    "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked. Staff logins are unlimited."
               }
             >
-              <Select name="role" defaultValue={noOwnerYet ? "owner" : "staff"}>
+              {/* React doesn't move a mounted select to a new defaultValue, so a new key. */}
+              <Select
+                key={noOwnerYet ? "first" : "later"}
+                name="role"
+                defaultValue={noOwnerYet ? "owner" : "staff"}
+              >
                 <option value="staff">Staff</option>
                 <option value="owner">Owner</option>
               </Select>

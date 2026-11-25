@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
-import sharp from "sharp";
+import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as addCategory } from "@/app/api/menu/categories/route";
 import { POST as archiveCategory } from "@/app/api/menu/categories/[categoryId]/archive/route";
@@ -40,6 +41,7 @@ import {
   staff,
   staffInvites,
 } from "@/db/schema";
+import { Select } from "@/components/ui/input";
 import { getEnv } from "@/lib/env";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import { menuCodeUrl, qrSvg, tableCodeUrl } from "@/lib/qr-code";
@@ -150,6 +152,16 @@ const params = (staffId: string) => ({ params: Promise.resolve({ staffId }) });
 
 const screen = async (Screen: () => Promise<React.ReactElement>) =>
   renderToStaticMarkup(await Screen());
+
+/** The React key of the named Select in a screen, before it's rendered. */
+function selectKey(node: React.ReactNode, name: string): string | null | undefined {
+  if (Array.isArray(node)) {
+    return node.map((child) => selectKey(child, name)).find((key) => key !== undefined);
+  }
+  if (!isValidElement<{ name?: string; children?: React.ReactNode }>(node)) return undefined;
+  if (node.type === Select && node.props.name === name) return node.key;
+  return selectKey(node.props.children, name);
+}
 
 const newPerson = (role: string) => ({
   email: `${crypto.randomUUID()}@example.test`,
@@ -1879,6 +1891,11 @@ describe("/dashboard/staff", () => {
     const html = await screen(StaffScreen);
 
     expect(html).toContain('<option value="owner" selected="">Owner</option>');
+    const before = selectKey(await StaffScreen(), "role");
+    await addStaff(post("/api/staff", newPerson("owner")));
+    // A new key: the select mounted as Owner would otherwise stay on it, and the
+    // next person added would be a second owner.
+    expect(selectKey(await StaffScreen(), "role")).not.toBe(before);
     expect(html).toContain("no owner yet, so the first person added is its owner");
   });
 

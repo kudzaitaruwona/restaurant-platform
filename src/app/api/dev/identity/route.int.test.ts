@@ -107,7 +107,7 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
 
     // Back after Leave reloads /dashboard as a page: send the admin to the list, not a 403.
     it.each([
-      ["a browser page load", { "sec-fetch-mode": "navigate" }],
+      ["a browser page load", { "sec-fetch-mode": "navigate", [STAFF_PAGE_HEADER]: "1" }],
       ["an app router page fetch", { "sec-fetch-mode": "cors", [STAFF_PAGE_HEADER]: "1" }],
     ])("sends %s to /admin until the admin enters one", async (_label, headers) => {
       await pick(devPlatformAdmin.key);
@@ -124,7 +124,10 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
 
       requestHeaders.current = { "sec-fetch-mode": "cors" };
       expect(await statusOf(getTenantContext)).toBe(403);
-      requestHeaders.current = { "sec-fetch-mode": "navigate", "next-action": "abc" };
+      // A form posted straight to a route: a navigation, but not a page.
+      requestHeaders.current = { "sec-fetch-mode": "navigate" };
+      expect(await statusOf(getTenantContext)).toBe(403);
+      requestHeaders.current = { [STAFF_PAGE_HEADER]: "1", "next-action": "abc" };
       expect(await statusOf(getTenantContext)).toBe(403);
     });
 

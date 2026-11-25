@@ -271,6 +271,10 @@ describe("where sign-in returns to (#116)", () => {
   });
 
   it.each([
+    // Nowhere to go back to: the link would always be refused when it's opened.
+    ["staff", {}],
+    ["staff", { errorCallbackURL: "/login" }],
+    ["admin", {}],
     ["staff", { callbackURL: "/admin" }],
     ["staff", { callbackURL: "/api/auth/staff/sign-out" }],
     ["staff", { callbackURL: "//evil.example.test" }],
@@ -539,6 +543,7 @@ describe("who may sign in", () => {
   it("Google's ID-token shortcut is off: sign-in goes through the redirect", async () => {
     const response = await postAuth("staff", "/sign-in/social", {
       provider: "google",
+      ...returning.staff,
       idToken: { token: "anything" },
     });
     expect(response.status).toBeGreaterThanOrEqual(400);

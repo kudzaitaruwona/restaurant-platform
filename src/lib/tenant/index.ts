@@ -52,17 +52,14 @@ async function enteredContext(admin: {
 /**
  * A platform admin outside any restaurant has no tenant, so a data request gets
  * a 403. A page someone navigated to (Back after Leave, an old bookmark) goes
- * to /admin instead, where they can pick a restaurant: a browser load sends
- * `Sec-Fetch-Mode: navigate`, and the proxy marks the app router's own fetches of
- * a staff page (Next.js hides their `RSC` header from us). A data call is neither.
+ * to /admin instead, where they can pick a restaurant. The proxy marks a GET of a
+ * staff page, a browser load or the app router's own fetch, and nothing else: a
+ * form posted to a route is a navigation too, but not a page. Nor is a server action.
  */
 async function noTenantForAdmin(): Promise<never> {
   const page = await (async () => {
     const requestHeaders = await headers();
-    return (
-      (requestHeaders.get("sec-fetch-mode") === "navigate" || requestHeaders.get(STAFF_PAGE_HEADER) === "1") &&
-      !requestHeaders.get("next-action")
-    );
+    return requestHeaders.get(STAFF_PAGE_HEADER) === "1" && !requestHeaders.get("next-action");
     // No request to read (a script or a test): the plain 403.
   })().catch(() => false);
   if (page) redirect("/admin");
@@ -106,7 +103,8 @@ export async function currentIdentity() {
  * The only source of tenant identity: the restaurant ID always comes from here,
  * never from request input. Ends the request with a 401 for anyone without an
  * active staff record, and a 403 for a platform admin, who has no tenant until
- * entering a restaurant (on a page, /admin instead). Once inside, they get its shadow staff row, as an owner.
+ * entering a restaurant (on a page, /admin instead). Once inside, they get its
+ * shadow staff row, as an owner.
  */
 export const getTenantContext = cache(async (): Promise<TenantContext> => {
   if (!devAuthBypassEnabled()) {

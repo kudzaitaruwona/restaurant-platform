@@ -147,17 +147,14 @@ export function SettingsForm({
     }
   }
 
-  const problem = (name: string, hint?: ReactNode) => (
-    <>
-      {badField === name && message?.tone === "danger" && (
-        <span role="alert" className="font-medium text-danger">
-          {message.text}
-        </span>
-      )}
-      {hint}
-    </>
-  );
-  const invalid = (name: string) => (badField === name ? true : undefined);
+  const errorId = (name: keyof SettingsValues) => `settings-${name}-error`;
+  const bad = (name: keyof SettingsValues) => badField === name && message?.tone === "danger";
+  const refusal = (name: keyof SettingsValues) => ({
+    error: bad(name) ? message?.text : undefined,
+    errorId: errorId(name),
+  });
+  const refused = (name: keyof SettingsValues) =>
+    bad(name) ? { "aria-invalid": true, "aria-describedby": errorId(name) } : undefined;
 
   return (
     <form
@@ -170,46 +167,42 @@ export function SettingsForm({
       <fieldset disabled={pending} className="flex flex-col gap-6">
         <Fragment key={version}>
           <Group title="Restaurant" description="Your name and phone, as guests see them.">
-            <Field label="Restaurant name" hint={problem("name")}>
+            <Field label="Restaurant name" {...refusal("name")}>
               <Input
                 name="name"
                 defaultValue={baseline.name}
                 required
                 maxLength={200}
-                aria-invalid={invalid("name")}
+                {...refused("name")}
               />
             </Field>
             <Field
               label="Contact phone"
-              hint={problem(
-                "contactPhone",
-                "A local number like 0771234567 is fine. Guests see it for large parties and booking changes. Online booking needs it.",
-              )}
+              hint="A local number like 0771234567 is fine. Guests see it for large parties and booking changes. Online booking needs it."
+              {...refusal("contactPhone")}
             >
               <Input
                 name="contactPhone"
                 type="tel"
                 defaultValue={baseline.contactPhone}
-                aria-invalid={invalid("contactPhone")}
+                {...refused("contactPhone")}
               />
             </Field>
           </Group>
 
           <Group title="Guest Wi-Fi" description="Printed on the table QR cards.">
-            <Field label="Wi-Fi name" hint={problem("wifiName")}>
+            <Field label="Wi-Fi name" {...refusal("wifiName")}>
               <Input
                 name="wifiName"
                 defaultValue={baseline.wifiName}
                 maxLength={200}
-                aria-invalid={invalid("wifiName")}
+                {...refused("wifiName")}
               />
             </Field>
             <Field
               label="Wi-Fi password"
-              hint={problem(
-                "wifiPassword",
-                "Printed on every table QR card, so customers will see it. Use a guest network, not the one your staff or tills use. You can leave it off the sheet when printing.",
-              )}
+              hint="Printed on every table QR card, so customers will see it. Use a guest network, not the one your staff or tills use. You can leave it off the sheet when printing."
+              {...refusal("wifiPassword")}
             >
               <Input
                 name="wifiPassword"
@@ -217,14 +210,18 @@ export function SettingsForm({
                 autoComplete="off"
                 defaultValue={baseline.wifiPassword}
                 maxLength={200}
-                aria-invalid={invalid("wifiPassword")}
+                {...refused("wifiPassword")}
               />
             </Field>
           </Group>
 
           <Group title="Prices and time" description="For the menu, bookings and every screen.">
-            <Field label="Currency display" hint={problem("currencyMode")}>
-              <Select name="currencyMode" defaultValue={baseline.currencyMode}>
+            <Field label="Currency display" {...refusal("currencyMode")}>
+              <Select
+                name="currencyMode"
+                defaultValue={baseline.currencyMode}
+                {...refused("currencyMode")}
+              >
                 {currencies.map(({ value, label }) => (
                   <option key={value} value={value}>
                     {label}
@@ -244,9 +241,10 @@ export function SettingsForm({
             </Link>
             <Field
               label="Timezone"
-              hint={problem("timezone", "Every time on the site is shown in this zone.")}
+              hint="Every time on the site is shown in this zone."
+              {...refusal("timezone")}
             >
-              <Select name="timezone" defaultValue={baseline.timezone}>
+              <Select name="timezone" defaultValue={baseline.timezone} {...refused("timezone")}>
                 {zones.map((zone) => (
                   <option key={zone} value={zone}>
                     {zone}

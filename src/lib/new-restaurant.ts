@@ -17,10 +17,13 @@ export const DEFAULT_CURRENCY_MODE: CurrencyMode = "usd_primary";
  * The timezones the New restaurant sheet offers, as a list instead of free
  * text: every one the runtime knows, with the default among them.
  */
-export function timezoneChoices() {
-  const known = Intl.supportedValuesOf("timeZone").filter(isTimeZone);
-  return [...new Set([DEFAULT_TIMEZONE, ...known])].sort();
-}
+export const timezoneChoices = (): readonly string[] =>
+  (choices ??= [
+    ...new Set([DEFAULT_TIMEZONE, ...Intl.supportedValuesOf("timeZone").filter(isTimeZone)]),
+  ].sort());
+
+/** Checking each zone builds a DateTimeFormat, hundreds in all, so once. */
+let choices: readonly string[] | undefined;
 
 export const unknownTimezone = "Enter a timezone like Africa/Harare.";
 

@@ -67,7 +67,8 @@ export async function Dashboard() {
       : [null, null];
 
   const owner = tenant.role === "owner";
-  // A USD-only restaurant with no rate needs none, so the card would only nag.
+  // A USD-only restaurant with no rate needs one only for a dish priced in ZiG alone,
+  // which the menu page says, so the card here would only nag.
   const showRate = owner && (Boolean(rate) || restaurant.currencyMode !== "usd_only");
   const me = tenant.platformAdminId
     ? "platform admin"
