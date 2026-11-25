@@ -74,7 +74,7 @@ class FakeElement {
   }
 }
 
-type Feed = { session: string | null; items: Record<string, unknown>[] };
+type Feed = { session: string | null; items: Record<string, unknown>[]; waiter?: boolean };
 type Reply = { status: number; json: unknown; headers?: Record<string, string> };
 
 /** One page load: a fresh page over the same phone's storage. */
@@ -103,6 +103,9 @@ async function loadPage(
     /** While true, a tracker poll waits for its answer until `answer()` is called. */
     holdPolls: false,
     held: [] as (() => void)[],
+    /** While true, a waiter call is answered only by `answerCall()`. */
+    holdWaiter: false,
+    heldWaiter: [] as (() => void)[],
     /** The timeouts the script asked AbortSignal for, in milliseconds. */
     timeouts: [] as number[],
   };
@@ -177,6 +180,10 @@ async function loadPage(
         status: 200,
         json: { session: state.sessionId, requestedAt: "2026-01-01T10:00:00.000Z" },
       };
+      // As the server does: the table's feed shows the call from now on.
+      if (reply.status < 400) state.feed = { ...state.feed, waiter: true };
+      // Committed, then held until the test lets its answer through.
+      if (state.holdWaiter) await new Promise<void>((resolve) => state.heldWaiter.push(resolve));
       return { ok: reply.status < 400, status: reply.status, json: async () => reply.json };
     }
     if (path === "/tracker") {
@@ -288,6 +295,11 @@ async function loadPage(
     /** Lets every held poll answer. */
     async answer() {
       state.held.splice(0).forEach((resolve) => resolve());
+      await settle();
+      await settle();
+    },
+    async answerCall() {
+      state.heldWaiter.splice(0).forEach((resolve) => resolve());
       await settle();
       await settle();
     },
@@ -1270,6 +1282,10 @@ describe("the order tracker", () => {
   });
 });
 
+/** Sent, and no more than that: nobody has acknowledged it yet (#97). */
+const SENT = "Your table's call has been sent to the staff.";
+const SEEN = "The staff have seen your table's call.";
+
 describe("Call a waiter", () => {
   const waiterCalls = (page: Awaited<ReturnType<typeof loadPage>>) =>
     page.state.requests.filter((request) => request.path === "/waiter");
@@ -1286,8 +1302,7 @@ describe("Call a waiter", () => {
     await settle();
 
     expect(waiterCalls(page)).toEqual([expect.objectContaining({ method: "POST", body: undefined })]);
-    expect(page.waiterStatus.textContent).toMatch(/waiter/i);
-    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toBe(SENT);
     expect(page.waiter.dataset).toHaveProperty("called");
   });
 
@@ -1303,7 +1318,7 @@ describe("Call a waiter", () => {
     page.state.waiterReply = undefined;
     await page.waiter.dispatch("click");
     await settle();
-    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toBe(SENT);
     expect(page.waiterStatus.dataset.tone).toBeUndefined();
   });
 
@@ -1343,5 +1358,163 @@ describe("Call a waiter", () => {
     await page.waiter.dispatch("click");
     await settle();
     expect(page.waiterStatus.children).toEqual([]);
+  });
+});
+
+describe("a waiter call follows the server (#97)", () => {
+  type Page = Awaited<ReturnType<typeof loadPage>>;
+  const call = async (page: Page) => {
+    await page.waiter.dispatch("click");
+    await settle();
+    await settle();
+  };
+  const tickWith = async (page: Page, feed: Feed) => {
+    page.state.feed = feed;
+    await page.tick();
+  };
+  const shows = (page: Page) => ({
+    called: "called" in page.waiter.dataset,
+    says: page.waiterStatus.textContent,
+  });
+  const IDLE = { called: false, says: "" };
+  const PENDING = { called: true, says: SENT };
+
+  it("never claims a waiter is coming before anyone has acknowledged the call", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    expect(page.waiterStatus.textContent).not.toMatch(/way|coming|will|soon/i);
+    expect(ORDER_SCRIPT).not.toMatch(/on the way/i);
+  });
+
+  it("a reload keeps a pending call, from the first poll", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      feed: { session: "session-1", items: [], waiter: true },
+    });
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("stays pending while the server says so", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.tick();
+    await page.tick();
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("says staff have seen it once it is dismissed, and can be called again", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+
+    await call(page);
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("is dropped when the session ends, whether or not it had been seen", async () => {
+    for (const seen of [false, true]) {
+      const page = await loadPage(new Map(), "session-1");
+      await call(page);
+      if (seen) await tickWith(page, { session: "session-1", items: [], waiter: false });
+      await tickWith(page, { session: null, items: [], waiter: false });
+      expect(shows(page)).toEqual(IDLE);
+    }
+  });
+
+  it("never shows another session's call: the next party's on an old page, or the old one's after joining", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await tickWith(page, { session: "session-2", items: [], waiter: true });
+    expect(shows(page)).toEqual(IDLE);
+  });
+
+  it("drops the old session's call when an order is what finds the session changed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: "session-2", items: [], waiter: false };
+    page.state.orderReply = { status: 409, json: { error: "Ended.", code: "session_changed" } };
+    await page.placeAs("Tariro");
+    expect(shows(page)).toEqual(IDLE);
+
+    await page.tick();
+    expect(shows(page)).toEqual(IDLE);
+  });
+
+  it("shows a call another phone at the table made", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await tickWith(page, { session: "session-1", items: [], waiter: true });
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("a poll asked before the call went through can't take it for dismissed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdPolls = true;
+    await page.tick();
+    await call(page);
+    page.state.holdPolls = false;
+    await page.answer();
+    expect(shows(page)).toEqual(PENDING);
+
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+  });
+
+  it("a call answered late, after staff dismissed it, ends as dismissed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdWaiter = true;
+    void page.waiter.dispatch("click");
+    await settle();
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    await page.answerCall();
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+  });
+
+  it("a failed call the server did get is shown as sent by the next poll", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.waiterReply = { status: 500, json: {} };
+    await call(page);
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+    await tickWith(page, { session: "session-1", items: [], waiter: true });
+    expect(shows(page)).toEqual(PENDING);
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+  });
+
+  it("leaves a problem with the order up in the shared place, and the button still follows the server", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.add(page.stew);
+    page.state.orderReply = {
+      status: 409,
+      json: { error: "Beef stew has sold out.", code: "unavailable", item: "item-stew" },
+    };
+    await page.placeAs("Tariro");
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: "Beef stew has sold out." });
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+  });
+
+  it("the join's message gives way to a pending call once the join works (#98)", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: ["abort"],
+      feed: { session: "session-1", items: [], waiter: true },
+    });
+    expect(page.waiterStatus.textContent).toMatch(/couldn't reach/i);
+    expect(page.waiter.dataset).not.toHaveProperty("called");
+
+    await page.retryNow();
+    expect(shows(page)).toEqual(PENDING);
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+  });
+
+  it("isn't written again by a poll that changes something else", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    const item = { quantity: 1, name: "Rice", note: null, customer: "Farai", status: "placed", time: "12:00" };
+    page.waiterStatus.textContent = "";
+    await tickWith(page, { session: "session-1", items: [item], waiter: true });
+    // A status region written again is read out again.
+    expect(page.waiterStatus.textContent).toBe("");
   });
 });
