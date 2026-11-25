@@ -6,10 +6,12 @@ import { guestThemeCss } from "@/lib/guest-theme";
 /**
  * The guest's manage page (spec 04), written by hand like the menu (S-32): no
  * React, no script, one inline stylesheet. Its URL is a bearer secret, so the
- * response says never to cache it and never to pass it to another site in a
- * Referer, and the page carries no link off the site except the restaurant's own
- * `tel:` number. The policy is same-origin, not no-referrer: under no-referrer
- * Chrome posts the cancel form with Origin: null, and the proxy refuses that.
+ * response says never to cache it and never to put it in a Referer, and the page
+ * carries no link off the site except the restaurant's own `tel:` number. The policy
+ * is `origin`: it also hides this URL from the Navigation API of the other pages in
+ * the tab's history, which `same-origin` doesn't, and the booking page runs a third
+ * party's script (#89). Not no-referrer: under it Chrome posts the cancel form with
+ * Origin: null, and the proxy refuses that.
  */
 
 export const tooLateMessage = "Too late to cancel online. Please call.";
@@ -36,6 +38,7 @@ p{margin:0}
 const icon = (paths: string) =>
   trusted(`<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`);
 const icons = {
+  circleCheck: icon('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
   info: icon('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
   circleX: icon('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
   phone: icon(
@@ -50,7 +53,7 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="referrer" content="same-origin">
+<meta name="referrer" content="origin">
 <title>${title}</title>
 <style>${trusted(styles)}</style>
 </head>
@@ -58,13 +61,13 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 </html>
 `;
 
-/** A message in place: grey to inform, red once the booking is cancelled. */
+/** A message in place: grey to inform, green once booked, red once cancelled. */
 const message = (
   text: string,
-  tone: "neutral" | "cancelled",
-  glyph = tone === "cancelled" ? icons.circleX : icons.info,
+  tone: "neutral" | "positive" | "cancelled",
+  glyph = { neutral: icons.info, positive: icons.circleCheck, cancelled: icons.circleX }[tone],
 ) =>
-  html`<div class="${tone === "cancelled" ? "notice notice-danger" : "notice"}" role="status">${glyph}<p>${text}</p></div>`;
+  html`<div class="${{ neutral: "notice", positive: "notice notice-positive", cancelled: "notice notice-danger" }[tone]}" role="status">${glyph}<p>${text}</p></div>`;
 
 const stateOf = ({ status, cancelledBy }: ManagedBooking) => {
   switch (status) {
@@ -124,13 +127,19 @@ function confirmPage(booking: ManagedBooking, token: string) {
   );
 }
 
-function bookingPage(booking: ManagedBooking, token: string, outcome?: CancelOutcome["outcome"]) {
+function bookingPage(
+  booking: ManagedBooking,
+  token: string,
+  outcome?: CancelOutcome["outcome"],
+  justBooked = false,
+) {
   const state = stateOf(booking);
   const notice = noticeOf(outcome);
   const { contactPhone } = booking;
   return page(
     `Your booking at ${booking.restaurantName}`,
     html`<h1>${booking.restaurantName}</h1>
+${justBooked && booking.status === "confirmed" && message("You're booked.", "positive")}
 ${notice && message(notice, outcome === "cancelled" ? "cancelled" : "neutral")}
 <div class="card">
 <p class="when">${booking.dateLabel} at <span class="num">${booking.time}</span></p>
@@ -161,7 +170,7 @@ const notFound = page(
 const headers = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "private, no-store",
-  "referrer-policy": "same-origin",
+  "referrer-policy": "origin",
   "x-robots-tag": "noindex, nofollow",
 };
 
@@ -175,6 +184,10 @@ export function confirmCancelResponse(token: string, booking: ManagedBooking) {
     headers,
   });
 }
+
+/** Where a guest's confirm leads (#89): the usual page, saying so while the booking stands. */
+export const justBookedResponse = (token: string, booking: ManagedBooking) =>
+  new Response(bookingPage(booking, token, undefined, true).toString(), { status: 200, headers });
 
 export function bookingResponse(token: string, booking: ManagedBooking, outcome?: CancelOutcome["outcome"]) {
   const refused = outcome === "too_late" || outcome === "not_cancellable";

@@ -62,9 +62,10 @@ describe("GET /b/{manage_token}", () => {
     expect(page).not.toContain("<script");
     expect(page).not.toMatch(/(href|src|action)="(https?:)?\/\//);
     expect(page).toContain('name="robots" content="noindex"');
-    // Not no-referrer: Chrome would post the cancel form with Origin: null, and the
+    // Not same-origin: it leaves this URL readable in the booking page's navigation
+    // entries. Not no-referrer: Chrome would post the cancel form with Origin: null, and the
     // proxy refuses that.
-    expect(page).toContain('name="referrer" content="same-origin"');
+    expect(page).toContain('name="referrer" content="origin"');
   });
 
   it.each(["found", "missing", "nul"])(
@@ -75,7 +76,7 @@ describe("GET /b/{manage_token}", () => {
         which === "found" ? token : which === "missing" ? "no-such-token" : "a\0b",
       );
 
-      expect(response.headers.get("referrer-policy")).toBe("same-origin");
+      expect(response.headers.get("referrer-policy")).toBe("origin");
       expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(response.headers.get("x-robots-tag")).toContain("noindex");
     },
@@ -84,6 +85,33 @@ describe("GET /b/{manage_token}", () => {
   it("is a real 404 for an unknown token and for a NUL", async () => {
     expect((await view("no-such-token")).status).toBe(404);
     expect((await view("a\0b")).status).toBe(404);
+  });
+
+  it("?booked=1 says so, with the booking and its cancel link, the same on every reload", async () => {
+    const { token } = await bookedIn(300, { guestName: "Tariro" });
+    const booked = () => GET(new Request(`http://localhost/b/${token}?booked=1`), params(token));
+
+    for (const response of [await booked(), await booked()]) {
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("referrer-policy")).toBe("origin");
+      const page = await response.text();
+      expect(page).toContain("You&#39;re booked.");
+      expect(page).toContain("Tariro, party of 2");
+      expect(page).toContain(`href="/b/${token}?cancel=1"`);
+      expect(page).toContain('href="tel:+263771234567"');
+      expect(page).not.toContain("<form");
+      expect(page).not.toContain("<script");
+    }
+    expect(await (await view(token)).text()).not.toContain("You&#39;re booked.");
+  });
+
+  it("?booked=1 stops saying so once the booking is cancelled", async () => {
+    const { token } = await bookedIn(300);
+    await cancel(token);
+    const page = await (await GET(new Request(`http://localhost/b/${token}?booked=1`), params(token))).text();
+    expect(page).not.toContain("You&#39;re booked.");
+    expect(page).toContain("This booking is cancelled.");
   });
 
   it("asks first: ?cancel=1 shows a no-JavaScript confirm step, a POST form, and cancels nothing", async () => {
@@ -175,7 +203,7 @@ describe("POST /b/{manage_token}", () => {
     const response = await cancel(token);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("referrer-policy")).toBe("same-origin");
+    expect(response.headers.get("referrer-policy")).toBe("origin");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     const page = await response.text();
     expect(page).toContain("Your booking is cancelled.");

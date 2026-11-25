@@ -83,7 +83,15 @@ export async function POST(request: Request, { params }: RouteContext<"/api/r/[s
     case "lead_time":
       return Response.json({ error: leadTimeMessage, times: result.times }, { status: 409 });
     case "phone_limit":
-      return refuse(phoneLimitMessage(result.held), 409);
+      // No link to the bookings: whoever is asking has only typed a number (#89).
+      return Response.json(
+        {
+          error: phoneLimitMessage(result.held),
+          contactPhone: result.contactPhone,
+          whatsappLink: result.whatsappLink,
+        },
+        { status: 409 },
+      );
     case "date_unavailable":
       return refuse(dateMessage, 409);
     case "party_too_large":

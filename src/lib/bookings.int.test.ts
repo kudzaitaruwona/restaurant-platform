@@ -728,7 +728,7 @@ describe("the refusals at confirm", () => {
         });
     }
 
-    expect(await confirm(restaurantId)).toEqual({ outcome: "phone_limit", held: 2 });
+    expect(await confirm(restaurantId)).toMatchObject({ outcome: "phone_limit", held: 2 });
     expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(2);
     expect((await confirm(restaurantId, { phone: "+263771230009" })).outcome).toBe("confirmed");
   });
@@ -824,7 +824,7 @@ describe("a confirm racing another for the same phone, held mid-flight", () => {
       );
       await holder.query("commit");
 
-      expect(await second).toEqual({ outcome: "phone_limit", held: 1 });
+      expect(await second).toMatchObject({ outcome: "phone_limit", held: 1 });
       expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
     } finally {
       holder.release(true);

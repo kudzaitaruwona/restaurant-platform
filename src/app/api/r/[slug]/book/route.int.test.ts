@@ -201,7 +201,7 @@ describe("the refusals, each with its own message", () => {
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
 
-  it("the phone's limit, with the count", async () => {
+  it("the phone's limit, with the count and the restaurant's contacts, but no link to anyone's booking", async () => {
     const { slug, tableIds, restaurantId } = await bookableRestaurant(owner.db, {
       tables: [{ capacity: 2 }, { capacity: 2 }],
     });
@@ -216,7 +216,9 @@ describe("the refusals, each with its own message", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: "You already have 2 upcoming bookings here. Cancel one or contact the restaurant.",
+      error: "You already have 2 upcoming bookings here. Cancel one with the link in its WhatsApp confirmation, or contact the restaurant.",
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
     });
   });
 
