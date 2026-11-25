@@ -12,6 +12,12 @@ export function matchesQuery(name: string, query: string) {
   return wanted === "" || name.toLowerCase().includes(wanted);
 }
 
+/** The folded categories once `categoryId` is open: the same set if it already was. */
+export function unfolded(collapsed: ReadonlySet<string>, categoryId: string): ReadonlySet<string> {
+  if (!collapsed.has(categoryId)) return collapsed;
+  return new Set([...collapsed].filter((id) => id !== categoryId));
+}
+
 /** The id the jump links point at. */
 export const categoryAnchor = (categoryId: string) => `category-${categoryId}`;
 
@@ -90,6 +96,7 @@ export function MenuFinder({
                   <li key={category.id} className="shrink-0">
                     <a
                       href={`#${categoryAnchor(category.id)}`}
+                      onClick={() => setCollapsed((now) => unfolded(now, category.id))}
                       className="inline-flex h-10 items-center rounded-full border border-line bg-surface px-4 text-body font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface-2"
                     >
                       {category.name}

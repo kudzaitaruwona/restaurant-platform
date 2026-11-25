@@ -27,10 +27,23 @@ const largest = ({ whole, decimals }: PriceShape) => {
 export function priceProblem(value: string, shape: PriceShape): string | null {
   const The = `The ${shape.label}`;
   const like = `like ${shape.example}`;
+  // Thousands before the decimal comma: "write a point" would turn 1,000 into 1.
+  if (/^[1-9][0-9]{0,2}(,[0-9]{3})+(\.[0-9]*)?$/.test(value)) {
+    // A rate takes three decimals, so one comma alone in it could be either.
+    return shape.decimals >= 3 && /^[0-9]+,[0-9]+$/.test(value)
+      ? `${The} has a comma. Leave it out between thousands, or write a point for the decimal, ${like}.`
+      : `${The} has a comma between thousands. Write it without, ${like}.`;
+  }
   if (/^[0-9]+,[0-9]+$/.test(value)) {
     return `${The} uses a comma. Write a point for the decimal, ${like}.`;
   }
   if (/^[-−–]/.test(value)) return `${The} can't be negative. Enter it ${like}.`;
+  if (/^(\.[0-9]+|[0-9]+\.)$/.test(value)) {
+    return `${The} needs a digit on both sides of the point, ${like}.`;
+  }
+  if (/^[0-9.,]+$/.test(value) && !/^[0-9]+(\.[0-9]+)?$/.test(value)) {
+    return `${The} can have digits and one point for the decimal, nothing else, ${like}.`;
+  }
   const match = /^([0-9]+)(?:\.([0-9]+))?$/.exec(value);
   if (!match) {
     return `${The} must be digits only, ${like}: no currency sign, letters or spaces.`;

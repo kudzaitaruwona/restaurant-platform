@@ -109,6 +109,15 @@ describe("parseNewMenuItem", () => {
   });
 
   it.each([
+    ["1,000", "The USD price has a comma between thousands. Write it without, like 8.50."],
+    ["1,000.50", "The USD price has a comma between thousands. Write it without, like 8.50."],
+    ["12,345,678", "The USD price has a comma between thousands. Write it without, like 8.50."],
+    ["0,500", "The USD price uses a comma. Write a point for the decimal, like 8.50."],
+    [".5", "The USD price needs a digit on both sides of the point, like 8.50."],
+    ["5.", "The USD price needs a digit on both sides of the point, like 8.50."],
+    ["1,000.", "The USD price has a comma between thousands. Write it without, like 8.50."],
+    ["1.000,50", "The USD price can have digits and one point for the decimal, nothing else, like 8.50."],
+    ["1.2.3", "The USD price can have digits and one point for the decimal, nothing else, like 8.50."],
     ["$8.50", "The USD price must be digits only, like 8.50: no currency sign, letters or spaces."],
     ["8,50", "The USD price uses a comma. Write a point for the decimal, like 8.50."],
     ["-8", "The USD price can't be negative. Enter it like 8.50."],

@@ -134,6 +134,79 @@ describe("a special above the normal price", () => {
     expect((await overCalculated.json()).error).toContain("(ZiG 271) is above the normal price (ZiG 270)");
   });
 
+  it("is refused when a USD special's calculated ZiG price is above the fixed one", async () => {
+    const itemId = await newItem(await newCategory(), "Burger", "10", "200");
+    await setRateTo("26.2");
+
+    const response = await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "9" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error:
+        "At the current rate this special's ZiG price is calculated as ZiG 240, above the normal price (ZiG 200). Enter a special ZiG price too, or lower the special USD price.",
+    });
+    expect(await specialsOf()).toEqual([]);
+    // Typing both prices, or a USD price low enough for both, is fine.
+    expect(
+      (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "9", priceZig: "180" }))).status,
+    ).toBe(303);
+    await owner.db.update(specials).set({ active: false });
+    expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "7.60" }))).status).toBe(303);
+  });
+
+  it("is refused when a ZiG special's calculated USD price is above the fixed one", async () => {
+    const itemId = await newItem(await newCategory(), "Burger", "5", "500");
+    await setRateTo("26.2");
+
+    const response = await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceZig: "400" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error:
+        "At the current rate this special's USD price is calculated as $15.27, above the normal price ($5.00). Enter a special USD price too, or lower the special ZiG price.",
+    });
+    expect(await specialsOf()).toEqual([]);
+  });
+
+  it("doesn't refuse an equal or lower special because rounding up lifts the calculated side", async () => {
+    const category = await newCategory();
+    // ZiG 210 is $8.02, and $8.02 back is ZiG 220. $8 is ZiG 210, and that back is $8.02.
+    const zigOnly = await newItem(category, "ZiG only", null, "210");
+    const usdOnly = await newItem(category, "USD only", "8");
+    await setRateTo("26.2");
+
+    for (const fields of [
+      { menuItemId: zigOnly, priceUsd: "8.02" },
+      { menuItemId: zigOnly, priceUsd: "7.50" },
+      { menuItemId: usdOnly, priceZig: "210" },
+      { menuItemId: usdOnly, priceZig: "200" },
+    ] as Record<string, string>[]) {
+      expect((await addSpecial(post("/api/menu/specials", fields))).status).toBe(303);
+      await owner.db.update(specials).set({ active: false });
+    }
+    // Above the calculated normal price is still above.
+    const above = await addSpecial(post("/api/menu/specials", { menuItemId: zigOnly, priceUsd: "8.03" }));
+    expect((await above.json()).error).toContain("($8.03) is above the normal price ($8.02)");
+  });
+
+  it("tells ZiG-only items, and exact twins, apart in the picker", async () => {
+    const drinks = await newCategory("Drinks");
+    await newItem(drinks, "Soda", null, "30");
+    await newItem(drinks, "Soda", null, "45");
+    await newItem(drinks, "Juice", "2");
+    await newItem(drinks, "Juice", "2");
+
+    const html = (await screen()).replaceAll("<!-- -->", "");
+    const options = [...html.matchAll(/<option[^>]*>([^<]* · Drinks · [^<]*)<\/option>/g)].map((m) => m[1]);
+
+    expect(options.sort()).toEqual([
+      "Juice · Drinks · $2.00 · 1 of 2",
+      "Juice · Drinks · $2.00 · 2 of 2",
+      "Soda · Drinks · ZiG 30",
+      "Soda · Drinks · ZiG 45",
+    ]);
+  });
+
   it("takes a lower price, an equal one, and a badge alone", async () => {
     const itemId = await newItem(await newCategory(), "Burger", "19.50");
 
@@ -161,8 +234,8 @@ describe("a special above the normal price", () => {
 
     const html = (await screen()).replaceAll("<!-- -->", "");
 
-    expect(html).toContain("Soda · Drinks · $1.00");
-    expect(html).toContain("Soda · Bar · $2.00");
+    expect(html).toContain("Soda · Drinks · $1.00 · ZiG 30 (calculated)");
+    expect(html).toContain("Soda · Bar · $2.00 · ZiG 60 (calculated)");
     expect(html).toContain("Normal price: $2.00 · ZiG 60 (calculated)");
   });
 });

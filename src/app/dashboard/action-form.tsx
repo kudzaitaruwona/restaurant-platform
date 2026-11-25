@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
@@ -58,11 +58,26 @@ export function ActionForm({
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
   // What the server wants the person to see before it saves (lib/confirmation.ts).
+  // Kept after it closes, so the dialog stays mounted and closes itself.
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [warned, setWarned] = useState(false);
+  const opener = useRef<HTMLElement | null>(null);
   const ask = confirmation === undefined ? undefined : confirmationOf(confirmation);
+
+  // The dialog opens after the post, whose disabled fieldset has already taken
+  // focus from the button, so closing it has nothing to return to: put it back.
+  useEffect(() => {
+    if (!warned) opener.current?.focus();
+  }, [warned]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Enter in a field submits too. Safari doesn't focus a clicked button.
+    const focused = document.activeElement;
+    opener.current =
+      focused instanceof HTMLElement && event.currentTarget.contains(focused)
+        ? focused
+        : (event.nativeEvent as SubmitEvent).submitter;
     if (ask) setAsking(true);
     else void send(event.currentTarget);
   }
@@ -81,8 +96,10 @@ export function ActionForm({
         router.refresh();
       } else {
         const refusal = await refusalFrom(response);
-        if (refusal.warnings.length > 0) setWarnings(refusal.warnings);
-        else setError(refusal);
+        if (refusal.warnings.length > 0) {
+          setWarnings(refusal.warnings);
+          setWarned(true);
+        } else setError(refusal);
       }
     } catch {
       setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [] });
@@ -115,7 +132,7 @@ export function ActionForm({
       </fieldset>
       {warnings.length > 0 && (
         <ConfirmDialog
-          open
+          open={warned}
           title="Save anyway?"
           description={
             <ul className="list-disc space-y-1 pl-5">
@@ -128,9 +145,9 @@ export function ActionForm({
           cancelLabel="Go back"
           tone="primary"
           pending={pending}
-          onCancel={() => setWarnings([])}
+          onCancel={() => setWarned(false)}
           onConfirm={() => {
-            setWarnings([]);
+            setWarned(false);
             if (formRef.current) void send(formRef.current, true);
           }}
         />

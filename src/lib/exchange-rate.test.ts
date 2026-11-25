@@ -31,6 +31,11 @@ describe("parseNewExchangeRate", () => {
     ["0.0", "The rate must be above 0, like 26.2."],
     ["0.000000", "The rate must be above 0, like 26.2."],
     ["-26", "The rate can't be negative. Enter it like 26.2."],
+    // One comma before three digits could be either in a rate, so it says both.
+    ["26,200", "The rate has a comma. Leave it out between thousands, or write a point for the decimal, like 26.2."],
+    ["1,000.50", "The rate has a comma between thousands. Write it without, like 26.2."],
+    [".5", "The rate needs a digit on both sides of the point, like 26.2."],
+    ["5.", "The rate needs a digit on both sides of the point, like 26.2."],
     ["26,2", "The rate uses a comma. Write a point for the decimal, like 26.2."],
     ["ZiG 26", "The rate must be digits only, like 26.2: no currency sign, letters or spaces."],
     ["1e3", "The rate must be digits only, like 26.2: no currency sign, letters or spaces."],

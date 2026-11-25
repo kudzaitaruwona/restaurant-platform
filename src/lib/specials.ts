@@ -5,7 +5,7 @@ import { menuItems, restaurants, specials } from "@/db/schema";
 import { optionalPrice } from "@/lib/menu";
 import { latestRate } from "@/lib/exchange-rate";
 import { revalidateMenu } from "@/lib/menu-cache";
-import { effectiveUsd, effectiveZig, formatUsd, formatZig } from "@/lib/pricing";
+import { effectiveUsd, effectiveZig, formatUsd, formatZig, specialUsd, specialZig } from "@/lib/pricing";
 import { usdShape, zigShape } from "@/lib/price-input";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -177,13 +177,24 @@ export function specialRefusal(error: unknown): "overlap" | "already_over" | nul
   return null;
 }
 
+const calculatedAbove = (currency: string, price: string, normal: string, typed: string) =>
+  `At the current rate this special's ${currency} price is calculated as ${price}, above the normal price (${normal}). Enter a special ${currency} price too, or lower the special ${typed} price.`;
+
 /**
  * Why a special price can't be saved, or null: a special above the item's
- * normal price in the same currency isn't a special, and the page would strike
- * through a price lower than the one shown (issue #112). Each price is compared
- * with the item's normal price in its own currency, a calculated one included.
- * With no rate there is no calculated price to compare with, so none is refused
- * on that account. An item that isn't live is createSpecial's 404.
+ * normal price isn't a special, and the page would strike through a price lower
+ * than the one shown (issue #112). What the special charges is compared with what
+ * the item normally charges in both currencies, because a price typed in one
+ * replaces the other too (specialUsd, specialZig).
+ *
+ * A currency whose special price is calculated is compared only when the item
+ * fixes both its prices. When it fixes one, both normal prices come from that one
+ * at the same rate, so a special at or below the typed currency's normal price
+ * can end up above the other one only by rounding up (ZiG 210 is $8.02, and $8.02
+ * back is ZiG 220), and an equal or lower special must not be refused for that.
+ *
+ * With no rate nothing is calculated, so nothing is refused on that account. An
+ * item that isn't live is createSpecial's 404.
  */
 export async function specialPriceProblem(
   ctx: Pick<TenantContext, "restaurantId">,
@@ -217,6 +228,17 @@ export async function specialPriceProblem(
     const normalZig = effectiveZig(item, pricing);
     if (priceZig !== null && normalZig !== null && Number(priceZig) > Number(normalZig.amount)) {
       return `The special ZiG price (${formatZig(priceZig)}) is above the normal price (${formatZig(normalZig.amount)}). A special has to be lower, or leave the price blank for a badge alone.`;
+    }
+    if (item.priceUsd === null || item.priceZig === null) return null;
+
+    const special = { priceUsd, priceZig };
+    const usd = specialUsd(item, special, pricing);
+    if (priceUsd === null && usd !== null && normalUsd !== null && Number(usd) > Number(normalUsd)) {
+      return calculatedAbove("USD", formatUsd(usd), formatUsd(normalUsd), "ZiG");
+    }
+    const zig = specialZig(item, special, pricing);
+    if (priceZig === null && zig && normalZig && Number(zig.amount) > Number(normalZig.amount)) {
+      return calculatedAbove("ZiG", formatZig(zig.amount), formatZig(normalZig.amount), "USD");
     }
     return null;
   });
