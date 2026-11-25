@@ -99,10 +99,13 @@ export function ActionForm({
         if (refusal.warnings.length > 0) {
           setWarnings(refusal.warnings);
           setWarned(true);
-        } else setError(refusal);
+        } else {
+          setError(refusal);
+          if (refusal.refresh) router.refresh();
+        }
       }
     } catch {
-      setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [] });
+      setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
     } finally {
       setPending(false);
     }
@@ -173,6 +176,8 @@ type Refusal = {
   bookings: { id: string; summary: string }[];
   /** A 409 that asks first: nothing was saved (lib/confirmation.ts). */
   warnings: string[];
+  /** What the page shows is out of date (#95): reload it, keeping the refusal up. */
+  refresh: boolean;
 };
 
 /**
@@ -197,5 +202,6 @@ export async function refusalFrom(response: Response): Promise<Refusal> {
     warnings: Array.isArray(body?.confirm?.warnings)
       ? body.confirm.warnings.filter((warning: unknown) => typeof warning === "string")
       : [],
+    refresh: body?.refresh === true,
   };
 }

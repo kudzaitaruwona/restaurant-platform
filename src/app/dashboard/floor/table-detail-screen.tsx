@@ -256,6 +256,9 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                 }}
               >
                 <input type="hidden" name="session" value={session.id} />
+                {outstanding.map((item) => (
+                  <input key={item.id} type="hidden" name="item" value={item.id} />
+                ))}
                 <Button type="submit" variant="danger-secondary" size="staff">
                   Force-close
                 </Button>

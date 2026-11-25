@@ -267,7 +267,9 @@ describe("the table detail screen", () => {
   it("offers Clear table and Force-close, with a required reason, each naming the session it shows (#74)", async () => {
     const r = await orderingRestaurant(owner.db);
     as(r);
-    await openTable(r, [{ status: "cooking" }]);
+    await openTable(r, [{ status: "cooking" }, { status: "delivered" }]);
+    const [{ id: lineId }] = await owner.db.select().from(orderItems)
+      .where(and(eq(orderItems.restaurantId, r.restaurantId), eq(orderItems.status, "cooking")));
     const [{ id: sessionId }] = await owner.db.select().from(tableSessions)
       .where(eq(tableSessions.restaurantId, r.restaurantId));
 
@@ -283,6 +285,8 @@ describe("the table detail screen", () => {
     expect(force).toContain(`name="session" value="${sessionId}"`);
     expect(force).toMatch(/<textarea[^>]*name="reason"[^>]*maxLength="200"/i);
     expect(force).toContain("Void 1 and close");
+    // The outstanding lines it lists, and no others, as the close's precondition (#95).
+    expect([...force.matchAll(/name="item" value="([^"]*)"/g)].map((match) => match[1])).toEqual([lineId]);
   });
 
   it("says so for a free table, with nothing to clear or force-close", async () => {

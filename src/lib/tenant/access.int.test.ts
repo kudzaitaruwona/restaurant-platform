@@ -1039,7 +1039,11 @@ const routes: TenantRoute[] = [
       const { tableId, sessionId } = [fixtures.a.tableId, fixtures.b.tableId].includes(target.tableId)
         ? await plantOpenTable(target, true)
         : { tableId: target.tableId, sessionId: crypto.randomUUID() };
-      return postForceClose(tableId, { session: sessionId, reason: "Harness force-close" });
+      return postForceClose(tableId, {
+        session: sessionId,
+        item: plantedKitchenItems.at(-1)?.id ?? "",
+        reason: "Harness force-close",
+      });
     },
   },
   {
@@ -4152,7 +4156,7 @@ describe("the floor view", () => {
       session.identity = who.key;
       expect((await postClear(cleared.tableId, { session: cleared.sessionId })).status).toBeLessThan(400);
       expect(
-        (await postForceClose(forced.tableId, { session: forced.sessionId, reason: "Walked out" })).status,
+        (await postForceClose(forced.tableId, { session: forced.sessionId, item: forcedLine, reason: "Walked out" })).status,
       ).toBeLessThan(400);
 
       expect(await sessionRow(cleared.sessionId)).toMatchObject({
@@ -4194,6 +4198,25 @@ describe("the floor view", () => {
       { id: plantedKitchenItems.at(-1)!.id, summary: `1 × ${harnessItem} for Harness close: placed` },
     ]);
     expect((await sessionRow(sessionId)).status).toBe("open");
+  });
+
+  it("force-close is a 409 with the items now outstanding when they aren't the ones shown, and closes nothing (#95)", async () => {
+    const { tableId, sessionId } = await plantOpenTable(fixtures.a, true);
+    const line = plantedKitchenItems.at(-1)!.id;
+    session.identity = aStaff.key;
+
+    // The page showed nothing outstanding, so its form named no items.
+    const refused = await postForceClose(tableId, { session: sessionId, reason: "Walked out" });
+
+    expect(refused.status).toBe(409);
+    const body = await refused.json();
+    expect(body.error).toMatch(/changed/);
+    expect(body.items).toEqual([{ id: line, summary: `1 × ${harnessItem} for Harness close: placed` }]);
+    expect(body.refresh).toBe(true);
+    expect((await sessionRow(sessionId)).status).toBe("open");
+    expect(await statusOfLine(line)).toBe("placed");
+    const malformed = await postForceClose(tableId, { session: sessionId, item: "x", reason: "Walked out" });
+    expect(malformed.status).toBe(400);
   });
 
   it("a close for a session the page no longer shows is a 409, and one without a session a 400", async () => {
