@@ -117,7 +117,8 @@ main{padding-bottom:104px}
 @media (prefers-reduced-motion:no-preference){.waiter[data-called] .ring{animation:ring 2.4s ease-out 3}}
 @keyframes ring{0%,60%,100%{transform:rotate(0)}10%{transform:rotate(-14deg)}20%{transform:rotate(12deg)}30%{transform:rotate(-8deg)}40%{transform:rotate(4deg)}}
 .said{margin:-4px 16px 16px;padding:10px 12px;border-radius:10px;background:var(--attention-soft);color:var(--attention-ink);font-size:15px;font-weight:600}
-.said:empty,.confirm:empty,.err:empty,.tstate:empty,.inorder:empty{display:none}
+.said:empty{margin:0;padding:0;height:0;overflow:hidden}
+.confirm:empty,.err:empty,.tstate:empty,.inorder:empty{display:none}
 .tracker{margin:0 16px 16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
 .tracker h2{margin:0;font-size:17px;font-weight:600}
 .tstate{margin:8px 0 0;color:var(--ink-2);font-size:15px}
@@ -629,7 +630,7 @@ export const ORDER_SCRIPT = `(() => {
         const named = cart.find((line) => line.id === answer.item) || (gone[0] && gone[0].dataset);
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
-        for (const button of gone) { button.disabled = true; button.textContent = "Sold out"; }
+        for (const button of gone) { button.disabled = true; button.textContent = "Not available"; }
         fail("Sorry, " + (named ? named.name : "that item") + " isn't available right now. It was taken out of your order.");
         // With the cart empty the message is on the page, not in the sheet: bring it into view.
         if (cart.length === 0 && waiterSaid.scrollIntoView) waiterSaid.scrollIntoView({ block: "center" });

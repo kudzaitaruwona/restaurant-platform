@@ -831,7 +831,8 @@ describe("placing the order", () => {
     await page.placeAs("Tariro");
 
     expect(page.rice.disabled).toBe(true);
-    expect(page.rice.textContent).toBe("Sold out");
+    // The server can't say sold out from archived or outside a bundle's window, so the button doesn't claim it (#142).
+    expect(page.rice.textContent).toBe("Not available");
     expect(page.stew.disabled).toBe(false);
     await page.add(page.rice);
     expect(page.cartText()).not.toContain("Rice");
