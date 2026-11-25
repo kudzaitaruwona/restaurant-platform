@@ -592,19 +592,23 @@ async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phon
  * since. The same id with other details is not what was booked, so it is refused,
  * and told what was only under the phone that booked it.
  *
- * Takes the submission's lock before it looks, for the rest of the transaction, so a
- * retry racing the first try waits for it and then sees its booking. A confirm takes
- * it before any other lock, and nobody waiting for it holds one, so it can't be part
- * of a deadlock. The unique key bookings_request_once is what holds, whoever writes.
+ * With `lock`, takes the submission's lock before it looks, for the rest of the
+ * transaction, so a retry racing the first try waits for it and then sees its booking.
+ * A confirm takes it before any other lock, and nobody waiting for it holds one, so it
+ * can't be part of a deadlock. The unique key bookings_request_once is what holds,
+ * whoever writes.
  */
 async function earlierBooking(
   tx: TenantTransaction,
   { restaurantId }: Tenant,
   { request, ...guest }: GuestRequest,
+  { lock }: { lock: boolean },
 ): Promise<EarlierBooking | undefined> {
   if (!request) return undefined;
-  await tx.execute(sql`select pg_advisory_xact_lock(
-    hashtextextended('booking_request:' || ${restaurantId}::text || ':' || ${request}::uuid::text, 0))`);
+  if (lock) {
+    await tx.execute(sql`select pg_advisory_xact_lock(
+      hashtextextended('booking_request:' || ${restaurantId}::text || ':' || ${request}::uuid::text, 0))`);
+  }
   const [row] = await tx
     .select({
       name: bookings.guestName,
@@ -641,9 +645,13 @@ async function earlierBooking(
       };
 }
 
-/** For a retry refused before the confirm (the rate limit, the bot check): reads, and writes nothing. */
-export function findEarlierBooking(tenant: Tenant, guest: GuestRequest) {
-  return withTenant(tenant, (tx) => earlierBooking(tx, tenant, guest)).catch(failed("finding a booking"));
+/**
+ * The same outside a confirm: reads, and writes nothing. Without `lock` it waits for
+ * nobody, for a request the rate limit has refused.
+ */
+export async function findEarlierBooking(tenant: Tenant, guest: GuestRequest, { lock = true } = {}) {
+  if (!guest.request) return undefined;
+  return withTenant(tenant, (tx) => earlierBooking(tx, tenant, guest, { lock })).catch(failed("finding a booking"));
 }
 
 /**
@@ -671,7 +679,7 @@ export async function confirmBooking(
   try {
     return await withTenant(tenant, async (tx) => {
       // First: nothing that has changed since may refuse a retry of a booking made.
-      const earlier = await earlierBooking(tx, tenant, guest);
+      const earlier = await earlierBooking(tx, tenant, guest, { lock: true });
       if (earlier) return earlier;
 
       const read = await readRules(tx, tenant);

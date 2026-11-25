@@ -28,9 +28,10 @@ const refuse = (error: string, status: number, headers?: HeadersInit) =>
   Response.json({ error }, { status, headers });
 
 /**
- * The answer to a retry of a submission that has already booked (#134), though
- * something now refuses to let it book: it wouldn't, so it isn't refused. Costs a
- * request with no id of its own nothing but its parsing.
+ * The answer to a retry the rate limit has refused, if the very submission has already
+ * booked (#134): it books nothing, so it isn't refused. The same id with other details
+ * is. Nobody is limiting these, so it takes no lock and waits for no confirm; a request
+ * with no id costs nothing but its parsing.
  */
 async function answerToRetry(request: Request, slug: string) {
   const form = await readFormWithin(request);
@@ -38,17 +39,18 @@ async function answerToRetry(request: Request, slug: string) {
   const parsed = parseGuestRequest(form);
   if (!parsed.success || !parsed.data.request) return undefined;
   const tenant = await resolvePublicToken("slug", slug);
-  const earlier = tenant && (await findEarlierBooking(tenant, parsed.data));
-  return earlier && answer(earlier);
+  const earlier = tenant && (await findEarlierBooking(tenant, parsed.data, { lock: false }));
+  return earlier?.outcome === "replayed" ? answer(earlier) : undefined;
 }
 
 /**
  * A guest's confirm (spec 04). The slug is the only tenant input: nothing else in
  * the request can name a restaurant. This is a public write with no session, so
  * what it costs to ask is bounded before anything is spent on the answer, in this
- * order: the size the request declares, the rate limit, and only then the body,
- * the restaurant and the bot check. A retry of a booking already made passes the rate
- * limit and the bot check, and isn't counted again: it books nothing (#134).
+ * order: the size the request declares, the rate limit, and only then the restaurant,
+ * the body, the booking its id has already made and the bot check. A retry of that
+ * booking, every detail the same, passes the rate limit and the bot check, and isn't
+ * counted again: it books nothing (#134). With other details it counts like any other.
  */
 export async function POST(request: Request, { params }: RouteContext<"/api/r/[slug]/book">) {
   const length = declaredLength(request.headers);
@@ -93,16 +95,24 @@ export async function POST(request: Request, { params }: RouteContext<"/api/r/[s
   const parsed = parseGuestRequest(form);
   if (!parsed.success) return refuse(parsed.message, 400);
 
-  const token = form.get(TURNSTILE_FIELD);
-  const human = await passesBotCheck(
-    { token: typeof token === "string" ? token : undefined, ip },
-    { secret: env("TURNSTILE_SECRET_KEY"), production },
-  );
-  const result = human
-    ? await confirmBooking(tenant, parsed.data)
-    : await findEarlierBooking(tenant, parsed.data);
-  if (!result) return refuse(botCheckMessage, 403);
-  if (result.outcome === "replayed" || result.outcome === "already_booked") await giveBack();
+  // Before the bot check, or repeating one real id would have Cloudflare asked each
+  // time and no count kept. A retry racing its original waits for it here, rather than
+  // have Cloudflare asked about a token the original may have spent.
+  let result: ConfirmOutcome | undefined = await findEarlierBooking(tenant, parsed.data);
+  if (!result) {
+    const token = form.get(TURNSTILE_FIELD);
+    const human = await passesBotCheck(
+      { token: typeof token === "string" ? token : undefined, ip },
+      { secret: env("TURNSTILE_SECRET_KEY"), production },
+    );
+    if (human) result = await confirmBooking(tenant, parsed.data);
+    else {
+      // Its original may have booked while Cloudflare was being asked.
+      result = await findEarlierBooking(tenant, parsed.data);
+      if (result?.outcome !== "replayed") return refuse(botCheckMessage, 403);
+    }
+  }
+  if (result.outcome === "replayed") await giveBack();
   return answer(result);
 }
 
