@@ -19,7 +19,9 @@ import {
 } from "@/lib/booking-engine";
 import {
   dbErrorOf,
-  E164,
+  countryCodeMessage,
+  isCountryCode,
+  refinePhone,
   firstTableToTake,
   isInsideClosure,
   MAX_HOLD_MS,
@@ -69,7 +71,7 @@ const staffRequest = z
       .min(1, messages.name)
       .max(100, messages.name)
       .refine(noNul, messages.name),
-    countryCode: z.string(messages.phone).max(8, messages.phone).default("+263"),
+    countryCode: z.string(messages.phone).max(8, messages.phone).refine(isCountryCode, countryCodeMessage).default("+263"),
     // Optional: a booking taken in person or for a walk-up has none.
     phone: z.string(messages.phone).max(40, messages.phone).default(""),
     note: z.string(messages.note).trim().max(200, messages.note).refine(noNul, messages.note).optional(),
@@ -87,7 +89,7 @@ const staffRequest = z
       whatsappOptIn: e164 !== null && whatsapp === "on",
     };
   })
-  .refine(({ phone }) => phone === null || E164.test(phone), messages.phone);
+  .superRefine(({ phone }, ctx) => refinePhone(phone, ctx));
 
 export type StaffRequest = z.output<typeof staffRequest>;
 
