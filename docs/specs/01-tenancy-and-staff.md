@@ -48,6 +48,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Staff auth (implemented last, per S-25)
 - Passwordless sign-in (S-27): a magic link, an email one-time code, or Sign in with Google. No passwords are stored, so there is no password reset.
+- The sign-in form says so when a send or Google start fails (a bad address, a limit, or "couldn't send"), checks the address before asking for a code as it does for a link, and offers "Send a new link/code" on the waiting step after a 30-second pause, under the same server limits (S-30). A code that has had three wrong tries says it is used up and to request a new one. None of these words depends on whether the email has an account.
 - Sign-in only succeeds for an email that already belongs to an active staff record (or a platform admin). There is no self sign-up, including through Google.
 - Session cookie: httpOnly, secure, SameSite=Lax. Sessions expire after 30 days idle *(proposed)*, because restaurant tablets stay logged in.
 - Deactivating a staff member (`active = false`) kills their sessions immediately.
