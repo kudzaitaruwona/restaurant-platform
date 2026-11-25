@@ -140,6 +140,7 @@ main{padding-bottom:104px}
 @keyframes up{from{translate:0 32px}}
 .add{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px 0 10px;border:1px solid var(--brand);border-radius:10px;background:var(--surface);color:var(--brand);font-size:15px;font-weight:600;cursor:pointer;transition:background-color .15s ease-out;touch-action:manipulation}
 .add:active{background:var(--surface-2);transform:translateY(1px)}
+.add:disabled{border-color:var(--line);color:var(--ink-2);cursor:default;transform:none}
 .inorder{--i:var(--i-check);display:inline-flex;align-items:center;gap:4px;margin-top:8px;font-size:13px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
 .dock{position:fixed;inset:auto 0 0;z-index:30;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);border-top:1px solid var(--line);box-shadow:0 -8px 24px -16px rgb(var(--shadow)/.3)}
 .dock:has(>[hidden]),.order:not([hidden])~.dock{display:none}
@@ -408,7 +409,7 @@ export const ORDER_SCRIPT = `(() => {
 
   document.addEventListener("click", async (event) => {
     const button = event.target instanceof Element && event.target.closest("button[data-item]");
-    if (!button) return;
+    if (!button || button.disabled) return;
     const line = cart.find((other) => other.id === button.dataset.item);
     if (line) line.quantity = Math.min(20, line.quantity + 1);
     else if (cart.length >= 20) return fail("An order can have up to 20 different items.");
@@ -499,8 +500,16 @@ export const ORDER_SCRIPT = `(() => {
         keepCart();
       }
       if (answer.code === "unavailable") {
+        // The item is sold out: out of the cart, and its Add can't be pressed on this open page (#87).
+        const gone = adds.filter((button) => button.dataset.item === answer.item);
+        const named = cart.find((line) => line.id === answer.item) || (gone[0] && gone[0].dataset);
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
+        for (const button of gone) { button.disabled = true; button.textContent = "Sold out"; }
+        fail("Sorry, " + (named ? named.name : "that item") + " isn't available right now. It was taken out of your order.");
+        // With the cart empty the message is on the page, not in the sheet: bring it into view.
+        if (cart.length === 0 && waiterSaid.scrollIntoView) waiterSaid.scrollIntoView({ block: "center" });
+        return;
       }
       fail(answer.error || "That didn't go through. Try again.");
     } catch {
