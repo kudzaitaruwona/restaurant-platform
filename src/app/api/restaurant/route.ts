@@ -5,6 +5,7 @@ import {
   parseRestaurantSettings,
   updateRestaurantSettings,
 } from "@/lib/restaurant-settings";
+import { liftedMessage } from "@/lib/special-price-refusal";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Saves the settings form on /dashboard/settings. Owner only (S-26). */
@@ -22,6 +23,9 @@ export async function POST(request: NextRequest) {
   const outcome = await updateRestaurantSettings(tenant, settings.data);
   if (outcome === "invalid_timezone") {
     return Response.json({ error: invalidTimezoneMessage, field: "timezone" }, { status: 400 });
+  }
+  if (typeof outcome === "object") {
+    return Response.json({ error: liftedMessage(outcome.above), field: "currencyMode" }, { status: 400 });
   }
   // The form says what the save did, so it must be told.
   if (outcome === "saved_booking_off" && request.headers.has(FORM_FETCH_HEADER)) {

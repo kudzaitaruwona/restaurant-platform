@@ -1,8 +1,9 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
-import { confirmationNeeded } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
 import { formSaved } from "@/lib/form-response";
 import { bundleDescriptionMessage, itemWarnings, parseItemEdit, updateMenuItem } from "@/lib/menu";
+import { liftedMessage } from "@/lib/special-price-refusal";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Edits an item, from /dashboard/menu. Owner only (S-26). */
@@ -19,7 +20,9 @@ export async function POST(
   if (!item.success) {
     return Response.json({ error: item.message }, { status: 400 });
   }
-  const ask = confirmationNeeded(await itemWarnings(tenant, item.data, itemId), form);
+  const ask = await confirmationNeeded(request, form, "/dashboard/menu", () =>
+    itemWarnings(tenant, item.data, itemId),
+  );
   if (ask) return ask;
 
   const result = await updateMenuItem(tenant, itemId, item.data);
@@ -32,6 +35,9 @@ export async function POST(
       { error: "Enter a USD price, or give the item a ZiG price." },
       { status: 400 },
     );
+  }
+  if (result !== "saved") {
+    return Response.json({ error: liftedMessage(result.above) }, { status: 400 });
   }
   return formSaved(request, "/dashboard/menu");
 }

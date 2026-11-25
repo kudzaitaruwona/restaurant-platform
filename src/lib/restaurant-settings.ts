@@ -4,6 +4,7 @@ import { z } from "zod";
 import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
 import { DEFAULT_COUNTRY_CODE } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
+import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
@@ -147,13 +148,15 @@ export async function getRestaurantSettings(
  * in JavaScript and in Postgres, where `AT TIME ZONE` would otherwise fail on
  * it later, as restaurant creation already insists. One that is unchanged is
  * never refused, whatever it is: the form sends it back with every save, and a
- * name that has since fallen out of either list must not block other edits.
+ * name that has since fallen out of either list must not block other edits. A
+ * currency mode that would show a special above its normal price is refused by
+ * Postgres (S-45), and nothing is saved: `above` is which specials.
  */
 export async function updateRestaurantSettings(
   ctx: Tenant & Pick<TenantContext, "platformAdminId">,
   settings: RestaurantSettings,
-): Promise<"saved" | "saved_booking_off" | "invalid_timezone"> {
-  const outcome = await withTenant(ctx, async (tx) => {
+): Promise<"saved" | "saved_booking_off" | "invalid_timezone" | { above: SpecialAbove[] }> {
+  const saving = withTenant(ctx, async (tx) => {
     const [stored] = await tx
       .select({ timezone: restaurants.timezone })
       .from(restaurants)
@@ -185,7 +188,12 @@ export async function updateRestaurantSettings(
     // Clearing the contact phone switches online booking off in Postgres.
     return wasOn && !(await bookingOn()) ? ("saved_booking_off" as const) : ("saved" as const);
   });
+  const outcome = await saving.catch((error: unknown) => {
+    const above = specialsAbove(error);
+    if (above) return { above };
+    throw error;
+  });
   // The public menu page shows the restaurant's name.
-  if (outcome !== "invalid_timezone") revalidateMenu(ctx);
+  if (outcome === "saved" || outcome === "saved_booking_off") revalidateMenu(ctx);
   return outcome;
 }

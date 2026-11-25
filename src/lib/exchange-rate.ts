@@ -4,6 +4,7 @@ import { z } from "zod";
 import { exchangeRates } from "@/db/schema";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { priceProblem, rateShape } from "@/lib/price-input";
+import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
 import { recordAudit } from "@/lib/tenant/audit";
 import {
   type TenantContext,
@@ -62,25 +63,39 @@ export async function latestRate(
 export const getCurrentRate = (ctx: Pick<TenantContext, "restaurantId">) =>
   withTenant(ctx, (tx) => latestRate(tx, ctx.restaurantId));
 
-/** The history's newest row, and the audit entry that goes with it. */
-export async function setExchangeRate(ctx: TenantContext, rate: NewExchangeRate) {
-  await withTenant(ctx, async (tx) => {
-    const [added] = await tx
-      .insert(exchangeRates)
-      .values({
-        restaurantId: ctx.restaurantId,
-        usdToZig: rate.usdToZig,
-        setBy: ctx.staffId,
-      })
-      .returning({ id: exchangeRates.id });
-    await recordAudit(tx, ctx, {
-      action: "exchange_rate.set",
-      entityType: "exchange_rate",
-      entityId: added.id,
-      details: { usdToZig: rate.usdToZig },
+/**
+ * The history's newest row, and the audit entry that goes with it. A rate that would
+ * leave a special above its item's normal price is refused by Postgres (S-45), and
+ * neither is written: `above` is which specials.
+ */
+export async function setExchangeRate(
+  ctx: TenantContext,
+  rate: NewExchangeRate,
+): Promise<"saved" | { above: SpecialAbove[] }> {
+  try {
+    await withTenant(ctx, async (tx) => {
+      const [added] = await tx
+        .insert(exchangeRates)
+        .values({
+          restaurantId: ctx.restaurantId,
+          usdToZig: rate.usdToZig,
+          setBy: ctx.staffId,
+        })
+        .returning({ id: exchangeRates.id });
+      await recordAudit(tx, ctx, {
+        action: "exchange_rate.set",
+        entityType: "exchange_rate",
+        entityId: added.id,
+        details: { usdToZig: rate.usdToZig },
+      });
     });
-  });
+  } catch (error) {
+    const above = specialsAbove(error);
+    if (above) return { above };
+    throw error;
+  }
   revalidateMenu(ctx);
+  return "saved";
 }
 
 /** A new rate more than half again the old one, or under half of it, asks first. */

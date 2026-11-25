@@ -110,6 +110,10 @@ specials
   -- needs btree_gist (migration 0000; Neon supports it). A null bound is unbounded in tstzrange, which is what
   -- "no end date" means, and "no start date" on a row not written through the form; a special that is off holds no time; one that ends where the next
   -- begins does not overlap. Turning a special back on re-runs the check, so it can be refused too.
+  -- S-45 (proposed): specials_not_above_normal, triggers in migration 0053 (Drizzle can't model them) on specials, menu_items (prices),
+  -- exchange_rates and restaurants (currency_mode, rounding steps). A write that would leave an active special, not over, of a live item above
+  -- the item's normal price in a currency the menu shows is refused. The rule is special_above_normal() (spec 02 has it in words). All four
+  -- meet on a per-restaurant advisory lock, so two writes at once can't pass each other.
 
 exchange_rates                              -- history; the current rate is the latest row
   id, restaurant_id
@@ -259,7 +263,7 @@ bookings
   -- It fires on insert only. A move leaves the count as it was, so it needs nothing. A reopen would add a booking the rule never
   -- saw, but nothing reopens one (spec 04: nothing leads out of cancelled): whatever adds that must decide whether the limit applies.
   -- (proposed, #134) UNIQUE (restaurant_id, request_id), bookings_request_once: a submission books once, whatever becomes of the
-  -- booking. bookings_request_frozen (BEFORE UPDATE) refuses any change to request_id, whoever asks (migration booking_request_id).
+  -- booking. bookings_request_frozen (BEFORE UPDATE) refuses any change to request_id, whoever asks (migration 0054).
   -- A confirm first takes an advisory lock per (restaurant, request_id), before the phone's, so a retry waits for the original.
   -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
   -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
