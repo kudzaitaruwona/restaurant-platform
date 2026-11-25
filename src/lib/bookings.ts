@@ -281,12 +281,14 @@ export function getBookingPage(
 
 // --- the guest's request ----------------------------------------------------
 
-const DEFAULT_COUNTRY_CODE = "+263";
+export const DEFAULT_COUNTRY_CODE = "+263";
 
 const messages = {
   choice: "That booking request wasn't complete. Choose a time again.",
   name: "Enter your name, up to 100 characters.",
   phone: "Enter a WhatsApp number we can reach you on.",
+  phoneShort: "That number looks too short. Check the digits and the country code.",
+  countryCode: "Enter the country code with a +, like +263.",
   note: "Keep the note to 200 characters.",
   consent: "Tick the box so we can send your confirmation and reminder on WhatsApp.",
 };
@@ -294,19 +296,51 @@ const messages = {
 // Postgres can't store a NUL byte in text, so one is a refusal here, not a 500.
 export const noNul = (value: string) => !value.includes("\0");
 
+/** The digits of a country code typed as 263, +263 or 00263; null when it isn't one. */
+function codeDigits(countryCode: string) {
+  const match = /^(?:\+|00)?([1-9][0-9]{0,3})$/.exec(countryCode.replace(/[\s().-]/g, ""));
+  return match ? match[1] : null;
+}
+
+/** Whether the country-code box holds a country code, in any of the forms people type it. */
+export const isCountryCode = (countryCode: string) => codeDigits(countryCode) !== null;
+export const countryCodeMessage = messages.countryCode;
+
 /**
  * The number as E.164. A local number's leading 0 is the trunk prefix, not part
- * of it, and a number typed with its own + already has its country code *(proposed)*.
+ * of it. A number typed with its own + or 00 keeps its own country code, and one
+ * that already starts with the chosen code (263…, 0263…) isn't given it twice
+ * *(proposed, #88)*. The code box may hold 263, +263 or 00263.
  */
 export function toE164(countryCode: string, number: string) {
-  const digits = number.replace(/[\s().-]/g, "");
-  return digits.startsWith("+")
-    ? digits
-    : `${countryCode.trim()}${digits.replace(/^0+/, "")}`;
+  const typed = number.replace(/[\s().-]/g, "");
+  if (typed.startsWith("+")) return typed;
+  if (typed.startsWith("00")) return `+${typed.slice(2)}`;
+  const code = codeDigits(countryCode);
+  const national = typed.replace(/^0+/, "");
+  if (code === null) return `${countryCode.trim()}${national}`;
+  return national.startsWith(code) ? `+${national}` : `+${code}${national}`;
 }
 
 /** What bookings_guest_phone_e164 accepts. */
 export const E164 = /^[+][1-9][0-9]{7,14}$/;
+
+/**
+ * Why an E.164 number is refused, or null. Shorter than any real mobile number is
+ * refused, and Zimbabwe's, being the default, is held to its length *(proposed, #88)*.
+ */
+export function phoneProblem(phone: string): "phone" | "phoneShort" | null {
+  if (!E164.test(phone)) return "phone";
+  const digits = phone.length - 1;
+  if (phone.startsWith("+263")) return digits === 11 || digits === 12 ? null : "phoneShort";
+  return digits < 9 ? "phoneShort" : null;
+}
+
+/** For a zod refinement: reports phoneProblem in the booking forms' words. */
+export function refinePhone(phone: string | null, ctx: z.RefinementCtx) {
+  const problem = phone === null ? null : phoneProblem(phone);
+  if (problem) ctx.addIssue({ code: "custom", message: messages[problem] });
+}
 
 const guestRequest = z
   .object({
@@ -325,7 +359,7 @@ const guestRequest = z
       .refine(noNul, messages.name),
     // Capped before anything reads them, so no pattern ever runs on a long string.
     // A country code is a + and at most four digits (E.164, ITU-T E.164).
-    countryCode: z.string(messages.phone).max(8, messages.phone).default(DEFAULT_COUNTRY_CODE),
+    countryCode: z.string(messages.phone).max(8, messages.phone).refine(isCountryCode, messages.countryCode).default(DEFAULT_COUNTRY_CODE),
     // 15 digits at most, plus the spaces, dashes and brackets people type.
     phone: z.string(messages.phone).max(40, messages.phone),
     note: z
@@ -342,7 +376,7 @@ const guestRequest = z
     note: note || null,
     whatsappOptIn: consent === "on",
   }))
-  .refine(({ phone }) => E164.test(phone), messages.phone);
+  .superRefine(({ phone }, ctx) => refinePhone(phone, ctx));
 
 export type GuestRequest = z.output<typeof guestRequest>;
 
