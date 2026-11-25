@@ -100,12 +100,11 @@ export const idleSessions = (tx: Transaction, now: Date) =>
 
 /**
  * The close of these sessions, each still only if it is due. Exported so a test
- * can EXPLAIN it. The ids are also listed on their own: when the pairs share a
- * restaurant, Postgres folds `(restaurant_id, id) in (…)` into `restaurant_id =
- * … and (id = … or id = …)`, and on stale statistics it served that from
- * table_sessions_restaurant_id_id_unique on restaurant_id only, reading every
- * session the restaurant ever had (EXPLAIN-tested). With `id = any(…)` beside it,
- * every index it can use is keyed on the ids.
+ * can EXPLAIN it. The pairs must not be an index condition: when the pairs share a
+ * restaurant, Postgres folds a plain `(restaurant_id, id) in (…)` into
+ * `restaurant_id = …`, and on stale statistics served the close from an index on
+ * that, reading every session the restaurant ever had (EXPLAIN-tested). The
+ * `offset 0` keeps the pair check a filter on the rows the ids found.
  */
 export const closing = (tx: Transaction, rows: readonly Due[], now: Date) =>
   tx
@@ -117,10 +116,14 @@ export const closing = (tx: Transaction, rows: readonly Due[], now: Date) =>
           tableSessions.id,
           rows.map(({ id }) => id),
         ),
-        sql`(${tableSessions.restaurantId}, ${tableSessions.id}) in (${sql.join(
-          rows.map(({ restaurantId, id }) => sql`(${restaurantId}::uuid, ${id}::uuid)`),
-          sql`, `,
-        )})`,
+        sql`exists (
+          select from (values ${sql.join(
+            rows.map(({ restaurantId, id }) => sql`(${restaurantId}::uuid, ${id}::uuid)`),
+            sql`, `,
+          )}) as pair (restaurant_id, id)
+          where pair.restaurant_id = ${tableSessions.restaurantId} and pair.id = ${tableSessions.id}
+          offset 0
+        )`,
         due(now),
       ),
     );

@@ -313,7 +313,9 @@ describe("reopening, at a table with months of history", () => {
   // Sessions are never deleted, so a busy table piles them up. Neither what the
   // detail offers nor the reopen's "has a party opened this table since" may
   // read that table's past, as app_tenant, under RLS, on statistics as they
-  // stand (before autovacuum has looked at the history) or fresh. The history is
+  // stand (before autovacuum has looked at the history), from an analyze that ran
+  // before the history committed, or fresh. The middle one is the state a concurrent
+  // autovacuum leaves, and is made here so it isn't left to chance. The history is
   // on the same restaurant and table as the session under test. Run in a
   // transaction that is rolled back.
   it("reads the table's latest session and the one it reopens, and none of the history", async () => {
@@ -328,7 +330,9 @@ describe("reopening, at a table with months of history", () => {
           insert into table_sessions (restaurant_id, table_id, status, opened_at, last_activity_at, closed_at, close_reason)
           select ${r.restaurantId}, ${r.tableId}, 'closed', o, o + interval '40 minutes', o + interval '45 minutes', 'staff_clear'
           from generate_series(1, 2000) g, lateral (select now() - interval '30 days' + g * interval '20 minutes' as o) t`);
-        for (const stats of ["as they stand", "analyzed"]) {
+        for (const stats of ["as they stand", "analyzed without the history", "analyzed"]) {
+          // Another connection, which can't see this transaction's history.
+          if (stats === "analyzed without the history") await owner.db.execute(sql`analyze table_sessions`);
           if (stats === "analyzed") await tx.execute(sql`analyze table_sessions`);
           await tx.execute(sql`savepoint measure`);
           await tx.execute(sql`set local role app_tenant`);
@@ -346,14 +350,14 @@ describe("reopening, at a table with months of history", () => {
         tx.rollback();
       })
       .catch((error: unknown) => {
-        if (measured.length < 2) throw error;
+        if (measured.length < 3) throw error;
       });
 
     for (const { stats, last, offer, lookup, reopen } of measured) {
       // Upper bounds, not a pinned plan. Walking the table's history is 2,000 reads.
       expect(last, stats).toBe(id);
       // The latest entry of table_sessions_table_opened, then that session by its key: a
-      // handful of entries, counting the versions the first round's rolled-back reopen
+      // handful of entries, counting the versions the earlier rounds' rolled-back reopens
       // left in the indexes.
       expect(offer, stats).toBeGreaterThan(0);
       expect(offer, stats).toBeLessThanOrEqual(10);

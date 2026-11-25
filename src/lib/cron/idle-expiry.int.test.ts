@@ -266,7 +266,8 @@ const nodesOf = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).fla
 /** The rows a plan read from a table, kept or filtered out, over every loop (as closing.int.test.ts counts). */
 const rowsRead = (plan: PlanNode, table: string) =>
   nodesOf(plan)
-    .filter((node) => node["Relation Name"] === table)
+    // Not the UPDATE's own node: it reads nothing, and its children are counted themselves.
+    .filter((node) => node["Relation Name"] === table && node["Node Type"] !== "ModifyTable")
     .reduce((sum, node) => {
       const kept =
         node["Actual Rows"] + (node["Rows Removed by Filter"] ?? 0) + (node["Rows Removed by Index Recheck"] ?? 0);
@@ -319,8 +320,8 @@ describe("idle expiry, across restaurants with months of history", () => {
   // runs against it: a probe of that restaurant's orders or lines, rather than
   // the session's, would read thousands of rows. Both the batch's SELECT and the
   // close's UPDATE are EXPLAINed, first on the statistics as they stand (the plan
-  // a cron run actually gets between autovacuum's analyzes), then after an
-  // ANALYZE that sees the history.
+  // a cron run actually gets between autovacuum's analyzes), then after an ANALYZE
+  // that ran before the history committed, then after one that sees it.
   //
   // Upper bounds, not a pinned plan. The test database is shared and never
   // emptied, so the live rows every plan may read (the open sessions, their
@@ -357,7 +358,11 @@ describe("idle expiry, across restaurants with months of history", () => {
                  where s.status = 'open') + (select count(*)::int from order_items where in_play) as order_items`)
         ).rows;
 
-        for (const stats of ["as they stand", "analyzed"]) {
+        for (const stats of ["as they stand", "analyzed without the history", "analyzed"]) {
+          // Another connection, which can't see this transaction's history: what a concurrent autovacuum leaves.
+          if (stats === "analyzed without the history") {
+            await owner.db.execute(sql`analyze order_items, orders, table_sessions`);
+          }
           if (stats === "analyzed") await tx.execute(sql`analyze order_items, orders, table_sessions`);
           // The UPDATE runs, so it runs in a savepoint and is undone before the next EXPLAIN.
           await tx.execute(sql`savepoint explained`);
@@ -377,7 +382,7 @@ describe("idle expiry, across restaurants with months of history", () => {
         tx.rollback();
       })
       .catch((error: unknown) => {
-        if (found.length < 4) throw error;
+        if (found.length < 6) throw error;
       });
 
     // The close got the answer right: the delivered session closed, the blocked one stayed open.
