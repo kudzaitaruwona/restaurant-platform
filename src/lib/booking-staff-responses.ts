@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 import type { AddOutcome, MoveOutcome } from "./booking-staff";
-import { formSaved } from "./form-response";
+import { dateLabel } from "./booking-engine";
+import { bookingHref } from "./booking-closures";
+import { FORM_FETCH_HEADER, formSaved } from "./form-response";
 
 const statusWords = {
   confirmed: "confirmed",
@@ -12,8 +14,13 @@ const statusWords = {
 
 const refuse = (error: string, status: number) => Response.json({ error }, { status });
 
-/** Answers the add-booking form. A refusal says what to change, never a 500. */
-export function addBookingResponse(outcome: AddOutcome, request: Request) {
+/**
+ * Answers the add-booking form. A refusal says what to change, never a 500. A save
+ * says what was booked (day, time, table), links to the booking's row on the day
+ * view, and warns when a WhatsApp tick was dropped for want of a number (ActionForm
+ * shows `saved`). A plain post, with no JavaScript to show it, goes to the day.
+ */
+export function addBookingResponse(outcome: AddOutcome, request: Request, consentDropped = false) {
   switch (outcome.outcome) {
     case "table_not_found":
       notFound();
@@ -32,7 +39,20 @@ export function addBookingResponse(outcome: AddOutcome, request: Request) {
     case "hold_too_long":
       return refuse("That booking would hold the table for too long. Check the sitting length in the settings.", 409);
     case "added":
-      return formSaved(request, `/dashboard/bookings?date=${outcome.date}`);
+      if (!request.headers.has(FORM_FETCH_HEADER)) return formSaved(request, `/dashboard/bookings?date=${outcome.date}`);
+      return Response.json({
+        saved: {
+          message: `Booking added: ${dateLabel(outcome.date)}, ${outcome.time}, ${outcome.table}.`,
+          href: bookingHref(outcome.id, outcome.date),
+          linkLabel: "View booking",
+          ...(consentDropped
+            ? {
+                warning:
+                  "WhatsApp consent was not saved: there is no phone number, so the guest will get no WhatsApp messages.",
+              }
+            : {}),
+        },
+      });
   }
 }
 

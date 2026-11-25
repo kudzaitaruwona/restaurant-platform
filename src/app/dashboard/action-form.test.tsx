@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ActionForm, confirmationOf, refusalFrom } from "./action-form";
+import { ActionForm, confirmationOf, refusalFrom, savedFrom } from "./action-form";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
 
@@ -71,5 +71,27 @@ describe("a save the server asks about first (issue #112)", () => {
   it("is an ordinary refusal when there is nothing to confirm", async () => {
     const refusal = await refusalFrom(Response.json({ error: "No." }, { status: 409 }));
     expect(refusal).toEqual({ message: "No.", bookings: [], warnings: [] });
+  });
+});
+
+describe("a save that says more than a 204", () => {
+  it("reads the message, a dashboard link and a warning from a 200", async () => {
+    const saved = await savedFrom(
+      Response.json({
+        saved: { message: "Booking added.", href: "/dashboard/bookings?date=2026-12-01#booking-a", linkLabel: "View booking", warning: "No phone." },
+      }),
+    );
+    expect(saved).toEqual({
+      message: "Booking added.",
+      href: "/dashboard/bookings?date=2026-12-01#booking-a",
+      linkLabel: "View booking",
+      warning: "No phone.",
+    });
+  });
+
+  it("drops a link that leaves the dashboard, and says nothing for a 204 or a body that isn't one", async () => {
+    expect(await savedFrom(Response.json({ saved: { message: "Done.", href: "https://evil.example/" } }))).toEqual({ message: "Done." });
+    expect(await savedFrom(new Response(null, { status: 204 }))).toBeUndefined();
+    expect(await savedFrom(Response.json({ ok: true }))).toBeUndefined();
   });
 });
