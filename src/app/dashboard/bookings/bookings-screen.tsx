@@ -117,7 +117,7 @@ export async function BookingsScreen({
               {longDate(day.date, day.today)}
             </h2>
             {day.isToday && (
-              <span className="inline-flex h-6 items-center rounded-full bg-brand-soft px-2.5 text-caption font-semibold text-ink md:h-7 md:px-3">
+              <span className="inline-flex h-6 shrink-0 items-center rounded-full bg-brand-soft px-2.5 text-caption font-semibold whitespace-nowrap text-ink md:h-7 md:px-3">
                 Today
               </span>
             )}

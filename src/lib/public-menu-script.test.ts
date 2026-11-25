@@ -16,7 +16,15 @@ class FakeElement {
   hidden = false;
   value = "";
   type = "";
-  disabled = false;
+  private off = false;
+  get disabled() {
+    return this.off;
+  }
+  /** As a browser does: a disabled control can't keep focus, which falls out to the page. */
+  set disabled(value: boolean) {
+    this.off = value;
+    if (value && FakeElement.active === this) FakeElement.active = null;
+  }
   maxLength = 0;
   placeholder = "";
   dataset: Record<string, string> = {};
@@ -106,6 +114,9 @@ async function loadPage(
     orderReply: undefined as Reply | undefined,
     /** While true, an order is sent and no answer comes back. */
     loseOrderReply: false,
+    /** While true, an order waits for its answer until `answerOrder()` is called. */
+    holdOrder: false,
+    heldOrder: [] as (() => void)[],
     waiterReply: undefined as Reply | undefined,
     /** Answers to the next scans, in turn: a reply, "abort" for one that fails, or "hang" for one that never answers. */
     joinReplies,
@@ -236,6 +247,7 @@ async function loadPage(
       if (state.holdPolls) await new Promise<void>((resolve) => state.held.push(resolve));
       return { ok: true, status: 200, json: async () => feed };
     }
+    if (state.holdOrder) await new Promise<void>((resolve) => state.heldOrder.push(resolve));
     if (state.loseOrderReply) throw new TypeError("Failed to fetch");
     const reply = state.orderReply ?? {
       status: 201,
@@ -359,6 +371,11 @@ async function loadPage(
     },
     async answerCall() {
       state.heldWaiter.splice(0).forEach((resolve) => resolve());
+      await settle();
+      await settle();
+    },
+    async answerOrder() {
+      state.heldOrder.splice(0).forEach((resolve) => resolve());
       await settle();
       await settle();
     },
@@ -970,6 +987,76 @@ describe("placing the order", () => {
     expect(said.scrolledTo).toBe(1);
   });
 
+  describe("keeps focus in the sheet when the order doesn't go through (#119)", () => {
+    /** Place order pressed, as a keyboard or a mouse does: it has focus when the order is sent. */
+    async function pressed(act: (page: Awaited<ReturnType<typeof loadPage>>) => void) {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      await page.add(page.rice);
+      page.open.dispatch("click");
+      act(page);
+      page.place.focus();
+      page.state.holdOrder = true;
+      page.name.value = "Tariro";
+      // Not awaited: the order waits for its answer.
+      void page.form.dispatch("submit");
+      await settle();
+      return page;
+    }
+
+    it.each<[string, (page: Awaited<ReturnType<typeof loadPage>>) => void]>([
+      [
+        "a 409 for one dish of several",
+        (page) => void (page.state.orderReply = {
+          status: 409,
+          json: { error: "Sorry, that item isn't available right now.", code: "unavailable", item: "item-rice" },
+        }),
+      ],
+      ["a 5xx", (page) => void (page.state.orderReply = { status: 503, json: {} })],
+      ["a request that never arrives", (page) => void (page.state.loseOrderReply = true)],
+    ])("after %s", async (_, act) => {
+      const page = await pressed(act);
+      // While it is sent the button is disabled, so focus is on nothing.
+      expect(page.focused()).toBeNull();
+
+      await page.answerOrder();
+
+      expect(page.form.hidden).toBe(false);
+      expect(page.error.textContent).not.toBe("");
+      expect(page.focused()).toBe(page.place);
+    });
+
+    it("leaves focus where the guest has moved it meanwhile", async () => {
+      const page = await pressed((sheet) => void (sheet.state.loseOrderReply = true));
+      page.name.focus();
+
+      await page.answerOrder();
+
+      expect(page.focused()).toBe(page.name);
+    });
+
+    it("leaves focus alone when the answer closes the sheet", async () => {
+      const page = await pressed(() => {});
+
+      await page.answerOrder();
+
+      expect(page.form.hidden).toBe(true);
+      expect(page.place.focusCount).toBe(1);
+    });
+
+    it("doesn't pull focus into a sheet it wasn't in", async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      page.state.orderReply = { status: 503, json: {} };
+      page.open.dispatch("click");
+      page.waiter.focus();
+
+      await page.placeAs("Tariro");
+
+      expect(page.place.focusCount).toBe(0);
+    });
+  });
+
   it("rejoins the table's session when the order says it has changed", async () => {
     const page = await loadPage(new Map(), "session-1");
     await page.add(page.stew);
@@ -1298,6 +1385,24 @@ describe("the order tracker", () => {
     expect(text).toContain("Placed");
     expect(text).toContain("1 × Rice");
     expect(text).toContain("Farai");
+  });
+
+  it("keeps a 200-character unbroken dish, note and name whole, in the column that wraps and apart from the status (#94)", async () => {
+    const [dish, note, customer] = ["D", "N", "C"].map((letter) => letter.repeat(200));
+    const feed = { session: "session-1", items: [item({ name: dish, note, customer })] };
+
+    const page = await loadPage(new Map(), "session-1", { feed });
+
+    const [row] = page.trackerList.children;
+    const [text, pill] = row.children;
+    expect(row.children).toHaveLength(2);
+    // route.int.test.ts holds .tw to wrapping; the pill beside it keeps its width.
+    expect(text.className).toBe("tw");
+    expect(text.textContent).toContain(dish);
+    expect(text.textContent).toContain(`Note: ${note}`);
+    expect(text.textContent).toContain(customer);
+    expect(pill.className).toBe("pill pill-placed");
+    expect(pill.textContent).toBe("Placed");
   });
 
   it("polls an uncached endpoint every 5 seconds and shows what changed, without a reload", async () => {

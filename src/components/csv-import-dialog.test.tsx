@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { CsvImportDialog, importLabel, ReportTable } from "./csv-import-dialog";
+import { CsvImportDialog, ImportBody, importLabel, ReportCards, ReportRows, ReportTable } from "./csv-import-dialog";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
 
@@ -81,17 +81,22 @@ describe("the report table", () => {
   });
 });
 
-describe("the report on a phone", () => {
-  const html = renderToStaticMarkup(<ReportTable report={report} done={false} />);
-  const cards = html.slice(0, html.indexOf("<table") > 0 ? html.indexOf('<div class="hidden') : 0);
+describe("the report table's line numbers", () => {
+  it("never break: neither the word nor a number is split to make room for the values (#94)", () => {
+    const html = renderToStaticMarkup(<ReportTable report={report} done={false} />);
+    expect(html).toMatch(/<th[^>]*class="[^"]*whitespace-nowrap[^"]*"[^>]*>Line<\/th>/);
+    expect(html).toMatch(/<td[^>]*class="[^"]*whitespace-nowrap[^"]*"[^>]*>3<\/td>/);
+  });
+});
 
-  it("lists each row as a card shown below 768px, with the reason inside it", () => {
-    expect(html).toMatch(/<ul[^>]*class="[^"]*md:hidden/);
-    expect(html).toMatch(/<div class="hidden[^"]*md:block/);
-    // The skipped row's reason is in the card, not only in the table's last column.
+describe("the report on a phone", () => {
+  const cards = renderToStaticMarkup(<ReportCards report={report} done={false} />);
+
+  it("lists each row as a card, with the reason inside it", () => {
     expect(cards).toContain("Skipped");
     expect(cards).toContain("Enter how many people the table seats, from 1 to 100.");
     expect(cards).toContain("Line 3");
+    expect(cards).not.toContain("<table");
   });
 
   it("puts a row's outcome before its values, so it is read first", () => {
@@ -104,6 +109,13 @@ describe("the report on a phone", () => {
   });
 });
 
+describe("the report's rows", () => {
+  it("are drawn once, as cards or as a table, never both", () => {
+    const html = renderToStaticMarkup(<ReportRows report={report} done={false} />);
+    expect(html.split("Enter how many people the table seats, from 1 to 100.")).toHaveLength(2);
+  });
+});
+
 describe("the Import button", () => {
   it("never offers to import zero rows", () => {
     expect(importLabel(0)).toBe("Nothing to import");
@@ -112,11 +124,37 @@ describe("the Import button", () => {
   });
 });
 
-describe("the choose step", () => {
-  it("is a form that stays in the markup, shown at first, so Back can find the input in it", () => {
-    const html = dialog();
-    const form = /<form[^>]*>/.exec(html)![0];
-    expect(form).toContain("flex");
-    expect(form).not.toMatch(/\bhidden\b/);
+describe("the dialog's body", () => {
+  const body = (step: "choose" | "preview" | "done") =>
+    renderToStaticMarkup(
+      <ImportBody
+        step={step}
+        report={step === "choose" ? undefined : report}
+        kind="tables"
+        noun={{ one: "table", other: "tables" }}
+        intro={<p>Columns: label, seats and bookable.</p>}
+        formId="import-form"
+        onCheck={() => {}}
+        onFileChange={() => {}}
+      />,
+    );
+  const formClass = (html: string) => /<form[^>]* class="([^"]*)"/.exec(html)?.[1].split(" ");
+
+  it("shows the form at first, and no rows", () => {
+    expect(formClass(body("choose"))).toContain("flex");
+    expect(formClass(body("choose"))).not.toContain("hidden");
+    expect(body("choose")).not.toContain("Skipped");
   });
+
+  it.each(["preview", "done"] as const)(
+    "hides the form at %s but keeps it and its inputs mounted, so Back finds what was typed (#114)",
+    (step) => {
+      const html = body(step);
+      expect(formClass(html)).toContain("hidden");
+      expect(formClass(html)).not.toContain("flex");
+      expect(html).toMatch(/<input[^>]*type="file"[^>]*name="file"/);
+      expect(html).toContain('name="pasted"');
+      expect(html).toContain("Skipped");
+    },
+  );
 });

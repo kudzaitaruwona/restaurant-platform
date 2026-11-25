@@ -1309,7 +1309,8 @@ describe("/dashboard/tables, managing", () => {
     expect(html).toContain(`action="/api/tables/${id}"`);
     expect(html).toContain(`action="/api/tables/${id}/move"`);
     expect(html).toContain(`action="/api/tables/${id}/archive"`);
-    expect(html).toContain("Bookable online");
+    // Wraps between its two words, never inside one (#94).
+    expect(html).toMatch(/<span class="wrap-normal">Bookable online<\/span>/);
     // The second table's box is not ticked, the first's is.
     const [first, second] = html.split("<li").slice(1);
     expect(first).toContain('checked=""');

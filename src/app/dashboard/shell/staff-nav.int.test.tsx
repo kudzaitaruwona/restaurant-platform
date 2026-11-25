@@ -96,6 +96,12 @@ describe("the staff rail", () => {
     expect(await render("a-staff")).not.toMatch(/ZiG|exchange rate/i);
   });
 
+  it("never breaks the rate under its icon: 26.2 is one word in a column narrower than it (#94)", async () => {
+    const html = await render("a-owner");
+    const rate = /<small class="([^"]*)">(?:[0-9.]+|Set)<\/small>/.exec(html)![1].split(" ");
+    expect(rate).toContain("whitespace-nowrap");
+  });
+
   it("puts the dev switcher in sign-out's slot, marking who you are now", async () => {
     const html = await render("a-staff");
     expect(html).toContain('action="/api/dev/identity"');

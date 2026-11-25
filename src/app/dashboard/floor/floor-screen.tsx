@@ -131,7 +131,7 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                       </span>
                       <span
                         className={cn(
-                          "rounded-full px-2.5 py-0.5 text-caption font-semibold",
+                          "shrink-0 rounded-full px-2.5 py-0.5 text-caption font-semibold whitespace-nowrap",
                           open ? "bg-brand-soft text-ink" : "bg-surface-2 text-ink-2",
                         )}
                       >

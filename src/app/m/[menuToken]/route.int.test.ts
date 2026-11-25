@@ -993,11 +993,23 @@ describe("layout (issue 26)", () => {
     expect(body).toMatch(/scroll-margin-top/);
   });
 
-  it("wraps the jump bar on a wide screen, where a mouse can't scroll it, and keeps the sections clear of it (#119)", async () => {
+  it("wraps the jump bar on a wide screen, where a mouse can't scroll it, at most two rows tall (#119)", async () => {
     const { menuToken } = await menuWith(null, ["Starters", "Mains"]);
     const body = await page(menuToken);
-    expect(body).toMatch(/@media \(min-width:640px\)\{nav\{flex-wrap:wrap;overflow:visible\}/);
-    expect(body).toMatch(/\{[^{}]*\}\.sections section\{scroll-margin-top:1\d\dpx/);
+    expect(body).toMatch(/@media \(min-width:640px\)\{nav\{flex-wrap:wrap;max-height:113px;overflow-y:auto;scrollbar-width:thin\}/);
+    // Its scrollbar is hidden only below that width: the rest of it must be findable here.
+    expect(body).toContain("@media not all and (min-width:640px){nav::-webkit-scrollbar{display:none}}");
+    expect(body.match(/nav::-webkit-scrollbar/g)).toHaveLength(1);
+  });
+
+  it("keeps a section clear of the two-row bar: that rule comes after the one-row rule it overrides (#119)", async () => {
+    const { menuToken } = await menuWith(null, ["Starters", "Mains"]);
+    const body = await page(menuToken);
+    const oneRow = body.indexOf(".sections section{padding:0 16px;scroll-margin-top:61px}");
+    const twoRows = body.indexOf(".sections section{scroll-margin-top:125px}");
+    expect(oneRow).toBeGreaterThan(-1);
+    // Same specificity, so the later one is the one a wide screen uses.
+    expect(twoRows).toBeGreaterThan(oneRow);
   });
 
   it("puts Specials first in the jump bar when there are some", async () => {

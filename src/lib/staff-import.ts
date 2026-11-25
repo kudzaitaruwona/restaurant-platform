@@ -67,8 +67,9 @@ async function plan(ctx: Acting, rows: Row[]) {
     if (role === "owner") hasOwner = true;
     return { row, problems, person: person.data };
   });
-  const ownersAfter = ownersNow + planned.filter((entry) => entry.person?.role === "owner").length;
-  return { planned, notice: ownersAfter > OWNER_LOGIN_SOFT_LIMIT ? secondOwnerNotice : undefined };
+  const adding = planned.filter((entry) => entry.person?.role === "owner").length;
+  const overLimit = adding > 0 && ownersNow + adding > OWNER_LOGIN_SOFT_LIMIT;
+  return { planned, notice: overLimit ? secondOwnerNotice : undefined };
 }
 
 const toReport = (planned: Planned[], imported: number | null, notice?: string): ImportReport => ({

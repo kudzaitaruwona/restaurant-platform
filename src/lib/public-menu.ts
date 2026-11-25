@@ -46,12 +46,12 @@ h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01e
 .head .book-again{margin-top:8px}
 .book-again a{color:var(--ink);font-weight:600;text-underline-offset:3px}
 nav{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
-nav::-webkit-scrollbar{display:none}
+@media not all and (min-width:640px){nav::-webkit-scrollbar{display:none}}
 nav a{display:inline-flex;align-items:center;justify-content:center;flex:none;max-width:100%;min-height:44px;padding:0 16px;text-align:center;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none}
 nav a:active{background:var(--surface-2)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-@media (min-width:640px){nav{flex-wrap:wrap;overflow:visible}.sections section{scroll-margin-top:125px}}
 .sections section{padding:0 16px;scroll-margin-top:61px}
+@media (min-width:640px){nav{flex-wrap:wrap;max-height:113px;overflow-y:auto;scrollbar-width:thin}.sections section{scroll-margin-top:125px}}
 .sections h2{margin:28px 0 4px;font-size:20px;font-weight:600;line-height:1.3}
 .sections>p{padding:0 16px;color:var(--ink-2)}
 ul{margin:0;padding:0;list-style:none}
@@ -599,6 +599,8 @@ export const ORDER_SCRIPT = `(() => {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (cart.length === 0) return;
+    // Disabling it drops focus from it: given back below if the sheet stays open (#119).
+    const held = form.contains(document.activeElement);
     fields.place.disabled = true;
     try {
       if (ended && !asked) await join();
@@ -666,6 +668,7 @@ export const ORDER_SCRIPT = `(() => {
       fail("That didn't go through. Check your connection and try again.");
     } finally {
       fields.place.disabled = false;
+      if (held && !form.hidden && !form.contains(document.activeElement)) fields.place.focus();
     }
   });
 })();`;

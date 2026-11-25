@@ -151,7 +151,7 @@ export async function TablesScreen() {
                             defaultChecked={table.bookable}
                             className="size-5 shrink-0 cursor-pointer accent-brand"
                           />
-                          Bookable online
+                          <span className="wrap-normal">Bookable online</span>
                         </label>
                         <Button type="submit" variant="secondary" size="compact" className="mr-1 md:mr-2">
                           Save

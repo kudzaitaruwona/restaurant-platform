@@ -118,6 +118,23 @@ describe("previewStaffImport", () => {
     expect(two.notice).toContain("one owner login");
   });
 
+  it("says nothing of owners for a file that adds none, at a restaurant that already has two", async () => {
+    const tenant = await newRestaurant();
+    await owner.db.insert(staff).values({
+      restaurantId: tenant.restaurantId,
+      email: email(),
+      displayName: "Second owner",
+      role: "owner",
+    });
+
+    const staffOnly = report(await previewStaffImport(tenant, `email,name,role\n${email()},A,staff`));
+    expect(staffOnly.ready).toBe(1);
+    expect(staffOnly.notice).toBeUndefined();
+
+    const third = report(await previewStaffImport(tenant, `email,name,role\n${email()},Third,owner`));
+    expect(third.notice).toContain("one owner login");
+  });
+
   it("needs an owner row before any staff row when the restaurant has no owner yet", async () => {
     const tenant = await newRestaurant({ withOwner: false });
     const csv = `email,name,role\n${email()},Staff first,staff\n${email()},The owner,owner\n${email()},Staff after,staff`;

@@ -73,6 +73,17 @@ describe("the floor screen", () => {
     expect(html).toContain(`href="/dashboard/floor/${r.tableId}"`);
   });
 
+  it("never breaks its Free or Open pill, however long the label beside it (#94)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await owner.db.update(diningTables).set({ label: "W".repeat(50) }).where(eq(diningTables.id, r.tableId));
+    as(r);
+    const pillClass = async (word: string) =>
+      new RegExp(`class="([^"]*)"[^>]*>${word}</span>`).exec(renderToStaticMarkup(await FloorScreen()))![1].split(" ");
+    expect(await pillClass("Free")).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+    await openTable(r, [{ status: "placed" }]);
+    expect(await pillClass("Open")).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+  });
+
   it("names a table labelled only a number as a table, on the grid and in detail (#99)", async () => {
     const r = await orderingRestaurant(owner.db);
     await owner.db.update(diningTables).set({ label: "12" }).where(eq(diningTables.id, r.tableId));

@@ -2,7 +2,16 @@
 
 import { Check, Download, FileUp, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Fragment, type FormEvent, type ReactNode, useId, useRef, useState } from "react";
+import {
+  Fragment,
+  type FormEvent,
+  type ReactNode,
+  type Ref,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Field, Textarea, inputClassName } from "@/components/ui/input";
@@ -135,8 +144,6 @@ export function CsvImportDialog({
     if (result.imported) router.refresh();
   }
 
-  const skipped = report ? report.rows.length - report.ready : 0;
-
   return (
     <>
       <Button type="button" variant="secondary" size={triggerSize} onClick={open}>
@@ -163,67 +170,18 @@ export function CsvImportDialog({
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
-          {/* Kept mounted, only hidden, once rows are shown: Back finds the file and the text as they were. */}
-          <form
-            ref={form}
-            id={`${id}form`}
-            onSubmit={check}
-            className={cn("flex-col gap-4", step === "choose" ? "flex" : "hidden")}
-          >
-            <div className="flex flex-col gap-2 text-ink-2">
-              {intro}
-              <p>
-                The first row names the columns. Up to {maxRows} rows and 1 MB. Nothing is saved
-                until you check the rows and choose Import.
-              </p>
-            </div>
-            <a
-              href={`/api/csv-templates/${kind}`}
-              download
-              className={cn(buttonVariants({ variant: "ghost", size: "compact" }), "self-start")}
-            >
-              <Download aria-hidden />
-              Download the template
-            </a>
-            <Field label="CSV file">
-              <input
-                type="file"
-                name="file"
-                accept=".csv,text/csv"
-                onChange={() => setError(undefined)}
-                className={cn(
-                  inputClassName,
-                  "file:mr-3 file:rounded-control file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-caption file:font-semibold file:text-ink",
-                )}
-              />
-            </Field>
-            <Field label="Or paste it here">
-              <Textarea name="pasted" rows={6} spellCheck={false} className="font-mono md:text-caption" />
-            </Field>
-          </form>
-
-          {step !== "choose" && report && (
-            <>
-              {step === "preview" ? (
-                <Notice tone={report.ready === 0 ? "attention" : "neutral"} role="status">
-                  {report.ready === 0
-                    ? "No row can be imported. Fix the file and check it again."
-                    : `${plural(report.ready, noun)} ready to import.`}
-                  {skipped > 0 && report.ready > 0 && ` ${plural(skipped, { one: "row", other: "rows" })} will be skipped.`}
-                </Notice>
-              ) : (
-                <Notice tone={report.imported ? "positive" : "attention"} role="status">
-                  {report.imported
-                    ? `Imported ${plural(report.imported, noun)}.`
-                    : "Nothing was imported."}
-                  {skipped > 0 &&
-                    ` ${plural(skipped, { one: "row was", other: "rows were" })} skipped. Fix ${skipped === 1 ? "it" : "them"} and import the file again: rows already added are skipped then.`}
-                </Notice>
-              )}
-              {step === "preview" && report.notice && <Notice role="status">{report.notice}</Notice>}
-              <ReportTable report={report} done={step === "done"} />
-            </>
-          )}
+          <ImportBody
+            step={step}
+            report={report}
+            kind={kind}
+            noun={noun}
+            intro={intro}
+            maxRows={maxRows}
+            formRef={form}
+            formId={`${id}form`}
+            onCheck={check}
+            onFileChange={() => setError(undefined)}
+          />
 
           {error && (
             <Notice tone="danger" role="alert">
@@ -273,6 +231,101 @@ export function CsvImportDialog({
   );
 }
 
+/**
+ * What the dialog shows at each step: the form to choose or paste a file, then
+ * the rows. The form stays mounted at every step, only hidden once rows are
+ * shown, so Back finds the file and the text as they were.
+ */
+export function ImportBody({
+  step,
+  report,
+  kind,
+  noun,
+  intro,
+  maxRows = CSV_MAX_ROWS,
+  formRef,
+  formId,
+  onCheck,
+  onFileChange,
+}: {
+  step: Step;
+  report?: ImportReport;
+  kind: ImportKind;
+  noun: { one: string; other: string };
+  intro: ReactNode;
+  maxRows?: number;
+  formRef?: Ref<HTMLFormElement>;
+  formId: string;
+  onCheck: (event: FormEvent<HTMLFormElement>) => void;
+  onFileChange: () => void;
+}) {
+  const skipped = report ? report.rows.length - report.ready : 0;
+  return (
+    <>
+      <form
+        ref={formRef}
+        id={formId}
+        onSubmit={onCheck}
+        className={cn("flex-col gap-4", step === "choose" ? "flex" : "hidden")}
+      >
+        <div className="flex flex-col gap-2 text-ink-2">
+          {intro}
+          <p>
+            The first row names the columns. Up to {maxRows} rows and 1 MB. Nothing is saved
+            until you check the rows and choose Import.
+          </p>
+        </div>
+        <a
+          href={`/api/csv-templates/${kind}`}
+          download
+          className={cn(buttonVariants({ variant: "ghost", size: "compact" }), "self-start")}
+        >
+          <Download aria-hidden />
+          Download the template
+        </a>
+        <Field label="CSV file">
+          <input
+            type="file"
+            name="file"
+            accept=".csv,text/csv"
+            onChange={onFileChange}
+            className={cn(
+              inputClassName,
+              "file:mr-3 file:rounded-control file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-caption file:font-semibold file:text-ink",
+            )}
+          />
+        </Field>
+        <Field label="Or paste it here">
+          <Textarea name="pasted" rows={6} spellCheck={false} className="font-mono md:text-caption" />
+        </Field>
+      </form>
+
+      {step !== "choose" && report && (
+        <>
+          {step === "preview" ? (
+            <Notice tone={report.ready === 0 ? "attention" : "neutral"} role="status">
+              {report.ready === 0
+                ? "No row can be imported. Fix the file and check it again."
+                : `${plural(report.ready, noun)} ready to import.`}
+              {skipped > 0 && report.ready > 0 && ` ${plural(skipped, { one: "row", other: "rows" })} will be skipped.`}
+            </Notice>
+          ) : (
+            <Notice tone={report.imported ? "positive" : "attention"} role="status">
+              {report.imported
+                ? `Imported ${plural(report.imported, noun)}.`
+                : "Nothing was imported."}
+              {skipped > 0 &&
+                ` ${plural(skipped, { one: "row was", other: "rows were" })} skipped. Fix ${skipped === 1 ? "it" : "them"} and import the file again: rows already added are skipped then.`}
+            </Notice>
+          )}
+          {step === "preview" && report.notice && <Notice role="status">{report.notice}</Notice>}
+          <ReportRows report={report} done={step === "done"} />
+        </>
+      )}
+    </>
+  );
+}
+
 /** A row's outcome: Ready or Imported, or Skipped with every reason, and what is worth knowing. */
 function Outcome({ row, done }: { row: ImportReport["rows"][number]; done: boolean }) {
   const ok = row.problems.length === 0;
@@ -302,74 +355,97 @@ function Outcome({ row, done }: { row: ImportReport["rows"][number]; done: boole
   );
 }
 
+type ReportProps = { report: ImportReport; done: boolean };
+
+/** Tailwind's md: where the report is a table. */
+const WIDE = "(min-width: 48rem)";
+
+function subscribeWide(changed: () => void) {
+  const query = window.matchMedia(WIDE);
+  query.addEventListener("change", changed);
+  return () => query.removeEventListener("change", changed);
+}
+
 /**
  * Every row with what will happen to it, or what did. A table from 768px up;
  * below that each row is a card with its outcome first, because a table wider
  * than a phone scrolls the Check column out of sight and a skipped row then
- * looks blank. The two share Outcome, and only one is displayed.
+ * looks blank. Only the one that fits is drawn: a file can have 500 rows. (The
+ * rows only ever follow a click, so there is no server markup to match.)
  */
-export function ReportTable({ report, done }: { report: ImportReport; done: boolean }) {
-  return (
-    <>
-      <ul aria-label="Rows" className="flex flex-col gap-2 md:hidden">
-        {report.rows.map((row) => (
-          <li
-            key={row.line}
-            className={cn(
-              "flex flex-col gap-2 rounded-control border border-line px-3 py-2 text-caption",
-              row.problems.length > 0 && "bg-danger-soft/40",
-            )}
-          >
-            <div className="flex flex-col gap-0.5">
-              <span className="text-ink-2 tabular-nums">Line {row.line}</span>
-              <Outcome row={row} done={done} />
-            </div>
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 border-t border-line pt-2">
-              {report.columns.map((column, index) => (
-                <Fragment key={column}>
-                  <dt className="text-ink-2">{column}</dt>
-                  <dd className="[overflow-wrap:anywhere]">{row.values[index] || "\u00a0"}</dd>
-                </Fragment>
-              ))}
-            </dl>
-          </li>
-        ))}
-      </ul>
+export function ReportRows(props: ReportProps) {
+  const wide = useSyncExternalStore(
+    subscribeWide,
+    () => window.matchMedia(WIDE).matches,
+    () => true,
+  );
+  return wide ? <ReportTable {...props} /> : <ReportCards {...props} />;
+}
 
-      <div className="hidden overflow-x-auto rounded-control border border-line md:block">
-        <table className="w-full border-collapse text-left text-caption">
-          <thead className="bg-surface-2 text-ink-2">
-            <tr>
-              <th scope="col" className="px-3 py-2 font-medium">
-                Line
-              </th>
-              {report.columns.map((column) => (
-                <th key={column} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
-                  {column}
-                </th>
-              ))}
-              <th scope="col" className="min-w-56 px-3 py-2 font-medium">
-                {done ? "Result" : "Check"}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line">
-            {report.rows.map((row) => (
-              <tr key={row.line} className={cn("align-top", row.problems.length > 0 && "bg-danger-soft/40")}>
-                <td className="px-3 py-2 text-ink-2 tabular-nums">{row.line}</td>
-                {row.values.map((value, index) => (
-                  <td key={index} className="max-w-48 px-3 py-2 [overflow-wrap:anywhere]">
-                    {value}
-                  </td>
-                ))}
-                <td className="px-3 py-2">
-                  <Outcome row={row} done={done} />
-                </td>
-              </tr>
+export function ReportCards({ report, done }: ReportProps) {
+  return (
+    <ul aria-label="Rows" className="flex flex-col gap-2">
+      {report.rows.map((row) => (
+        <li
+          key={row.line}
+          className={cn(
+            "flex flex-col gap-2 rounded-control border border-line px-3 py-2 text-caption",
+            row.problems.length > 0 && "bg-danger-soft/40",
+          )}
+        >
+          <div className="flex flex-col gap-0.5">
+            <span className="text-ink-2 tabular-nums">Line {row.line}</span>
+            <Outcome row={row} done={done} />
+          </div>
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 border-t border-line pt-2">
+            {report.columns.map((column, index) => (
+              <Fragment key={column}>
+                <dt className="text-ink-2">{column}</dt>
+                <dd className="[overflow-wrap:anywhere]">{row.values[index] || "\u00a0"}</dd>
+              </Fragment>
             ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+          </dl>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ReportTable({ report, done }: ReportProps) {
+  return (
+    <div className="overflow-x-auto rounded-control border border-line">
+      <table className="w-full border-collapse text-left text-caption">
+        <thead className="bg-surface-2 text-ink-2">
+          <tr>
+            <th scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+              Line
+            </th>
+            {report.columns.map((column) => (
+              <th key={column} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+                {column}
+              </th>
+            ))}
+            <th scope="col" className="min-w-56 px-3 py-2 font-medium">
+              {done ? "Result" : "Check"}
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-line">
+          {report.rows.map((row) => (
+            <tr key={row.line} className={cn("align-top", row.problems.length > 0 && "bg-danger-soft/40")}>
+              <td className="px-3 py-2 whitespace-nowrap text-ink-2 tabular-nums">{row.line}</td>
+              {row.values.map((value, index) => (
+                <td key={index} className="max-w-48 px-3 py-2 [overflow-wrap:anywhere]">
+                  {value}
+                </td>
+              ))}
+              <td className="px-3 py-2">
+                <Outcome row={row} done={done} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
