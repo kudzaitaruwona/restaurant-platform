@@ -630,6 +630,7 @@ async function readManaged(tx: TenantTransaction, { restaurantId }: Tenant, toke
       name: restaurants.name,
       timezone: restaurants.timezone,
       contactPhone: restaurants.contactPhone,
+      slug: restaurants.slug,
     })
     .from(restaurants)
     .where(eq(restaurants.id, restaurantId));
@@ -638,6 +639,7 @@ async function readManaged(tx: TenantTransaction, { restaurantId }: Tenant, toke
     ...rest,
     restaurantName: restaurant.name,
     contactPhone: restaurant.contactPhone,
+    slug: restaurant.slug,
     dateLabel: dateLabel(localToday(startsAt, restaurant.timezone)),
     time: localTime(startsAt, restaurant.timezone),
   };

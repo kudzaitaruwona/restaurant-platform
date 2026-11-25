@@ -94,6 +94,26 @@ describe("the day view", () => {
     }
   });
 
+  it("warns in the Cancel dialog that the guest is messaged, only when they will be", async () => {
+    await dayWith([
+      { guestName: "Reachable", guestPhone: "+263771234567", whatsappOptIn: true },
+      { guestName: "Optedout", guestPhone: "+263771234568", whatsappOptIn: false },
+      { guestName: "Numberless", guestPhone: null, whatsappOptIn: true },
+    ]);
+
+    const html = await render(day);
+    const dialogOf = (name: string, action: string) => {
+      const row = html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
+      const form = row.slice(row.indexOf(`/${action}"`));
+      return form.slice(0, form.indexOf("</dialog>"));
+    };
+
+    expect(dialogOf("Reachable", "cancel")).toContain("message them on WhatsApp to say it");
+    expect(dialogOf("Reachable", "no-show")).not.toContain("WhatsApp");
+    expect(dialogOf("Optedout", "cancel")).not.toContain("WhatsApp");
+    expect(dialogOf("Numberless", "cancel")).not.toContain("WhatsApp");
+  });
+
   it("says where each booking came from: online, or added by staff", async () => {
     await dayWith([{ guestName: "Booked", source: "online" }, { guestName: "Phoned", source: "staff" }]);
 

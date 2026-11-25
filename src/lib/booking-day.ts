@@ -72,6 +72,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         status: bookings.status,
         note: bookings.guestNote,
         phone: bookings.guestPhone,
+        whatsappOptIn: bookings.whatsappOptIn,
         source: bookings.source,
         confirmationStatus: notifications.status,
       })
@@ -108,6 +109,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       time: localTime(startsAt, timezone),
       late: row.status === "confirmed" && startsAt.getTime() <= lateBefore,
       // Staff should call a guest still to arrive; once seated, they are here.
+      willMessage: row.whatsappOptIn && row.phone !== null,
       confirmationFailed: row.status === "confirmed" && confirmationStatus === "failed",
     }));
 

@@ -61,6 +61,7 @@ const row = (time: string, overrides: Partial<DayRow> = {}): DayRow => ({
   status: "confirmed",
   note: null,
   phone: null,
+  willMessage: false,
   source: "online",
   late: false,
   confirmationFailed: false,

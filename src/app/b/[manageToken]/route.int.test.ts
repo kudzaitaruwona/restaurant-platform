@@ -55,8 +55,10 @@ describe("GET /b/{manage_token}", () => {
     expect(page).toMatch(/^<!doctype html>/i);
     expect(page).toContain("Tariro");
     expect(page).toContain("party of 2");
-    expect(page).toMatch(new RegExp(`<form method="post" action="/b/${token}">`));
+    // Cancel is a plain link to the confirm step: one tap never cancels.
+    expect(page).toContain(`href="/b/${token}?cancel=1"`);
     expect(page).toContain("Cancel booking");
+    expect(page).not.toContain("<form");
     expect(page).not.toContain("<script");
     expect(page).not.toMatch(/(href|src|action)="(https?:)?\/\//);
     expect(page).toContain('name="robots" content="noindex"');
@@ -82,6 +84,30 @@ describe("GET /b/{manage_token}", () => {
   it("is a real 404 for an unknown token and for a NUL", async () => {
     expect((await view("no-such-token")).status).toBe(404);
     expect((await view("a\0b")).status).toBe(404);
+  });
+
+  it("asks first: ?cancel=1 shows a no-JavaScript confirm step, a POST form, and cancels nothing", async () => {
+    const { token } = await bookedIn(300, { guestName: "Tariro" });
+
+    const response = await GET(new Request(`http://localhost/b/${token}?cancel=1`), params(token));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const page = await response.text();
+    expect(page).toContain("Cancel this booking?");
+    expect(page).toContain("Tariro");
+    expect(page).toMatch(new RegExp(`<form class="actions" method="post" action="/b/${token}">`));
+    expect(page).toContain("Yes, cancel booking");
+    expect(page).toContain(`href="/b/${token}"`);
+    expect(page).not.toContain("<script");
+    expect(await statusOf(token)).toBe("confirmed");
+  });
+
+  it("has no confirm step once the cutoff has passed: it shows the usual page", async () => {
+    const { token } = await bookedIn(10);
+    const page = await (await GET(new Request(`http://localhost/b/${token}?cancel=1`), params(token))).text();
+    expect(page).toContain(TOO_LATE);
+    expect(page).not.toContain("<form");
   });
 
   it("never cancels: a link preview that opens it changes nothing", async () => {
@@ -144,7 +170,7 @@ describe("GET /b/{manage_token}", () => {
 
 describe("POST /b/{manage_token}", () => {
   it("cancels before the cutoff and says so, with the same protective headers", async () => {
-    const { token } = await bookedIn(300);
+    const { token, slug } = await bookedIn(300);
 
     const response = await cancel(token);
 
@@ -154,6 +180,9 @@ describe("POST /b/{manage_token}", () => {
     const page = await response.text();
     expect(page).toContain("Your booking is cancelled.");
     expect(page).not.toContain("<form");
+    // The way back: this restaurant's booking page, on this site.
+    expect(page).toContain(`href="/r/${slug}/book"`);
+    expect(page).toContain("Book again");
     expect(await statusOf(token)).toBe("cancelled");
   });
 

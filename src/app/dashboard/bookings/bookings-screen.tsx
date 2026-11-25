@@ -340,7 +340,7 @@ function BookingRow({ row, moves }: { row: DayRow; moves: MoveTarget[] }) {
             className="pt-2 empty:hidden"
             confirmation={{
               title: "Cancel this booking?",
-              description: freed,
+              description: row.willMessage ? `${freed} We'll message them on WhatsApp to say it's cancelled.` : freed,
               confirmLabel: "Cancel booking",
               cancelLabel: "Keep booking",
             }}
