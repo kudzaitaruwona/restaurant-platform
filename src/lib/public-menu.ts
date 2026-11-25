@@ -263,7 +263,7 @@ export const ORDER_SCRIPT = `(() => {
   };
   const join = async () => {
     const response = await fetch(api("/session"), { method: "POST" });
-    if (!response.ok) throw new Error(String(response.status));
+    if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status, wait: Number(response.headers && response.headers.get("retry-after")) || 0 });
     enter((await response.json()).session);
     try { fields.name.value = localStorage.getItem("order-name:" + session) || fields.name.value; } catch {}
   };
@@ -359,13 +359,38 @@ export const ORDER_SCRIPT = `(() => {
     }
   };
 
-  join().then(() => {
-    for (const button of adds) button.hidden = false;
-    waiter.hidden = false;
-    poll();
-    setInterval(() => { if (!document.hidden) poll(); }, 5000);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
-  }, () => {});
+  // The first join (#98): a failed one is retried 5 times, after 2, 5, 10, 20 and 40
+  // seconds (a rate limit's Retry-After if longer), then left to "Try again".
+  // Any other 4xx (a code that no longer works, ordering off, an archived table)
+  // is final: the plain menu, no message.
+  const delays = [2000, 5000, 10000, 20000, 40000];
+  const retry = make("button", "Try again", "btn");
+  retry.type = "button";
+  let tries = 0;
+  let waiting = null;
+  const connect = () => {
+    clearTimeout(waiting);
+    retry.disabled = true;
+    join().then(() => {
+      waiterSaid.replaceChildren();
+      delete waiterSaid.dataset.tone;
+      for (const button of adds) button.hidden = false;
+      waiter.hidden = false;
+      poll();
+      setInterval(() => { if (!document.hidden) poll(); }, 5000);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+    }, (failure) => {
+      const refused = failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429;
+      if (refused) { delete waiterSaid.dataset.tone; return waiterSaid.replaceChildren(); }
+      const more = tries < delays.length;
+      waiterSaid.dataset.tone = "error";
+      waiterSaid.replaceChildren(make("span", more ? "Couldn't reach the table. Trying again\u2026 " : "Ordering isn't available right now. Check your connection and try again. "), retry);
+      retry.disabled = false;
+      if (more) waiting = setTimeout(connect, Math.min(60000, Math.max(delays[tries++], (failure.wait || 0) * 1000)));
+    });
+  };
+  retry.addEventListener("click", () => { tries = 0; connect(); });
+  connect();
 
   document.addEventListener("click", async (event) => {
     const button = event.target instanceof Element && event.target.closest("button[data-item]");

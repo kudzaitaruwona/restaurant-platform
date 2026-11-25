@@ -71,13 +71,16 @@ class FakeElement {
 }
 
 type Feed = { session: string | null; items: Record<string, unknown>[] };
-type Reply = { status: number; json: unknown };
+type Reply = { status: number; json: unknown; headers?: Record<string, string> };
 
 /** One page load: a fresh page over the same phone's storage. */
 async function loadPage(
   storage: Map<string, string>,
   sessionId: string,
-  { feed = { session: sessionId, items: [] } as Feed } = {},
+  {
+    feed = { session: sessionId, items: [] } as Feed,
+    joinReplies = [] as (Reply | "abort")[],
+  } = {},
 ) {
   const state = {
     feed,
@@ -86,6 +89,10 @@ async function loadPage(
     /** While true, an order is sent and no answer comes back. */
     loseOrderReply: false,
     waiterReply: undefined as Reply | undefined,
+    /** Answers to the next scans, in turn: a reply, or "abort" for one that never answers. */
+    joinReplies,
+    /** Timeouts the script set, by delay in milliseconds, until they run. */
+    later: [] as { ms: number; run: () => void }[],
     requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
     /** While true, a tracker poll waits for its answer until `answer()` is called. */
     holdPolls: false,
@@ -145,6 +152,16 @@ async function loadPage(
     const path = url.replace("/api/t/some-token", "");
     state.requests.push({ path, method: init.method ?? "GET", body: init.body, signal: init.signal });
     if (path === "/session") {
+      const next = state.joinReplies.shift();
+      if (next === "abort") throw new TypeError("Failed to fetch");
+      if (next) {
+        return {
+          ok: next.status < 400,
+          status: next.status,
+          headers: { get: (name: string) => next.headers?.[name] ?? null },
+          json: async () => next.json,
+        };
+      }
       return { ok: true, status: 200, json: async () => ({ session: state.sessionId }) };
     }
     if (path === "/waiter") {
@@ -190,6 +207,15 @@ async function loadPage(
         state.timeouts.push(ms);
         return { timeoutMs: ms };
       },
+    },
+    setTimeout: (run: () => void, ms: number) => {
+      const entry = { ms, run };
+      state.later.push(entry);
+      return entry;
+    },
+    clearTimeout: (entry: unknown) => {
+      const at = state.later.indexOf(entry as (typeof state.later)[number]);
+      if (at >= 0) state.later.splice(at, 1);
     },
     setInterval: (callback: () => unknown) => void (timer = callback),
     location: { pathname: "/t/some-token" },
@@ -257,6 +283,12 @@ async function loadPage(
       await settle();
       await settle();
     },
+    /** Runs the oldest retry the script has waiting. */
+    async retryNow() {
+      state.later.shift()?.run();
+      await settle();
+    },
+    joins: () => state.requests.filter((request) => request.path === "/session").length,
     polls: () => state.requests.filter((request) => request.path === "/tracker"),
     async orderOne(name: string) {
       await this.add(stew);
@@ -313,6 +345,108 @@ describe("the table page remembers the customer's name", () => {
     expect(page.state.requests.filter((request) => request.path === "/orders")).toEqual([]);
     expect(page.error.textContent).toMatch(/name/i);
     expect(page.form.hidden).toBe(false);
+  });
+});
+
+describe("a first scan that fails (#98)", () => {
+  const down = "abort" as const;
+
+  it("says so, retries by itself with growing waits, and orders once it works, without a reload", async () => {
+    const failing = await loadPage(new Map(), "session-1", { joinReplies: [down, down, down] });
+    expect(failing.stew.hidden).toBe(true);
+    expect(failing.waiterStatus.textContent).toMatch(/trying again/i);
+    expect(failing.waiter.hidden).toBe(true);
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([2000]);
+
+    await failing.retryNow();
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([5000]);
+    await failing.retryNow();
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([10000]);
+    await failing.retryNow();
+
+    expect(failing.joins()).toBe(4);
+    expect(failing.stew.hidden).toBe(false);
+    expect(failing.waiter.hidden).toBe(false);
+    expect(failing.waiterStatus.textContent).toBe("");
+  });
+
+  it("stops after five retries and leaves a message with a manual retry", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: Array(6).fill(down) });
+    for (let i = 0; i < 5; i++) await page.retryNow();
+
+    expect(page.joins()).toBe(6);
+    expect(page.state.later).toEqual([]);
+    expect(page.waiterStatus.textContent).toMatch(/isn't available/i);
+    expect(page.stew.hidden).toBe(true);
+  });
+
+  it("joins at once when Try again is pressed, and then shows ordering", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: Array(6).fill(down) });
+    for (let i = 0; i < 5; i++) await page.retryNow();
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+
+    await button.dispatch("click");
+    await settle();
+
+    expect(page.joins()).toBe(7);
+    expect(page.stew.hidden).toBe(false);
+    expect(page.waiterStatus.textContent).toBe("");
+  });
+
+  it("a manual retry during the wait replaces the timer rather than doubling the joins", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: [down] });
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+
+    await button.dispatch("click");
+    await settle();
+
+    expect(page.joins()).toBe(2);
+    expect(page.state.later).toEqual([]);
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("retries a 5xx, and waits at least as long as a 429's Retry-After", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: [{ status: 503, json: {} }, { status: 429, json: {}, headers: { "retry-after": "30" } }],
+    });
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([2000]);
+    await page.retryNow();
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([30000]);
+    await page.retryNow();
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("doesn't retry a refusal that won't change: a code that no longer works is the plain menu", async () => {
+    for (const status of [404, 403, 400]) {
+      const page = await loadPage(new Map(), "session-1", { joinReplies: [{ status, json: {} }] });
+      expect(page.joins()).toBe(1);
+      expect(page.state.later).toEqual([]);
+      expect(page.waiterStatus.textContent).toBe("");
+      expect(page.stew.hidden).toBe(true);
+    }
+  });
+});
+
+describe("a first scan that fails, then #85's rules (#98 with #85)", () => {
+  it("a refusal after a transient failure leaves no error tone behind", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: [{ status: 503, json: {} }, { status: 404, json: {} }],
+    });
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+    await page.retryNow();
+    expect(page.waiterStatus.textContent).toBe("");
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    expect(page.state.later).toEqual([]);
+  });
+
+  it("a retried first join tags the cart to its session, so an order places without the ended-session prompt", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: ["abort" as const] });
+    await page.retryNow();
+    await page.add(page.stew);
+    await page.placeAs("Ada");
+
+    expect(page.state.requests.filter((request) => request.path === "/orders")).toHaveLength(1);
+    expect(page.joins()).toBe(2);
   });
 });
 
