@@ -650,6 +650,8 @@ describe("retrying an order whose answer was lost (#84)", () => {
     page.state.sessionId = "session-2";
 
     await page.placeAs("Tariro");
+    expect(bodies(page)).toHaveLength(1);
+    await page.placeAs("Tariro");
 
     expect(bodies(page)[1].get("session")).toBe("session-2");
   });
@@ -669,6 +671,148 @@ describe("retrying an order whose answer was lost (#84)", () => {
     expect(second.get("request")).toBe(first.get("request"));
     expect(third.get("request")).not.toBe(first.get("request"));
     expect(page.cart.children).toHaveLength(0);
+  });
+});
+
+describe("a cart left over from a session that ended (#85)", () => {
+  const bodies = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/orders").map((request) => request.body!);
+  const submit = async (page: Awaited<ReturnType<typeof loadPage>>) => {
+    await page.form.dispatch("submit");
+    await settle();
+  };
+
+  /** A remembered name and one stew in the cart, then staff close the table. */
+  async function leftOver(next: string | null) {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: next, items: [] };
+    await page.tick();
+    return page;
+  }
+
+  it.each([
+    ["nobody has opened the next session", null],
+    ["another phone has already opened the next one", "session-2"],
+  ])("sends nothing, asks for the name again and keeps the cart when %s", async (_what, next) => {
+    const page = await leftOver(next);
+    expect(page.name.value).toBe("Tariro");
+
+    await submit(page);
+    expect(bodies(page)).toEqual([]);
+    expect(page.name.value).toBe("");
+    expect(page.cart.children).toHaveLength(1);
+    expect(page.form.hidden).toBe(false);
+    expect(page.error.textContent).toMatch(/session has ended.*check your order/i);
+
+    await submit(page);
+    expect(bodies(page)).toEqual([]);
+    expect(page.error.textContent).toBe("Enter a name for the waiter.");
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toHaveLength(1);
+    expect(bodies(page)[0].get("session")).toBe("session-2");
+    expect(bodies(page)[0].get("name")).toBe("Rudo");
+  });
+
+  it("stops saying the session has ended once Place order has joined the next one", async () => {
+    const page = await leftOver("session-2");
+    await submit(page);
+    expect(page.trackerState.textContent).toBe("");
+  });
+
+  it("asks before sending an old line with one added in the next session", async () => {
+    const page = await leftOver("session-2");
+    await page.add(page.rice);
+    expect(page.name.value).toBe("");
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+    expect(page.error.textContent).toMatch(/session has ended/i);
+
+    await submit(page);
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-stew", "item-rice"]);
+    expect(bodies(page)[0].get("name")).toBe("Rudo");
+  });
+
+  it("asks after a waiter call has joined the next session", async () => {
+    const page = await leftOver("session-2");
+    await page.waiter.dispatch("click");
+    await settle();
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+  });
+
+  it("asks again if the next session has ended too by the time the guest confirms", async () => {
+    const page = await leftOver("session-2");
+    await submit(page);
+    page.state.sessionId = "session-3";
+    page.state.feed = { session: "session-3", items: [] };
+    await page.tick();
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+    expect(page.name.value).toBe("");
+  });
+
+  it("doesn't ask about a cart started after the session ended", async () => {
+    const page = await leftOver(null);
+    await page.buttonLabelled("Remove").dispatch("click");
+    await page.add(page.rice);
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-rice"]);
+    expect(bodies(page)[0].get("session")).toBe("session-2");
+  });
+
+  it("goes straight on when staff reopened the same session", async () => {
+    const page = await leftOver(null);
+    page.state.sessionId = "session-1";
+
+    await submit(page);
+    expect(bodies(page)[0].get("session")).toBe("session-1");
+    expect(bodies(page)[0].get("name")).toBe("Tariro");
+  });
+
+  it("clears the name and asks once when the server is first to say the session changed", async () => {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "reset", code: "session_changed" } };
+    await submit(page);
+    page.state.orderReply = undefined;
+    expect(page.error.textContent).toBe("reset");
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+    await page.placeAs("Rudo");
+    expect(bodies(page)[1].get("session")).toBe("session-2");
+  });
+
+  it("asks before sending the rest, after a lost order's retry found it had been placed (#84)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    page.state.loseOrderReply = false;
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: "session-2", items: [] };
+    await page.tick();
+    await page.add(page.rice);
+    page.state.orderReply = { status: 409, json: { error: "Already.", code: "already_placed" } };
+    await page.placeAs("Rudo");
+    page.state.orderReply = undefined;
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(2);
+    expect(page.error.textContent).toMatch(/session has ended/i);
+    await submit(page);
+    expect(bodies(page)[2].get("session")).toBe("session-2");
   });
 });
 
