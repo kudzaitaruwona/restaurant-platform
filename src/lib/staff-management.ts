@@ -35,7 +35,7 @@ export type StaffChange = "done" | "not_found" | "last_owner";
  */
 export const OWNER_LOGIN_SOFT_LIMIT = 1;
 
-const messages = {
+export const messages = {
   email: "Enter a valid email address.",
   displayName: "Enter a name, up to 200 characters.",
   role: "Choose owner or staff.",
