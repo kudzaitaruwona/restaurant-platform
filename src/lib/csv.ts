@@ -25,6 +25,52 @@ const BOM = "﻿";
 
 export const byteLength = (text: string) => new TextEncoder().encode(text).length;
 
+export const csvMessages = {
+  empty: "That file is empty.",
+  notCsv: "That isn't a CSV file. Choose a .csv file, or paste the rows.",
+  utf16: "This file is saved as UTF-16. Save it as CSV UTF-8 and choose it again.",
+  notUtf8:
+    "This file isn't saved as UTF-8, so accented letters would be damaged. Save it as CSV UTF-8 and choose it again.",
+  damaged:
+    "This text has a character that couldn't be read (\uFFFD), so letters were damaged on the way in. Paste it again, or save the file as CSV UTF-8 and choose the file.",
+};
+
+export type CsvText = { ok: true; text: string } | { ok: false; error: string };
+
+/**
+ * Text for the parser, from what was pasted. A U+FFFD is what a wrong decoding
+ * leaves in place of a letter, so text with one is refused rather than
+ * imported as a corrupted word. A blank text is empty.
+ */
+export function checkCsvText(text: string): CsvText {
+  if (!text.trim()) return { ok: false, error: csvMessages.empty };
+  if (text.includes("\uFFFD")) return { ok: false, error: csvMessages.damaged };
+  return { ok: true, text };
+}
+
+/**
+ * Text for the parser, from an uploaded file's own bytes: the server decodes
+ * them, never trusting the browser's reading, which turns bytes that aren't
+ * UTF-8 into U+FFFD without a word. A UTF-8 byte order mark is dropped. A
+ * UTF-16 file, a Windows-1252 file and anything that isn't text (a PNG, a
+ * spreadsheet) are each refused with their own plain message.
+ */
+export function decodeCsvBytes(bytes: Uint8Array): CsvText {
+  if (bytes.length === 0) return { ok: false, error: csvMessages.empty };
+  const [a, b] = bytes;
+  if ((a === 0xff && b === 0xfe) || (a === 0xfe && b === 0xff)) {
+    return { ok: false, error: csvMessages.utf16 };
+  }
+  if (bytes.includes(0)) return { ok: false, error: csvMessages.notCsv };
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return { ok: false, error: csvMessages.notUtf8 };
+  }
+  return checkCsvText(text);
+}
+
 /** Semicolon when the header row has more of them than commas, outside quotes. */
 function delimiterOf(text: string) {
   let commas = 0;

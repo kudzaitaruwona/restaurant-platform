@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { CsvImportDialog, ReportTable } from "./csv-import-dialog";
+import { CsvImportDialog, importLabel, ReportTable } from "./csv-import-dialog";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
 
@@ -78,5 +78,45 @@ describe("the report table", () => {
     const html = renderToStaticMarkup(<ReportTable report={{ ...report, imported: 1 }} done />);
     expect(html).toContain("Imported");
     expect(html).toContain(">Result</th>");
+  });
+});
+
+describe("the report on a phone", () => {
+  const html = renderToStaticMarkup(<ReportTable report={report} done={false} />);
+  const cards = html.slice(0, html.indexOf("<table") > 0 ? html.indexOf('<div class="hidden') : 0);
+
+  it("lists each row as a card shown below 768px, with the reason inside it", () => {
+    expect(html).toMatch(/<ul[^>]*class="[^"]*md:hidden/);
+    expect(html).toMatch(/<div class="hidden[^"]*md:block/);
+    // The skipped row's reason is in the card, not only in the table's last column.
+    expect(cards).toContain("Skipped");
+    expect(cards).toContain("Enter how many people the table seats, from 1 to 100.");
+    expect(cards).toContain("Line 3");
+  });
+
+  it("puts a row's outcome before its values, so it is read first", () => {
+    expect(cards.indexOf("Ready")).toBeGreaterThan(-1);
+    expect(cards.indexOf("Ready")).toBeLessThan(cards.indexOf("<dl"));
+  });
+
+  it("labels each value with its column", () => {
+    expect(cards).toContain(">seats</dt>");
+  });
+});
+
+describe("the Import button", () => {
+  it("never offers to import zero rows", () => {
+    expect(importLabel(0)).toBe("Nothing to import");
+    expect(importLabel(1)).toBe("Import 1 row");
+    expect(importLabel(3)).toBe("Import 3 rows");
+  });
+});
+
+describe("the choose step", () => {
+  it("is a form that stays in the markup, shown at first, so Back can find the input in it", () => {
+    const html = dialog();
+    const form = /<form[^>]*>/.exec(html)![0];
+    expect(form).toContain("flex");
+    expect(form).not.toMatch(/\bhidden\b/);
   });
 });

@@ -85,6 +85,39 @@ describe("previewStaffImport", () => {
     expect(await listStaff(tenant)).toHaveLength(1);
   });
 
+  it("says in the preview that a second owner goes over the plan's one owner login, without blocking it", async () => {
+    const tenant = await newRestaurant();
+    const csv = `email,name,role\n${email()},Second owner,owner\n${email()},Staff,staff`;
+
+    const preview = report(await previewStaffImport(tenant, csv));
+
+    expect(preview.notice).toBe(
+      "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked.",
+    );
+    expect(preview.ready).toBe(2);
+  });
+
+  it("says nothing of owners for a file of staff, for the first owner, or for an owner row that is skipped", async () => {
+    const tenant = await newRestaurant();
+    const staffOnly = report(await previewStaffImport(tenant, `email,name,role\n${email()},A,staff`));
+    expect(staffOnly.notice).toBeUndefined();
+
+    const skipped = report(
+      await previewStaffImport(tenant, `email,name,role\n${tenant.staffId}@example.test,Me,owner\nbad,Bad,owner`),
+    );
+    expect(skipped.ready).toBe(0);
+    expect(skipped.notice).toBeUndefined();
+
+    const empty = await newRestaurant({ withOwner: false });
+    const first = report(await previewStaffImport(empty, `email,name,role\n${email()},First,owner`));
+    expect(first.notice).toBeUndefined();
+
+    const two = report(
+      await previewStaffImport(empty, `email,name,role\n${email()},First,owner\n${email()},Second,owner`),
+    );
+    expect(two.notice).toContain("one owner login");
+  });
+
   it("needs an owner row before any staff row when the restaurant has no owner yet", async () => {
     const tenant = await newRestaurant({ withOwner: false });
     const csv = `email,name,role\n${email()},Staff first,staff\n${email()},The owner,owner\n${email()},Staff after,staff`;
