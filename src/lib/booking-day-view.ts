@@ -27,6 +27,8 @@ export type DayRow = {
   source: "online" | "staff";
   /** E.164, or null for a walk-in or once the retention job has run (D-06). */
   phone: string | null;
+  /** Cancelling queues the guest a WhatsApp message: they opted in and a number is held (spec 05). */
+  willMessage: boolean;
   /** Confirmed and not seated 30 minutes after its start: staff decide (spec 04). */
   late: boolean;
   /**

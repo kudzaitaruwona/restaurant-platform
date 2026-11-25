@@ -2,7 +2,9 @@ import { and, eq } from "drizzle-orm";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { bookings, restaurants, servicePeriods } from "@/db/schema";
-import { addDays, localToday, weekdayOf } from "@/lib/booking-engine";
+import { addDays, dateLabel, localToday, weekdayOf } from "@/lib/booking-engine";
+import { getBookingPage } from "@/lib/bookings";
+import { resolvePublicToken } from "@/lib/tenant/public";
 import { aBooking, bookableRestaurant } from "../../../../../test/integration/bookings";
 import {
   openOwnerDatabase,
@@ -10,7 +12,8 @@ import {
 } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
 import Page from "./page";
-import { Confirmed } from "./details-form";
+import { BookingSteps, TimeGrid } from "./booking-steps";
+import { AlreadyBooked, refusalOf, RefusalNotice } from "./details-form";
 
 // Only a real request has a connection to wait for.
 vi.mock("next/server", async (original) => ({
@@ -233,34 +236,149 @@ describe("the booking page", () => {
   });
 });
 
-describe("the confirmation", () => {
-  const confirmation = {
-    restaurantName: "Mbira Kitchen",
-    dateLabel: "Fri 6 Nov",
-    time: "19:00",
-    party: 4,
-    manageToken: "AbCdEfGhIjKlMnOpQrStUv",
-    contactPhone: "+263771234567",
-  };
+describe("the choices and the times under them (#103)", () => {
+  const tags = (page: string, name: string) =>
+    [...page.matchAll(new RegExp(`<input[^>]*name="${name}"[^>]*>`, "g"))].map(([tag]) => tag);
+  const loaded = (page: string, name: string) =>
+    tags(page, name)
+      .filter((tag) => tag.includes("data-loaded"))
+      .map((tag) => /value="([^"]*)"/.exec(tag)?.[1]);
 
-  it("shows restaurant, date, time and party, the cancel link and the contact number", () => {
-    const html = renderToStaticMarkup(<Confirmed confirmation={confirmation} />);
+  it("names the chosen date above its times", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
 
-    expect(html).toContain("Mbira Kitchen, Fri 6 Nov at 19:00, party of 4");
-    // The sentence is for screen readers; the ticket drawn from it is hidden from them.
-    expect(html).toMatch(/<div aria-hidden="true"[^>]*>.*Fri 6 Nov/);
-    expect(html).toContain("+263 77 123 4567");
-    expect(html).toMatch(/<a[^>]*href="\/b\/AbCdEfGhIjKlMnOpQrStUv"[^>]*>Cancel booking<\/a>/);
-    expect(html).toContain('href="tel:+263771234567"');
+    const page = await render(slug, { party: "2", date: tomorrow() });
+
+    expect(page).toContain(`Available times on ${dateLabel(tomorrow())}`);
   });
 
-  it("leaves the phone line out when the restaurant has none, and never shows a table", () => {
-    const html = renderToStaticMarkup(
-      <Confirmed confirmation={{ ...confirmation, contactPhone: null }} />,
+  it("marks the party and date the times are for, and hides times and details once either differs", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+
+    const page = await render(slug, { party: "2", date: tomorrow(), time: "19:00" });
+
+    expect(loaded(page, "party")).toEqual(["2"]);
+    expect(loaded(page, "date")).toEqual([tomorrow()]);
+    const hidesWhenChanged = "group-has-[[data-loaded]:not(:checked)]/steps:hidden";
+    const tag = (pattern: RegExp) => pattern.exec(page)?.[0];
+    // renderToStaticMarkup escapes the ampersands only, not brackets.
+    expect(tag(/<section[^>]*aria-label="Available times"[^>]*>/)).toContain(hidesWhenChanged);
+    expect(tag(/<form[^>]*id="details"[^>]*>/)).toContain(hidesWhenChanged);
+    expect(page).toContain("Show times to see what");
+  });
+
+  it("marks nothing while no times are shown, and only the party on the large-group message", async () => {
+    const { slug } = await bookableRestaurant(owner.db, { rules: { maxOnlinePartySize: 2 } });
+
+    expect(await render(slug)).not.toContain("data-loaded=");
+
+    const large = await render(slug, { party: "3", date: tomorrow() });
+    expect(loaded(large, "party")).toEqual(["3"]);
+    expect(loaded(large, "date")).toEqual([]);
+
+    // A size past the last option is the last option, so changing it can be seen.
+    expect(loaded(await render(slug, { party: "50" }), "party")).toEqual(["3"]);
+  });
+
+  it("leaves steps that need no script: links for times, a GET form for party and date", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+
+    const page = await render(slug, { party: "2", date: tomorrow() });
+
+    expect(page).toContain(`href="?party=2&amp;date=${tomorrow()}&amp;time=19:00#details"`);
+    expect(page).toMatch(/<form[^>]*method="get"/);
+    expect(page).not.toContain('inert=""');
+  });
+
+  const grid = (time: string | undefined, available?: { period: string; time: string }[]) =>
+    renderToStaticMarkup(
+      <BookingSteps action="/api/r/x/book" time={time} initialAvailable={available}>
+        <TimeGrid
+          party={2}
+          date="2026-11-28"
+          dateLabel="Sat 28 Nov"
+          times={[{ period: "Lunch", time: "12:00" }, { period: "Dinner", time: "19:00" }]}
+        />
+      </BookingSteps>,
     );
 
-    expect(html).not.toContain("tel:");
-    expect(html).toContain("Cancel booking");
-    expect(html.toLowerCase()).not.toContain("table");
+  it("shows the current choice, and what the last refusal left in place of the times it loaded", () => {
+    expect(/<a[^>]*time=19:00[^>]*>/.exec(grid("19:00"))?.[0]).toContain("aria-current");
+
+    const after = grid("20:00", [{ period: "Dinner", time: "20:00" }]);
+    expect(after).not.toContain("19:00");
+    expect(after).not.toContain("Lunch");
+    expect(/<a[^>]*time=20:00[^>]*>/.exec(after)?.[0]).toContain("aria-current");
+
+    expect(grid(undefined, [])).toContain("No tables for 2 on Sat 28 Nov.");
+  });
+});
+
+describe("a refusal (#103)", () => {
+  const notice = (refusal: Parameters<typeof RefusalNotice>[0]["refusal"]) =>
+    renderToStaticMarkup(<RefusalNotice refusal={refusal} choose={() => {}} />);
+
+  it("can take focus and is announced", () => {
+    const html = notice({ error: "That number looks too short." });
+
+    expect(html).toContain('tabindex="-1"');
+    expect(html).toContain('role="alert"');
+  });
+
+  it("labels the nearest times with their period", () => {
+    const html = notice({
+      error: "Gone",
+      times: [
+        { period: "Dinner", time: "18:00" },
+        { period: "Lunch", time: "14:00" },
+        { period: "Dinner", time: "18:30" },
+      ],
+    });
+
+    expect(html).toMatch(/Dinner<.*18:00.*18:30.*Lunch<.*14:00/);
+  });
+
+  const contact = { contactPhone: "+263771234567", whatsappLink: "https://wa.me/263771234567" };
+
+  it("gives the restaurant's number when there were too many attempts, and only then adds it", () => {
+    const limited = refusalOf(429, { error: "Too many" }, contact);
+    expect(notice(limited)).toContain('href="tel:+263771234567"');
+    expect(notice(limited)).toContain('href="https://wa.me/263771234567"');
+
+    expect(notice(refusalOf(400, { error: "Too short" }, contact))).not.toContain("tel:");
+    // A refusal that brings its own contacts keeps them.
+    expect(refusalOf(409, { error: "x", contactPhone: "+2637" }, contact).contactPhone).toBe("+2637");
+    expect(notice(refusalOf(429, { error: "Too many" }, { contactPhone: null, whatsappLink: null }))).not.toContain("tel:");
+  });
+
+  it("is given the restaurant's contacts by the page", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const tenant = await resolvePublicToken("slug", slug);
+
+    expect(await getBookingPage(tenant!, {})).toMatchObject(contact);
+  });
+});
+
+describe("in the form's place after booking (#89)", () => {
+  it("has no form to send again, and no token in the page", () => {
+    const html = renderToStaticMarkup(<AlreadyBooked again={() => {}} />);
+
+    expect(html).toContain("You booked from this tab");
+    expect(html).toContain("If you have already cancelled it, you can make another booking.");
+    // The booking may be cancelled, or past its cutoff: nothing says otherwise.
+    expect(html).not.toContain("You&#x27;re booked");
+    expect(html).toContain("Make another booking");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("/b/");
+  });
+
+  it("offers the booking while its page opens, and no second booking", () => {
+    const html = renderToStaticMarkup(<AlreadyBooked open={() => {}} />);
+
+    expect(html).toContain("You&#x27;re booked");
+    expect(html).toContain("Open your booking");
+    expect(html).not.toContain("Make another booking");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("/b/");
   });
 });

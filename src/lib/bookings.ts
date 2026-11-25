@@ -264,7 +264,7 @@ export function getBookingPage(
 
     return {
       restaurantName: restaurant.name,
-      contactPhone: restaurant.contactPhone,
+      ...contactOf(restaurant.contactPhone),
       enabled: rules.enabled,
       maxParty: rules.maxOnlinePartySize,
       requestedParty,
@@ -287,6 +287,11 @@ const messages = {
   choice: "That booking request wasn't complete. Choose a time again.",
   name: "Enter your name, up to 100 characters.",
   phone: "Enter a WhatsApp number we can reach you on.",
+  phoneLong: "That number looks too long. Check the digits and the country code.",
+  phoneCountry:
+    "We can't tell which country that number is in. Enter it in full, starting with + and the country code.",
+  phoneShort: "That number looks too short. Check the digits and the country code.",
+  countryCode: "Enter the country code with a +, like +263.",
   note: "Keep the note to 200 characters.",
   consent: "Tick the box so we can send your confirmation and reminder on WhatsApp.",
 };
@@ -294,19 +299,98 @@ const messages = {
 // Postgres can't store a NUL byte in text, so one is a refusal here, not a 500.
 export const noNul = (value: string) => !value.includes("\0");
 
+/** The digits of a country code typed as 263, +263 or 00263; null when it isn't one. */
+function codeDigits(countryCode: string) {
+  const match = /^(?:\+|00)?([1-9][0-9]{0,3})$/.exec(countryCode.replace(/[\s().-]/g, ""));
+  return match ? match[1] : null;
+}
+
+/** Whether the country-code box holds a country code, in any of the forms people type it. */
+export const isCountryCode = (countryCode: string) => codeDigits(countryCode) !== null;
+export const countryCodeMessage = messages.countryCode;
+
+/** The digits a number was typed as, without the spaces and punctuation people add. */
+export const bareNumber = (number: string) => number.replace(/[\s().-]/g, "");
+
+/** Whether a bare number says its own country, so the code box doesn't matter. */
+export const carriesCountry = (bare: string) => /^(?:\+|00)/.test(bare);
+
+/**
+ * How many digits follow the code in the numbers guests have, [fewest, most], where
+ * that is settled: enough to tell a code typed twice from a number that begins like
+ * its code. A code that isn't here is only ever guessed at by refusing (toE164).
+ */
+const nationalLengths: Record<string, readonly [number, number]> = {
+  "1": [10, 10], "7": [10, 10], "20": [10, 10], "27": [9, 9], "31": [9, 9], "32": [8, 9], "33": [9, 9],
+  "34": [9, 9], "39": [9, 10], "44": [9, 10], "49": [10, 11], "55": [10, 11], "61": [9, 9], "63": [10, 10],
+  "65": [8, 8], "81": [9, 10], "84": [9, 10], "86": [11, 11], "90": [10, 10], "91": [10, 10], "92": [10, 10],
+  "234": [10, 10], "254": [9, 9], "255": [9, 9], "256": [9, 9], "258": [9, 9], "260": [9, 9], "264": [8, 9],
+  "265": [9, 9], "266": [8, 8], "267": [8, 8], "268": [8, 8], "351": [9, 9], "971": [8, 9],
+};
+
+/** Whether `national`, which begins with `code`, has it as its country code; null when it can't be told. */
+function codeIsTyped(code: string, national: string): boolean | null {
+  // No Zimbabwean mobile begins 263, so there it is always the code.
+  if (code === "263") return true;
+  const rest = national.length - code.length;
+  const lengths = nationalLengths[code];
+  // Seven digits after the code is the least that could be a number anywhere.
+  if (!lengths) return rest >= 7 ? null : false;
+  const plausible = (digits: number) => digits >= lengths[0] && digits <= lengths[1];
+  return plausible(rest) === plausible(national.length) ? null : plausible(rest);
+}
+
 /**
  * The number as E.164. A local number's leading 0 is the trunk prefix, not part
- * of it, and a number typed with its own + already has its country code *(proposed)*.
+ * of it. A number typed with its own + or 00 keeps its own country code. One that
+ * begins with the chosen code (263…, 0263…, or a national number like India's
+ * 91234…) is read the one way its length allows; when that leaves two ways, or
+ * none, it comes back without a +, for phoneProblem to refuse: a message and its
+ * link must never go to a guessed number. A 0 kept after +263 is dropped
+ * *(proposed, #88)*. The code box may hold 263, +263 or 00263.
  */
 export function toE164(countryCode: string, number: string) {
-  const digits = number.replace(/[\s().-]/g, "");
-  return digits.startsWith("+")
-    ? digits
-    : `${countryCode.trim()}${digits.replace(/^0+/, "")}`;
+  return withCode(countryCode, bareNumber(number)).replace(/^\+2630/, "+263");
+}
+
+function withCode(countryCode: string, typed: string) {
+  if (typed.startsWith("+")) return typed;
+  if (typed.startsWith("00")) return `+${typed.slice(2)}`;
+  const code = codeDigits(countryCode);
+  const national = typed.replace(/^0+/, "");
+  if (code === null) return `${countryCode.trim()}${national}`;
+  if (!national.startsWith(code)) return `+${code}${national}`;
+  const isTyped = codeIsTyped(code, national);
+  if (isTyped === null) return national;
+  return isTyped ? `+${national}` : `+${code}${national}`;
 }
 
 /** What bookings_guest_phone_e164 accepts. */
 export const E164 = /^[+][1-9][0-9]{7,14}$/;
+
+/**
+ * Why an E.164 number is refused, or null. Shorter than any real mobile number is
+ * refused, and Zimbabwe's, being the default, is held to its length and can't have
+ * the code twice *(proposed, #88)*. Digits without a + are toE164 unable to tell
+ * the country.
+ */
+export function phoneProblem(phone: string): "phone" | "phoneShort" | "phoneLong" | "phoneCountry" | null {
+  if (/^[1-9][0-9]*$/.test(phone)) return "phoneCountry";
+  if (/^[+][1-9][0-9]{15,}$/.test(phone)) return "phoneLong";
+  if (!E164.test(phone)) return "phone";
+  const digits = phone.length - 1;
+  if (digits < 9) return "phoneShort";
+  if (!phone.startsWith("+263")) return null;
+  if (digits < 11) return "phoneShort";
+  if (digits > 12) return "phoneLong";
+  return phone.startsWith("+263263") ? "phone" : null;
+}
+
+/** For a zod refinement: reports phoneProblem in the booking forms' words. */
+export function refinePhone(phone: string | null, ctx: z.RefinementCtx) {
+  const problem = phone === null ? null : phoneProblem(phone);
+  if (problem) ctx.addIssue({ code: "custom", message: messages[problem] });
+}
 
 const guestRequest = z
   .object({
@@ -325,7 +409,7 @@ const guestRequest = z
       .refine(noNul, messages.name),
     // Capped before anything reads them, so no pattern ever runs on a long string.
     // A country code is a + and at most four digits (E.164, ITU-T E.164).
-    countryCode: z.string(messages.phone).max(8, messages.phone).default(DEFAULT_COUNTRY_CODE),
+    countryCode: z.string(messages.phone).max(8, messages.phone).refine(isCountryCode, messages.countryCode).default(DEFAULT_COUNTRY_CODE),
     // 15 digits at most, plus the spaces, dashes and brackets people type.
     phone: z.string(messages.phone).max(40, messages.phone),
     note: z
@@ -342,7 +426,7 @@ const guestRequest = z
     note: note || null,
     whatsappOptIn: consent === "on",
   }))
-  .refine(({ phone }) => E164.test(phone), messages.phone);
+  .superRefine(({ phone }, ctx) => refinePhone(phone, ctx));
 
 export type GuestRequest = z.output<typeof guestRequest>;
 
@@ -415,7 +499,7 @@ export const closedMessage = "This restaurant isn't taking online bookings right
 /** *(Proposed)* Spec 04 has no row for a date outside today to max_days_ahead. */
 export const dateMessage = "That date can't be booked online. Choose another date.";
 export const phoneLimitMessage = (held: number) =>
-  `You already have ${held} upcoming ${held === 1 ? "booking" : "bookings"} here. Cancel one or contact the restaurant.`;
+  `You already have ${held} upcoming ${held === 1 ? "booking" : "bookings"} here. Cancel one with the link in its WhatsApp confirmation, or contact the restaurant.`;
 export const largePartyMessage = (threshold: number) =>
   `For groups of ${threshold}+, contact the restaurant`;
 
@@ -428,11 +512,12 @@ export type Confirmation = {
   contactPhone: string | null;
 };
 
+/** `times` are the nearest few to offer; `available` is every time left that day, for the grid. */
 export type ConfirmOutcome =
   | { outcome: "confirmed"; confirmation: Confirmation }
-  | { outcome: "race_lost"; times: TimeChoice[] }
-  | { outcome: "lead_time"; times: TimeChoice[] }
-  | { outcome: "phone_limit"; held: number }
+  | { outcome: "race_lost"; times: TimeChoice[]; available: TimeChoice[] }
+  | { outcome: "lead_time"; times: TimeChoice[]; available: TimeChoice[] }
+  | { outcome: "phone_limit"; held: number; contactPhone: string | null; whatsappLink: string | null }
   | { outcome: "date_unavailable" }
   | {
       outcome: "party_too_large";
@@ -453,6 +538,11 @@ const isPhoneLimit = (error: unknown) => {
   const cause = dbErrorOf(error);
   return cause?.code === "23514" && cause.constraint === "bookings_max_active_per_phone";
 };
+
+const timesLeft = (remaining: readonly AvailableTime[], wanted: Date) => ({
+  times: choices(nearestTimes(remaining, wanted)),
+  available: choices(remaining),
+});
 
 /** Upcoming confirmed bookings under this number at this restaurant. */
 async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phone: string, now: Date) {
@@ -515,11 +605,13 @@ export async function confirmBooking(
       const wanted = instantOf(date, time, timezone);
       if (wanted.getTime() < now.getTime() + rules.minLeadMinutes * 60_000) {
         const remaining = await timesOn(tx, tenant, read, day);
-        return { outcome: "lead_time", times: choices(nearestTimes(remaining, wanted)) };
+        return { outcome: "lead_time", ...timesLeft(remaining, wanted) };
       }
 
       const held = await upcomingFor(tx, tenant, guest.phone, now);
-      if (held >= rules.maxActiveBookingsPerPhone) return { outcome: "phone_limit", held };
+      if (held >= rules.maxActiveBookingsPerPhone) {
+        return { outcome: "phone_limit", held, ...contactOf(restaurant.contactPhone) };
+      }
 
       const chosen = (await timesOn(tx, tenant, read, day)).find((slot) => slot.time === time);
       const manageToken = mintQrToken();
@@ -555,7 +647,11 @@ export async function confirmBooking(
           // rolled back, so the transaction is whole, and a new statement now sees
           // whoever won.
           const heldNow = await upcomingFor(tx, tenant, guest.phone, now);
-          return { outcome: "phone_limit", held: Math.max(heldNow, rules.maxActiveBookingsPerPhone) };
+          return {
+            outcome: "phone_limit",
+            held: Math.max(heldNow, rules.maxActiveBookingsPerPhone),
+            ...contactOf(restaurant.contactPhone),
+          };
         } else throw error;
       }
 
@@ -580,7 +676,7 @@ export async function confirmBooking(
 
       // Asked again, not reused: this statement's snapshot sees whoever just won.
       const remaining = await timesOn(tx, tenant, read, day);
-      return { outcome: "race_lost", times: choices(nearestTimes(remaining, wanted)) };
+      return { outcome: "race_lost", ...timesLeft(remaining, wanted) };
     });
   } catch (error) {
     // A Drizzle error's message quotes the statement's parameters, which here are
@@ -630,6 +726,7 @@ async function readManaged(tx: TenantTransaction, { restaurantId }: Tenant, toke
       name: restaurants.name,
       timezone: restaurants.timezone,
       contactPhone: restaurants.contactPhone,
+      slug: restaurants.slug,
     })
     .from(restaurants)
     .where(eq(restaurants.id, restaurantId));
@@ -638,6 +735,7 @@ async function readManaged(tx: TenantTransaction, { restaurantId }: Tenant, toke
     ...rest,
     restaurantName: restaurant.name,
     contactPhone: restaurant.contactPhone,
+    slug: restaurant.slug,
     dateLabel: dateLabel(localToday(startsAt, restaurant.timezone)),
     time: localTime(startsAt, restaurant.timezone),
   };

@@ -8,11 +8,13 @@ import {
   addClosure,
   type ClosureRequest,
   closureLabel,
+  closuresOnDay,
   deleteClosure,
   listClosures,
   parseClosure,
 } from "./booking-closures";
 import { addStaffBooking, getStaffBookingForm, type StaffRequest } from "./booking-staff";
+import { withTenant } from "@/lib/tenant/scope";
 import { confirmBooking, getBookingPage, type GuestRequest } from "./bookings";
 import { seatWalkIn } from "./walk-in";
 
@@ -344,6 +346,48 @@ describe("saving over bookings", () => {
     expect(await closuresOf(restaurantId)).toEqual([]);
   });
 
+  it("links each booking to its day on the bookings page, at its row", async () => {
+    const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
+    const [booked] = await book(restaurantId, one).then(() =>
+      owner.db.select().from(bookings).where(eq(bookings.restaurantId, restaurantId)),
+    );
+
+    const result = await closeEvening(restaurantId);
+
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      bookings: [{ id: booked.id, href: `/dashboard/bookings?date=${date}#booking-${booked.id}` }],
+    });
+  });
+
+  it("refuses the same closure twice, even with another reason, and says so", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const request = parsed({ startDate: date, reason: "Holiday" });
+    expect(await addClosure(actor(restaurantId), request, now)).toMatchObject({ outcome: "saved" });
+
+    const again = await addClosure(actor(restaurantId), { ...request, reason: "Another note" }, now);
+    const sameTimes = await addClosure(actor(restaurantId), parsed({ startDate: date }), now);
+
+    expect(again).toEqual({ outcome: "invalid", message: "That closure is already saved." });
+    expect(sameTimes).toEqual(again);
+    expect(await closuresOf(restaurantId)).toHaveLength(1);
+    // A different window on the same day is another closure.
+    expect(await closeEvening(restaurantId)).toMatchObject({ outcome: "saved" });
+    expect(await closuresOf(restaurantId)).toHaveLength(2);
+  });
+
+  it("has one winner when the same closure is saved twice at once", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    const results = await Promise.all(
+      [1, 2, 3].map(() => addClosure(actor(restaurantId), parsed({ startDate: date }), now)),
+    );
+
+    expect(results.filter(({ outcome }) => outcome === "saved")).toHaveLength(1);
+    expect(results.filter(({ outcome }) => outcome === "invalid")).toHaveLength(2);
+    expect(await closuresOf(restaurantId)).toHaveLength(1);
+  });
+
   it("saves once those bookings are cancelled", async () => {
     const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
     await book(restaurantId, one);
@@ -458,7 +502,8 @@ describe("what a guest sees once a closure is saved", () => {
 
     const result = await confirmBooking({ restaurantId }, guest({ time: "19:30" }), now);
 
-    expect(result).toEqual({ outcome: "race_lost", times: [{ period: "Dinner", time: "18:00" }, { period: "Dinner", time: "18:30" }] });
+    const left = [{ period: "Dinner", time: "18:00" }, { period: "Dinner", time: "18:30" }];
+    expect(result).toEqual({ outcome: "race_lost", times: left, available: left });
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
 
@@ -635,6 +680,36 @@ describe("listing and removing", () => {
     expect(await deleteClosure(actor(mine.restaurantId), crypto.randomUUID())).toBe("not_found");
 
     expect(await closuresOf(theirs.restaurantId)).toHaveLength(1);
+  });
+});
+
+describe("the closures on a day", () => {
+  const dayOf = async (windows: [string, string][]) => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const at = (when: string) => instantOf(when === "24:00" ? addDays(date, 1) : date, when === "24:00" ? "00:00" : when, HARARE);
+    await owner.db
+      .insert(closures)
+      .values(windows.map(([from, to]) => ({ restaurantId, startsAt: at(from), endsAt: at(to) })));
+    return withTenant({ restaurantId }, (tx) => closuresOnDay(tx, restaurantId, date, HARARE));
+  };
+
+  it.each<[string, [string, string][], boolean]>([
+    ["one over the whole day", [["00:00", "24:00"]], true],
+    ["two that meet", [["15:00", "24:00"], ["00:00", "15:00"]], true],
+    ["one inside another", [["00:00", "24:00"], ["12:00", "13:00"]], true],
+    ["three that overlap", [["00:00", "10:00"], ["05:00", "08:00"], ["09:00", "24:00"]], true],
+    ["a minute's gap", [["00:00", "15:00"], ["15:01", "24:00"]], false],
+    ["a minute short of the end", [["00:00", "23:59"]], false],
+    ["a minute late to start", [["00:01", "24:00"]], false],
+  ])("%s", async (_, windows, wholeDay) => {
+    expect((await dayOf(windows)).wholeDay).toBe(wholeDay);
+  });
+
+  it("counts every closure, however many there are", async () => {
+    const hour = (n: number) => `${String(n).padStart(2, "0")}:00`;
+    const result = await dayOf(Array.from({ length: 24 }, (_, n) => [hour(n), hour(n + 1)]));
+    expect(result.wholeDay).toBe(true);
+    expect(result.closures).toHaveLength(24);
   });
 });
 

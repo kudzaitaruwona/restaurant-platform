@@ -7,11 +7,13 @@ import { PageHeader } from "@/components/ui/page-header";
 import { listClosures } from "@/lib/booking-closures";
 import { localToday } from "@/lib/booking-engine";
 import {
+  gateLinks,
   gateMessages,
   getBookingReadiness,
   getBookingSettings,
   listServicePeriods,
   missingForBooking,
+  rulesSavedMessage,
   settingFields,
   weekdayNames,
   weekdayOrder,
@@ -22,6 +24,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { ActionForm } from "../../action-form";
 import { CopyLinkButton } from "./copy-link-button";
+import { DayFeedback, DeletePeriodForm } from "./day-feedback";
 
 /**
  * Booking settings: owner only (S-26). Switch online booking on or off, set the
@@ -63,7 +66,7 @@ export async function BookingSettingsScreen() {
               )}
             />
           </h2>
-          <ActionForm action="/api/bookings/settings/enabled" className="flex flex-col gap-2">
+          <ActionForm action="/api/bookings/settings/enabled" className="flex flex-col items-start gap-2 sm:items-end">
             <input type="hidden" name="enabled" value={settings.enabled ? "false" : "true"} />
             <Button type="submit" size="staff" variant={settings.enabled ? "secondary" : "primary"}>
               {settings.enabled ? "Turn online booking off" : "Turn online booking on"}
@@ -74,14 +77,14 @@ export async function BookingSettingsScreen() {
           <Notice tone="attention" title="Before you can turn it on:" className="mt-4">
             <ul className="list-disc pl-5">
               {missing.map((item) => (
-                <li key={item}>{gateMessages[item]}</li>
+                <li key={item}>
+                  {gateMessages[item]}:{" "}
+                  <Link href={gateLinks[item].href} className="font-medium underline underline-offset-4">
+                    {gateLinks[item].label}
+                  </Link>
+                </li>
               ))}
             </ul>
-            {missing.includes("table") && (
-              <Link href="/dashboard/tables" className="mt-1 inline-block font-medium underline underline-offset-4">
-                Go to tables
-              </Link>
-            )}
           </Notice>
         )}
         <p className="mt-3 text-caption text-ink-2">
@@ -126,42 +129,49 @@ export async function BookingSettingsScreen() {
           {weekdayOrder.map((weekday) => {
             const today = periods.filter((period) => period.weekday === weekday);
             return (
-              <div key={weekday} className="flex flex-col gap-3 py-4 last:pb-0">
+              <DayFeedback key={weekday} className="flex flex-col gap-3 py-4 last:pb-0">
                 <h3 className="text-lead font-semibold">{weekdayNames[weekday]}</h3>
                 {today.length === 0 && <p className="text-caption text-ink-2">No service periods.</p>}
                 {today.map((period) => (
-                  <div key={period.id} className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
-                    <div className="min-w-0 flex-1">
-                      <ActionForm
-                        action={`/api/bookings/periods/${period.id}`}
-                        savedMessage="Saved."
-                        className={periodGrid}
-                      >
-                        <PeriodFields period={period} />
-                        <Button type="submit" variant="secondary" size="staff">
-                          Save
-                        </Button>
-                      </ActionForm>
-                    </div>
-                    <div className="md:w-24">
-                      <ActionForm
-                        action={`/api/bookings/periods/${period.id}/delete`}
-                        confirmation={{
-                          title: `Delete ${period.name} on ${weekdayNames[weekday]}?`,
-                          description:
+                  <div key={period.id} className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
+                      <div className="min-w-0 flex-1">
+                        <ActionForm
+                          action={`/api/bookings/periods/${period.id}`}
+                          savedMessage="Saved."
+                          className={periodGrid}
+                        >
+                          <PeriodFields period={period} />
+                          <Button type="submit" variant="secondary" size="staff">
+                            Save
+                          </Button>
+                        </ActionForm>
+                      </div>
+                      <div className="md:w-24">
+                        <DeletePeriodForm
+                          action={`/api/bookings/periods/${period.id}/delete`}
+                          confirmation={{
+                            title: `Delete ${period.name} on ${weekdayNames[weekday]}?`,
+                            description:
+                              settings.enabled && periods.length === 1
+                                ? "It's the last service period, so online booking will switch off."
+                                : undefined,
+                            confirmLabel: "Delete period",
+                            cancelLabel: "Keep it",
+                          }}
+                          deletedMessage={`Deleted ${period.name} on ${weekdayNames[weekday]}.${
                             settings.enabled && periods.length === 1
-                              ? "It's the last service period, so online booking will switch off."
-                              : undefined,
-                          confirmLabel: "Delete period",
-                          cancelLabel: "Keep it",
-                        }}
-                        savedMessage="Deleted. If it was the last one, online booking is switched off."
-                      >
-                        <Button type="submit" variant="danger-ghost" size="staff">
-                          Delete
-                        </Button>
-                      </ActionForm>
+                              ? " It was the last service period, so online booking is switched off."
+                              : ""
+                          }`}
+                        >
+                          <Button type="submit" variant="danger-ghost" size="staff">
+                            Delete
+                          </Button>
+                        </DeletePeriodForm>
+                      </div>
                     </div>
+                    <CopyPeriodForm period={period} />
                   </div>
                 ))}
                 {/* Lined up with the periods above, whose Delete sits in the last 6rem. */}
@@ -179,7 +189,7 @@ export async function BookingSettingsScreen() {
                     </Button>
                   </ActionForm>
                 </div>
-              </div>
+              </DayFeedback>
             );
           })}
         </div>
@@ -255,11 +265,11 @@ export async function BookingSettingsScreen() {
         </h2>
         <ActionForm
           action="/api/bookings/settings"
-          savedMessage="Saved. Changes apply to bookings made from now on."
+          savedMessage={rulesSavedMessage}
           className="mt-4 grid gap-4 sm:grid-cols-2 [&>[role=alert]]:col-span-full [&>[role=status]]:col-span-full"
         >
-          {settingFields.map(({ key, label, min, max }) => (
-            <Field key={key} label={label}>
+          {settingFields.map(({ key, label, min, max, help }) => (
+            <Field key={key} label={label} hint={help}>
               <Input
                 name={key}
                 type="number"
@@ -285,6 +295,44 @@ const card = cn(cardClassName, "p-4 md:p-6");
 /** Name, opens, last booking, closes and the button, in one row from 768px. */
 const periodGrid =
   "grid grid-cols-3 items-end gap-3 md:grid-cols-[minmax(0,1.3fr)_repeat(3,minmax(0,1fr))_7rem] [&>[role=alert]]:col-span-full [&>[role=status]]:col-span-full [&>button]:col-span-3 md:[&>button]:col-span-1 [&>label:first-of-type]:col-span-3 md:[&>label:first-of-type]:col-span-1";
+
+/** Every other day, to tick: the copy is all or none, and says which days stop it. */
+function CopyPeriodForm({ period }: { period: { id: string; name: string; weekday: number } }) {
+  return (
+    <details>
+      <summary className="min-h-11 w-fit cursor-pointer py-2 text-caption font-medium text-ink-2 underline underline-offset-4">
+        Copy {period.name} to other days
+      </summary>
+      <ActionForm
+        action={`/api/bookings/periods/${period.id}/copy`}
+        resetOnSuccess
+        savedMessage={`Copied ${period.name} to the days you ticked.`}
+        className="flex flex-col gap-3 pb-2"
+      >
+        <p className="text-caption text-ink-2">
+          Copies the name and times. If a day you tick already has a period that overlaps it,
+          nothing is copied and you&apos;ll be told which days.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {weekdayOrder
+            .filter((weekday) => weekday !== period.weekday)
+            .map((weekday) => (
+              <label
+                key={weekday}
+                className="flex min-h-11 cursor-pointer items-center gap-2 rounded-control border border-line px-3 text-body"
+              >
+                <input type="checkbox" name="weekdays" value={weekday} className="size-4" />
+                {weekdayNames[weekday]}
+              </label>
+            ))}
+        </div>
+        <Button type="submit" variant="secondary" size="staff" className="self-start">
+          Copy
+        </Button>
+      </ActionForm>
+    </details>
+  );
+}
 
 function PeriodFields({
   period,

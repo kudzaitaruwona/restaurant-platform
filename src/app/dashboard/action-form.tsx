@@ -12,6 +12,7 @@ import {
   useSyncExternalStore,
   useTransition,
 } from "react";
+import { Notice } from "@/components/ui/notice";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
@@ -50,8 +51,11 @@ export function ActionForm({
   className,
   confirmation,
   resetOnSuccess = false,
+  keepOnReset = [],
   savedMessage,
   refusalOnPage = false,
+  onSaved,
+  refreshOnRefusal = false,
   children,
 }: {
   action: string;
@@ -60,9 +64,15 @@ export function ActionForm({
   className?: string;
   confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
+  /** Fields (by name) that keep their value through the reset, e.g. the time chosen for the next booking. */
+  keepOnReset?: string[];
   savedMessage?: string;
   /** Shows its refusals on the page (PageRefusalAlert), for a form whose surroundings can't grow (#102). */
   refusalOnPage?: boolean;
+  /** Called after a save, for a form whose own message goes with it (a deleted row). */
+  onSaved?: () => void;
+  /** Reloads the page's data after a refusal too, for a form whose page shows what the refusal found out (a stale list). */
+  refreshOnRefusal?: boolean;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -70,6 +80,7 @@ export function ActionForm({
   const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
   const page = useContext(PageRefusalContext);
+  const [detail, setDetail] = useState<SavedDetail>();
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
   const [self] = useState(() => Symbol("action-form"));
@@ -114,11 +125,23 @@ export function ActionForm({
     setPending(true);
     setError(undefined);
     setSaved(false);
+    setDetail(undefined);
     try {
       const response = await postForm(action, body);
       if (response.ok) {
-        if (resetOnSuccess) form.reset();
+        if (resetOnSuccess) {
+          const kept = keepOnReset.flatMap((name) => {
+            const field = form.elements.namedItem(name);
+            return field instanceof HTMLSelectElement || field instanceof HTMLInputElement
+              ? [[field, field.value] as const]
+              : [];
+          });
+          form.reset();
+          for (const [field, value] of kept) field.value = value;
+        }
+        setDetail(await savedFrom(response));
         setSaved(true);
+        onSaved?.();
         router.refresh();
       } else {
         const refusal = await refusalFrom(response);
@@ -127,6 +150,7 @@ export function ActionForm({
           setWarned(true);
         } else {
           refuse(refusal);
+          if (refreshOnRefusal && !refusal.refresh) router.refresh();
         }
       }
     } catch {
@@ -140,7 +164,24 @@ export function ActionForm({
     <form ref={formRef} id={id} method="post" action={action} onSubmit={submit}>
       <fieldset disabled={pending} className={className}>
         {children}
-        {saved && savedMessage && (
+        {saved && detail && (
+          <div role="status" className="flex flex-col gap-2">
+            <Notice tone="positive">
+              {detail.message}
+              {detail.href && (
+                <>
+                  {" "}
+                  {/* A full load, so the day's row is the page's :target. */}
+                  <a href={detail.href} className="font-semibold underline underline-offset-2">
+                    {detail.linkLabel ?? "View"}
+                  </a>
+                </>
+              )}
+            </Notice>
+            {detail.warning && <Notice tone="attention">{detail.warning}</Notice>}
+          </div>
+        )}
+        {saved && !detail && savedMessage && (
           <p role="status" className="text-caption text-ink-2">
             {savedMessage}
           </p>
@@ -237,12 +278,41 @@ export function RefusalAlert({ refusal }: { refusal: Refusal }) {
       {refusal.bookings.length > 0 && (
         <ul className="list-disc pl-5">
           {refusal.bookings.map((booking) => (
-            <li key={booking.id}>{booking.summary}</li>
+            <li key={booking.id}>
+              {booking.href ? (
+                // A full load, so the day's row is the page's :target.
+                <a href={booking.href} className="underline underline-offset-2">
+                  {booking.summary}
+                </a>
+              ) : (
+                booking.summary
+              )}
+            </li>
           ))}
         </ul>
       )}
     </div>
   );
+}
+
+/** What a save says about itself, when the route answers with more than a 204. */
+type SavedDetail = { message: string; href?: string; linkLabel?: string; warning?: string };
+
+/**
+ * A save that answers 200 with `{ saved: { message, href?, linkLabel?, warning? } }`
+ * shows that instead of the form's fixed message. The link goes only to the
+ * dashboard's own pages, whatever the body says.
+ */
+export async function savedFrom(response: Response): Promise<SavedDetail | undefined> {
+  if (response.status === 204) return undefined;
+  const saved = (await response.json().catch(() => undefined))?.saved;
+  if (typeof saved?.message !== "string") return undefined;
+  return {
+    message: saved.message,
+    ...(typeof saved.href === "string" && /^\/dashboard\//.test(saved.href) ? { href: saved.href } : {}),
+    ...(typeof saved.linkLabel === "string" ? { linkLabel: saved.linkLabel } : {}),
+    ...(typeof saved.warning === "string" ? { warning: saved.warning } : {}),
+  };
 }
 
 /**
@@ -259,10 +329,17 @@ export async function refusalFrom(response: Response): Promise<Refusal> {
         ? body.error
         : "That didn't work. Reload the page and try again.",
     bookings: Array.isArray(list)
-      ? list.filter(
-          (item: { id?: unknown; summary?: unknown }) =>
-            typeof item?.id === "string" && typeof item?.summary === "string",
-        )
+      ? list
+          .filter(
+            (item: { id?: unknown; summary?: unknown }) =>
+              typeof item?.id === "string" && typeof item?.summary === "string",
+          )
+          // A link only to the dashboard's own pages, whatever the body says.
+          .map(({ id, summary, href }: { id: string; summary: string; href?: unknown }) => ({
+            id,
+            summary,
+            ...(typeof href === "string" && /^\/dashboard\//.test(href) ? { href } : {}),
+          }))
       : [],
     warnings: Array.isArray(body?.confirm?.warnings)
       ? body.confirm.warnings.filter((warning: unknown) => typeof warning === "string")

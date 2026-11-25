@@ -785,6 +785,8 @@ export const closures = pgTable(
       foreignColumns: [restaurants.id],
     }),
     unique().on(table.restaurantId, table.id),
+    // The same window twice is one closure said twice (#108).
+    unique("closures_window_unique").on(table.restaurantId, table.startsAt, table.endsAt),
     index().on(table.restaurantId, table.endsAt),
     check("closures_times_ordered", sql`${table.startsAt} < ${table.endsAt}`),
     check(

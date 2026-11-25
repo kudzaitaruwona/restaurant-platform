@@ -4,10 +4,11 @@ import { connection } from "next/server";
 import { Calendar, Clock, MessageCircle, Phone, Users } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { ChoiceChip } from "@/components/ui/chip";
-import { getBookingPage, largePartyMessage, type TimeChoice } from "@/lib/bookings";
+import { getBookingPage, largePartyMessage } from "@/lib/bookings";
 import { displayPhone } from "@/lib/display-phone";
 import { resolvePublicToken } from "@/lib/tenant/public";
 import { cn } from "@/lib/utils";
+import { BookingSteps, ChoiceRow, Choices, TimeGrid } from "./booking-steps";
 import { DetailsForm } from "./details-form";
 
 export const metadata: Metadata = { title: "Book a table" };
@@ -20,9 +21,6 @@ export const instant = false;
 const first = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
 
-const byPeriod = (times: readonly TimeChoice[]) =>
-  Map.groupBy(times, (time) => time.period);
-
 /** A row of choices: scrolls sideways on a phone, wraps on a desktop. */
 const choiceRow =
   "-mx-4 flex gap-2 overflow-x-auto px-4 py-0.5 [scrollbar-width:none] lg:mx-0 lg:flex-wrap lg:overflow-visible lg:px-0";
@@ -33,8 +31,12 @@ const questionLabel =
 
 const partyChip = "min-w-11 shrink-0 [&>span]:px-3 [&>span]:tabular-nums";
 
-const timeTile =
-  "grid h-11 place-items-center rounded-control border border-line bg-surface font-medium text-ink tabular-nums no-underline transition-colors duration-150 ease-out hover:bg-surface-2 aria-[current]:border-brand aria-[current]:bg-brand aria-[current]:text-brand-ink";
+/**
+ * The results belong to the party and date they were loaded for (data-loaded). While
+ * either is no longer the one chosen, they are hidden. In CSS, so it needs no script
+ * and can't disagree with the radios, whoever set them (Back restores them too).
+ */
+const clearedWhenChanged = "group-has-[[data-loaded]:not(:checked)]/steps:hidden";
 
 /**
  * A date as a chip: weekday, day and month, or "No times" when nothing on it can
@@ -46,12 +48,15 @@ function DateChip({
   today,
   open,
   checked,
+  loaded,
 }: {
   value: string;
   label: string;
   today: boolean;
   open: boolean;
   checked: boolean;
+  /** The times below are this date's. */
+  loaded: boolean;
 }) {
   // dateLabel's "Thu 12 Nov", in its three parts.
   const [weekday, day, month] = label.split(" ");
@@ -63,6 +68,7 @@ function DateChip({
         value={value}
         disabled={!open}
         defaultChecked={checked}
+        data-loaded={loaded ? "" : undefined}
         aria-label={open ? label : `${label}, no times`}
         className="peer sr-only"
       />
@@ -107,9 +113,13 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
   });
   const { restaurantName, contactPhone, party, date, times } = page;
   const chosen = times?.find((time) => time.time === first(query.time));
-  const chosenParty = page.requestedParty ?? 2;
+  // Any size past the options is the last one.
+  const chosenParty = Math.min(page.requestedParty ?? 2, page.maxParty + 1);
+  const loadedParty = times || page.largeParty ? chosenParty : undefined;
   const chosenDate = date?.date ?? page.dates.find((day) => day.open)?.date;
   const details = page.enabled && chosen && party && date ? { chosen, party, date } : undefined;
+
+  const action = `/api/r/${encodeURIComponent(slug)}/book`;
 
   return (
     <main
@@ -119,8 +129,11 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
         details ? "lg:max-w-[960px]" : "lg:max-w-[560px]",
       )}
     >
-      <div
+      <BookingSteps
+        action={action}
+        time={details?.chosen.time}
         className={cn(
+          "group/steps",
           details && "lg:grid lg:grid-cols-[minmax(0,1fr)_400px] lg:items-start lg:gap-12",
         )}
       >
@@ -147,20 +160,21 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
               )}
             </div>
           ) : (
-            <>
+            <Choices>
               <form method="get" className="flex flex-col gap-7">
                 <fieldset className="m-0 min-w-0 border-0 p-0">
                   <legend className={questionLabel}>
                     <Users aria-hidden />
                     Party size
                   </legend>
-                  <div className={choiceRow}>
+                  <ChoiceRow className={choiceRow}>
                     {Array.from({ length: page.maxParty }, (_, index) => index + 1).map((size) => (
                       <ChoiceChip
                         key={size}
                         name="party"
                         value={size}
                         defaultChecked={size === chosenParty}
+                        data-loaded={size === loadedParty ? "" : undefined}
                         className={partyChip}
                       >
                         {size}
@@ -172,11 +186,12 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
                       name="party"
                       value={page.maxParty + 1}
                       defaultChecked={page.maxParty + 1 === chosenParty}
+                      data-loaded={page.maxParty + 1 === loadedParty ? "" : undefined}
                       className={partyChip}
                     >
                       {page.maxParty + 1}+
                     </ChoiceChip>
-                  </div>
+                  </ChoiceRow>
                 </fieldset>
 
                 <fieldset className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
@@ -184,7 +199,7 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
                     <Calendar aria-hidden />
                     Date
                   </legend>
-                  <div className={choiceRow}>
+                  <ChoiceRow className={choiceRow}>
                     {page.dates.map((day, index) => (
                       <DateChip
                         key={day.date}
@@ -194,21 +209,30 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
                         today={index === 0}
                         open={day.open}
                         checked={day.date === chosenDate}
+                        loaded={times !== undefined && day.date === date?.date}
                       />
                     ))}
-                  </div>
+                  </ChoiceRow>
                   <button
                     type="submit"
                     className={cn(buttonVariants({ variant: "secondary" }), "self-start")}
                   >
                     Show times
                   </button>
+                  {loadedParty !== undefined && (
+                    <p
+                      role="status"
+                      className="hidden text-body text-ink-2 group-has-[[data-loaded]:not(:checked)]/steps:block"
+                    >
+                      Show times to see what&apos;s free for your new choice.
+                    </p>
+                  )}
                 </fieldset>
               </form>
 
               {page.largeParty && (
                 <section
-                  className="flex flex-col gap-3 rounded-card bg-surface-2 p-4"
+                  className={cn("flex flex-col gap-3 rounded-card bg-surface-2 p-4", clearedWhenChanged)}
                   aria-label="Large groups"
                 >
                   <p className="flex items-start gap-3 font-semibold">
@@ -240,58 +264,32 @@ export default async function Page({ params, searchParams }: PageProps<"/r/[slug
                 </section>
               )}
 
-              {times && date && (
-                <section className="flex flex-col gap-3" aria-label="Available times">
+              {times && party && date && (
+                <section className={cn("flex flex-col gap-3", clearedWhenChanged)} aria-label="Available times">
                   <p className={cn(questionLabel, "m-0")}>
                     <Clock aria-hidden />
-                    Available times
+                    {`Available times on ${date.label}`}
                   </p>
-                  {times.length === 0 && (
-                    <div className="flex flex-col gap-1 rounded-card bg-surface-2 p-4">
-                      <p>
-                        No tables for {party} on {date.label}.
-                      </p>
-                      <p className="text-body text-ink-2">Try another date.</p>
-                    </div>
-                  )}
-                  {[...byPeriod(times)].map(([period, slots]) => (
-                    <div key={period} className="flex flex-col gap-2">
-                      <h2 className="text-caption font-semibold text-ink-2">{period}</h2>
-                      <ul className="m-0 grid list-none grid-cols-4 gap-2 p-0 lg:grid-cols-6">
-                        {slots.map(({ time }) => (
-                          <li key={time}>
-                            {/* #details: on a phone the reload lands on the details. */}
-                            <a
-                              href={`?party=${party}&date=${date.date}&time=${time}#details`}
-                              aria-current={time === chosen?.time ? "true" : undefined}
-                              className={timeTile}
-                            >
-                              {time}
-                            </a>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ))}
+                  <TimeGrid party={party} date={date.date} dateLabel={date.label} times={times} />
                 </section>
               )}
-            </>
+            </Choices>
           )}
         </div>
 
         {details && (
           <div className="mt-7 lg:sticky lg:top-10 lg:mt-0">
             <DetailsForm
-              action={`/api/r/${encodeURIComponent(slug)}/book`}
+              action={action}
               party={details.party}
               date={details.date.date}
               dateLabel={details.date.label}
-              time={details.chosen.time}
+              contact={{ contactPhone, whatsappLink: page.whatsappLink }}
               turnstileSiteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || undefined}
             />
           </div>
         )}
-      </div>
+      </BookingSteps>
     </main>
   );
 }

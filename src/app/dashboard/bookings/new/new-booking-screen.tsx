@@ -1,4 +1,4 @@
-import { ChevronLeft } from "lucide-react";
+import { CalendarOff, ChevronLeft } from "lucide-react";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cardClassName } from "@/components/ui/card";
@@ -28,7 +28,11 @@ export async function NewBookingScreen({
   const query = (await searchParams) ?? {};
   const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
   const form = await getStaffBookingForm(tenant, { party: first(query.party), date: first(query.date) });
-  const back = `/dashboard/bookings${form.date ? `?date=${form.date}` : ""}`;
+  // In place of the times: a day closed from end to end, whatever the party, or one
+  // whose closures are part of why it has no times.
+  const closed = form.closures.length > 0 && (form.closedAllDay || form.times?.length === 0);
+  const backDate = form.date ?? form.pastDate;
+  const back = `/dashboard/bookings${backDate ? `?date=${backDate}` : ""}`;
 
   return (
     <div className="flex max-w-2xl flex-col gap-5">
@@ -78,12 +82,41 @@ export async function NewBookingScreen({
         </Button>
       </form>
 
-      {form.party && form.date && form.times && (
+      {form.pastDate && (
+        <Notice role="status">
+          {dateLabel(form.pastDate)} {form.pastDate.slice(0, 4)} has passed, so a booking can&apos;t be added to it.
+          Choose today or a later date.
+        </Notice>
+      )}
+
+      {closed && (
+        <Notice
+          tone="attention"
+          icon={<CalendarOff />}
+          title={
+            form.closedAllDay
+              ? "The restaurant is closed on that day."
+              : "There are no times on that day, and the restaurant is closed for part of it."
+          }
+        >
+          <ul>
+            {form.closures.map((closure) => (
+              <li key={`${closure.label}-${closure.reason}`}>
+                <span className="font-semibold tabular-nums">{closure.label}</span>
+                {closure.reason && <span> · {closure.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+
+      {!closed && form.party && form.date && form.times && (
         <section aria-labelledby="booking-details" className={card}>
           <ActionForm
             action="/api/bookings"
             className="flex flex-col gap-4"
             resetOnSuccess
+            keepOnReset={["time", "tableId"]}
             savedMessage="Booking added."
           >
             <input type="hidden" name="party" value={form.party} />

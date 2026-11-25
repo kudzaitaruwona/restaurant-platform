@@ -1,5 +1,5 @@
 {
-  "id": "ebd5dd1a-352a-4cdf-8683-4d612b68b35d",
+  "id": "b203833d-d41c-44cb-a81d-6da7db5f42b3",
   "prevId": "640acc55-1259-4adb-9eed-12861a07b82c",
   "version": "7",
   "dialect": "postgresql",
@@ -1326,6 +1326,15 @@
             "restaurant_id",
             "id"
           ]
+        },
+        "closures_window_unique": {
+          "name": "closures_window_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "restaurant_id",
+            "starts_at",
+            "ends_at"
+          ]
         }
       },
       "policies": {
@@ -2420,12 +2429,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -2489,15 +2492,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "orders_request_once": {
-          "name": "orders_request_once",
-          "nullsNotDistinct": false,
-          "columns": [
-            "restaurant_id",
-            "session_id",
-            "request_id"
-          ]
-        },
         "orders_restaurant_id_id_unique": {
           "name": "orders_restaurant_id_id_unique",
           "nullsNotDistinct": false,

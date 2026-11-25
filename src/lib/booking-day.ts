@@ -12,6 +12,7 @@ import {
   localTime,
   weekdayOf,
 } from "@/lib/booking-engine";
+import { closuresOnDay } from "@/lib/booking-closures";
 import { chooseDay, type DayRow, groupByPeriod } from "@/lib/booking-day-view";
 import { finishedTimes } from "@/lib/booking-finish";
 import { queueBookingCancelled } from "@/lib/notifications";
@@ -72,6 +73,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
         status: bookings.status,
         note: bookings.guestNote,
         phone: bookings.guestPhone,
+        whatsappOptIn: bookings.whatsappOptIn,
         source: bookings.source,
         confirmationStatus: notifications.status,
       })
@@ -102,11 +104,14 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       )
       .orderBy(asc(bookings.startsAt), asc(diningTables.label));
 
+    const closed = await closuresOnDay(tx, tenant.restaurantId, date, timezone);
+
     const lateBefore = now.getTime() - LATE_AFTER_MINUTES * MINUTE;
     const dayRows: DayRow[] = rows.map(({ startsAt, confirmationStatus, ...row }) => ({
       ...row,
       time: localTime(startsAt, timezone),
       late: row.status === "confirmed" && startsAt.getTime() <= lateBefore,
+      willMessage: row.whatsappOptIn && row.phone !== null,
       // Staff should call a guest still to arrive; once seated, they are here.
       confirmationFailed: row.status === "confirmed" && confirmationStatus === "failed",
     }));
@@ -115,6 +120,11 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       date,
       dateLabel: dateLabel(date),
       isToday: date === today,
+      /** Before today on the restaurant's calendar: nothing can be booked on it. */
+      isPast: date < today,
+      /** Closures touching the day, and whether they shut it from first to last instant. */
+      closures: closed.closures,
+      closedAllDay: closed.wholeDay,
       refused,
       previous: addDays(date, -1),
       next: addDays(date, 1),

@@ -87,6 +87,8 @@ describe("parseRestaurantSettings", () => {
     ["(0)77 123 4567", "+263771234567"],
     ["0242 123 456", "+263242123456"],
     ["024 212 345", "+26324212345"],
+    // Local, and beginning as the country code does.
+    ["0263123456", "+263263123456"],
   ])("saves %j in E.164", (typed, stored) => {
     expect(parse({ contactPhone: typed })).toMatchObject({
       data: { contactPhone: stored },

@@ -6,10 +6,12 @@ import { guestThemeCss } from "@/lib/guest-theme";
 /**
  * The guest's manage page (spec 04), written by hand like the menu (S-32): no
  * React, no script, one inline stylesheet. Its URL is a bearer secret, so the
- * response says never to cache it and never to pass it to another site in a
- * Referer, and the page carries no link off the site except the restaurant's own
- * `tel:` number. The policy is same-origin, not no-referrer: under no-referrer
- * Chrome posts the cancel form with Origin: null, and the proxy refuses that.
+ * response says never to cache it and never to put it in a Referer, and the page
+ * carries no link off the site except the restaurant's own `tel:` number. The policy
+ * is `origin`: it also hides this URL from the Navigation API of the other pages in
+ * the tab's history, which `same-origin` doesn't, and the booking page runs a third
+ * party's script (#89). Not no-referrer: under it Chrome posts the cancel form with
+ * Origin: null, and the proxy refuses that.
  */
 
 export const tooLateMessage = "Too late to cancel online. Please call.";
@@ -28,6 +30,7 @@ p{margin:0}
 .btn{min-height:48px;font-size:16px}
 .btn-cancel{background:transparent;border-color:var(--danger);color:var(--danger)}
 @media (hover:hover){.btn-cancel:hover{background:var(--danger-soft)}}
+.actions{display:flex;flex-direction:column;gap:8px}
 .contact{font-size:15px}
 .contact a{color:var(--ink);text-underline-offset:3px}
 `;
@@ -35,6 +38,7 @@ p{margin:0}
 const icon = (paths: string) =>
   trusted(`<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`);
 const icons = {
+  circleCheck: icon('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
   info: icon('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
   circleX: icon('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
   phone: icon(
@@ -49,7 +53,7 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="referrer" content="same-origin">
+<meta name="referrer" content="origin">
 <title>${title}</title>
 <style>${trusted(styles)}</style>
 </head>
@@ -57,13 +61,13 @@ const page = (title: string, body: ReturnType<typeof html>) =>
 </html>
 `;
 
-/** A message in place: grey to inform, red once the booking is cancelled. */
+/** A message in place: grey to inform, green once booked, red once cancelled. */
 const message = (
   text: string,
-  tone: "neutral" | "cancelled",
-  glyph = tone === "cancelled" ? icons.circleX : icons.info,
+  tone: "neutral" | "positive" | "cancelled",
+  glyph = { neutral: icons.info, positive: icons.circleCheck, cancelled: icons.circleX }[tone],
 ) =>
-  html`<div class="${tone === "cancelled" ? "notice notice-danger" : "notice"}" role="status">${glyph}<p>${text}</p></div>`;
+  html`<div class="${{ neutral: "notice", positive: "notice notice-positive", cancelled: "notice notice-danger" }[tone]}" role="status">${glyph}<p>${text}</p></div>`;
 
 const stateOf = ({ status, cancelledBy }: ManagedBooking) => {
   switch (status) {
@@ -93,13 +97,49 @@ const noticeOf = (outcome: CancelOutcome["outcome"] | undefined) => {
   }
 };
 
-function bookingPage(booking: ManagedBooking, token: string, outcome?: CancelOutcome["outcome"]) {
+const managePath = (token: string) => `/b/${encodeURIComponent(token)}`;
+
+/**
+ * The way back after a cancel: this restaurant's own booking page, on this site.
+ * Without a referrer, because that page runs a third party's script (Turnstile) and
+ * this one's URL is the secret.
+ */
+const bookAgain = (slug: string) =>
+  html`<a class="btn btn-primary btn-block" href="${`/r/${encodeURIComponent(slug)}/book`}" rel="noreferrer">Book again</a>`;
+
+/**
+ * The step before a guest's cancel (#104): a plain page with the POST form, so it
+ * works without script. Reaching it by GET changes nothing.
+ */
+function confirmPage(booking: ManagedBooking, token: string) {
+  return page(
+    `Cancel your booking at ${booking.restaurantName}`,
+    html`<h1>Cancel this booking?</h1>
+<div class="card">
+<p class="muted">${booking.restaurantName}</p>
+<p class="when">${booking.dateLabel} at <span class="num">${booking.time}</span></p>
+<p class="muted">${booking.guestName}, party of ${booking.party}</p>
+</div>
+<form class="actions" method="post" action="${managePath(token)}">
+<button class="btn btn-cancel btn-block" type="submit">Yes, cancel booking</button>
+<a class="btn btn-secondary btn-block" href="${managePath(token)}">Keep booking</a>
+</form>`,
+  );
+}
+
+function bookingPage(
+  booking: ManagedBooking,
+  token: string,
+  outcome?: CancelOutcome["outcome"],
+  justBooked = false,
+) {
   const state = stateOf(booking);
   const notice = noticeOf(outcome);
   const { contactPhone } = booking;
   return page(
     `Your booking at ${booking.restaurantName}`,
     html`<h1>${booking.restaurantName}</h1>
+${justBooked && booking.status === "confirmed" && message("You're booked.", "positive")}
 ${notice && message(notice, outcome === "cancelled" ? "cancelled" : "neutral")}
 <div class="card">
 <p class="when">${booking.dateLabel} at <span class="num">${booking.time}</span></p>
@@ -109,11 +149,10 @@ ${booking.note && html`<p class="muted">Your note: ${booking.note}</p>`}
 ${state && !notice && message(state, booking.status === "cancelled" ? "cancelled" : "neutral")}
 ${
   booking.cancellable
-    ? html`<form method="post" action="${`/b/${encodeURIComponent(token)}`}">
-<button class="btn btn-cancel btn-block" type="submit">Cancel booking</button>
-</form>`
+    ? html`<a class="btn btn-cancel btn-block" href="${`${managePath(token)}?cancel=1`}">Cancel booking</a>`
     : booking.status === "confirmed" && message(tooLateMessage, "neutral", icons.phone)
 }
+${booking.status === "cancelled" && bookAgain(booking.slug)}
 ${contactPhone && html`<p class="contact muted">Restaurant: <a class="num" href="${`tel:${contactPhone}`}">${displayPhone(contactPhone)}</a></p>`}`,
   );
 }
@@ -131,12 +170,24 @@ const notFound = page(
 const headers = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "private, no-store",
-  "referrer-policy": "same-origin",
+  "referrer-policy": "origin",
   "x-robots-tag": "noindex, nofollow",
 };
 
 export const notFoundResponse = () =>
   new Response(notFound.toString(), { status: 404, headers });
+
+/** The confirm step for a booking that can still be cancelled; otherwise the usual page. */
+export function confirmCancelResponse(token: string, booking: ManagedBooking) {
+  return new Response((booking.cancellable ? confirmPage(booking, token) : bookingPage(booking, token)).toString(), {
+    status: 200,
+    headers,
+  });
+}
+
+/** Where a guest's confirm leads (#89): the usual page, saying so while the booking stands. */
+export const justBookedResponse = (token: string, booking: ManagedBooking) =>
+  new Response(bookingPage(booking, token, undefined, true).toString(), { status: 200, headers });
 
 export function bookingResponse(token: string, booking: ManagedBooking, outcome?: CancelOutcome["outcome"]) {
   const refused = outcome === "too_late" || outcome === "not_cancellable";

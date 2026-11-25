@@ -1,6 +1,6 @@
 export type Refusal = {
   message: string;
-  bookings: { id: string; summary: string }[];
+  bookings: { id: string; summary: string; href?: string }[];
   /** A 409 that asks first: nothing was saved (lib/confirmation.ts). */
   warnings: string[];
   /** What the page shows is out of date (#95): reload it, keeping the refusal up. */
