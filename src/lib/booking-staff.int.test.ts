@@ -4,6 +4,7 @@ import { auditLog, bookings, diningTables } from "@/db/schema";
 import { aBooking, bookableRestaurant, bookingsOf } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { cancelBooking, seatBooking } from "./booking-day";
+import { dateLabel } from "./booking-engine";
 import {
   addStaffBooking,
   getMoveTargets,
@@ -13,6 +14,8 @@ import {
   type StaffRequest,
 } from "./booking-staff";
 import { confirmBooking, parseGuestRequest, type GuestRequest } from "./bookings";
+import { addBookingResponse } from "./booking-staff-responses";
+import { FORM_FETCH_HEADER } from "./form-response";
 import { seatWalkIn } from "./walk-in";
 
 /**
@@ -217,6 +220,35 @@ describe("add booking: the same engine", () => {
   });
 });
 
+describe("add booking: what the form is told", () => {
+  it("a fetch gets the day, time and table, a link to the booking's row, and the dropped-consent warning", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2, label: "Table 7" }] });
+    const outcome = await addStaffBooking(actor(restaurantId), request(), now);
+    if (outcome.outcome !== "added") throw new Error("not added");
+    const fetched = new Request("http://localhost/api/bookings", { method: "POST", headers: { [FORM_FETCH_HEADER]: "1" } });
+
+    const plain = await (addBookingResponse(outcome, fetched) as Response).json();
+    const warned = await (addBookingResponse(outcome, fetched, true) as Response).json();
+
+    expect(plain.saved).toEqual({
+      message: `Booking added: ${dateLabel(outcome.date)}, 19:00, Table 7.`,
+      href: `/dashboard/bookings?date=${outcome.date}#booking-${outcome.id}`,
+      linkLabel: "View booking",
+    });
+    expect(warned.saved.warning).toMatch(/WhatsApp consent was not saved: there is no phone number/);
+  });
+
+  it("a plain post is sent on to the day", () => {
+    const response = addBookingResponse(
+      { outcome: "added", id: "x", date, time: "19:00", table: "T" },
+      new Request("http://localhost/api/bookings", { method: "POST" }),
+      true,
+    ) as Response;
+
+    expect([response.status, response.headers.get("Location")]).toEqual([303, `/dashboard/bookings?date=${date}`]);
+  });
+});
+
 describe("add booking: what staff may override", () => {
   it("inside the lead time, which the guest's confirm refuses", async () => {
     const { restaurantId } = await bookableRestaurant(owner.db, { rules: { minLeadMinutes: 120 } });
@@ -418,6 +450,13 @@ describe("the staff request", () => {
   it("consent needs a number: a ticked box with none is no consent", () => {
     expect(parseStaffRequest(form({ whatsapp: "on" }))).toMatchObject({ data: { whatsappOptIn: false } });
     expect(parseStaffRequest(form({ whatsapp: "on", phone: "0771234567" }))).toMatchObject({ data: { whatsappOptIn: true } });
+  });
+
+  it("says when a ticked consent box has no number to go with, and not otherwise", () => {
+    expect(parseStaffRequest(form({ whatsapp: "on" }))).toMatchObject({ consentDropped: true });
+    expect(parseStaffRequest(form({ whatsapp: "on", phone: "  " }))).toMatchObject({ consentDropped: true });
+    expect(parseStaffRequest(form({ whatsapp: "on", phone: "0771234567" }))).toMatchObject({ consentDropped: false });
+    expect(parseStaffRequest(form({}))).toMatchObject({ consentDropped: false });
   });
 
   it("is the staff form's own: the guest's parser ignores what only staff may send", () => {

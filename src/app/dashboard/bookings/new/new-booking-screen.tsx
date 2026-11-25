@@ -116,6 +116,7 @@ export async function NewBookingScreen({
             action="/api/bookings"
             className="flex flex-col gap-4"
             resetOnSuccess
+            keepOnReset={["time", "tableId"]}
             savedMessage="Booking added."
           >
             <input type="hidden" name="party" value={form.party} />

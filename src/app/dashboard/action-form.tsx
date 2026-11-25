@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { Notice } from "@/components/ui/notice";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
@@ -40,8 +41,10 @@ export function ActionForm({
   className,
   confirmation,
   resetOnSuccess = false,
+  keepOnReset = [],
   savedMessage,
   onSaved,
+  refreshOnRefusal = false,
   children,
 }: {
   action: string;
@@ -50,15 +53,20 @@ export function ActionForm({
   className?: string;
   confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
+  /** Fields (by name) that keep their value through the reset, e.g. the time chosen for the next booking. */
+  keepOnReset?: string[];
   savedMessage?: string;
   /** Called after a save, for a form whose own message goes with it (a deleted row). */
   onSaved?: () => void;
+  /** Reloads the page's data after a refusal too, for a form whose page shows what the refusal found out (a stale list). */
+  refreshOnRefusal?: boolean;
   children: ReactNode;
 }) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
+  const [detail, setDetail] = useState<SavedDetail>();
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
   const [self] = useState(() => Symbol("action-form"));
@@ -97,10 +105,21 @@ export function ActionForm({
     setPending(true);
     setError(undefined);
     setSaved(false);
+    setDetail(undefined);
     try {
       const response = await postForm(action, body);
       if (response.ok) {
-        if (resetOnSuccess) form.reset();
+        if (resetOnSuccess) {
+          const kept = keepOnReset.flatMap((name) => {
+            const field = form.elements.namedItem(name);
+            return field instanceof HTMLSelectElement || field instanceof HTMLInputElement
+              ? [[field, field.value] as const]
+              : [];
+          });
+          form.reset();
+          for (const [field, value] of kept) field.value = value;
+        }
+        setDetail(await savedFrom(response));
         setSaved(true);
         onSaved?.();
         router.refresh();
@@ -109,7 +128,10 @@ export function ActionForm({
         if (refusal.warnings.length > 0) {
           setWarnings(refusal.warnings);
           setWarned(true);
-        } else setError(refusal);
+        } else {
+          setError(refusal);
+          if (refreshOnRefusal) router.refresh();
+        }
       }
     } catch {
       setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [] });
@@ -122,7 +144,24 @@ export function ActionForm({
     <form ref={formRef} id={id} method="post" action={action} onSubmit={submit}>
       <fieldset disabled={pending} className={className}>
         {children}
-        {saved && savedMessage && (
+        {saved && detail && (
+          <div role="status" className="flex flex-col gap-2">
+            <Notice tone="positive">
+              {detail.message}
+              {detail.href && (
+                <>
+                  {" "}
+                  {/* A full load, so the day's row is the page's :target. */}
+                  <a href={detail.href} className="font-semibold underline underline-offset-2">
+                    {detail.linkLabel ?? "View"}
+                  </a>
+                </>
+              )}
+            </Notice>
+            {detail.warning && <Notice tone="attention">{detail.warning}</Notice>}
+          </div>
+        )}
+        {saved && !detail && savedMessage && (
           <p role="status" className="text-caption text-ink-2">
             {savedMessage}
           </p>
@@ -185,6 +224,26 @@ export function ActionForm({
       )}
     </form>
   );
+}
+
+/** What a save says about itself, when the route answers with more than a 204. */
+type SavedDetail = { message: string; href?: string; linkLabel?: string; warning?: string };
+
+/**
+ * A save that answers 200 with `{ saved: { message, href?, linkLabel?, warning? } }`
+ * shows that instead of the form's fixed message. The link goes only to the
+ * dashboard's own pages, whatever the body says.
+ */
+export async function savedFrom(response: Response): Promise<SavedDetail | undefined> {
+  if (response.status === 204) return undefined;
+  const saved = (await response.json().catch(() => undefined))?.saved;
+  if (typeof saved?.message !== "string") return undefined;
+  return {
+    message: saved.message,
+    ...(typeof saved.href === "string" && /^\/dashboard\//.test(saved.href) ? { href: saved.href } : {}),
+    ...(typeof saved.linkLabel === "string" ? { linkLabel: saved.linkLabel } : {}),
+    ...(typeof saved.warning === "string" ? { warning: saved.warning } : {}),
+  };
 }
 
 type Refusal = {

@@ -1,8 +1,8 @@
 import "server-only";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { diningTables } from "@/db/schema";
-import { blockingStatuses, localTime } from "@/lib/booking-engine";
+import { bookingHref } from "@/lib/booking-closures";
+import { blockingStatuses, dateLabel, localToday, localTime } from "@/lib/booking-engine";
 import { mintQrToken } from "@/lib/qr-token";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, withTenant } from "@/lib/tenant/scope";
@@ -41,12 +41,19 @@ export type WalkInOutcome =
   | { outcome: "seated"; bookingId: string; endsAt: Date; holdEndsAt: Date }
   | { outcome: "not_found" }
   | { outcome: "table_archived"; table: string }
-  /** Someone is at the table now, or its reset buffer runs on: `freeAt` is when it frees. */
-  | { outcome: "table_occupied"; table: string; freeAt: string }
+  /**
+   * Someone is at the table now, or its reset buffer runs on: `freeAt` is when it
+   * frees, `resetting` says it is the buffer after a finish, and `booking` is the
+   * one holding it (its own day view row).
+   */
+  | { outcome: "table_occupied"; table: string; freeAt: string; resetting: boolean; booking: WalkInBooking }
   /** Under 30 minutes before the next booking: `at` is that booking's start. */
-  | { outcome: "booking_soon"; table: string; at: string }
+  | { outcome: "booking_soon"; table: string; at: string; booking: WalkInBooking }
   /** A guest's confirm or an owner's edit won the table between the read and the insert. */
   | { outcome: "table_taken" };
+
+/** The booking in the way of a walk-in: where staff find it, and what it is, without a phone. */
+export type WalkInBooking = { id: string; href: string; guestName: string; partySize: number; time: string; day: string };
 
 type Calculated = {
   table_id: string;
@@ -55,10 +62,72 @@ type Calculated = {
   timezone: string;
   busy_ms: number | null;
   next_ms: number | null;
+  busy_id: string | null;
+  busy_resetting: boolean | null;
+  busy_name: string | null;
+  busy_party: number | null;
+  busy_start_ms: number | null;
+  next_id: string | null;
+  next_name: string | null;
+  next_party: number | null;
   ok: boolean;
   id: string | null;
   ends_ms: number | null;
   hold_ms: number | null;
+};
+
+/**
+ * The two reads both the seating statement and the availability list make about a
+ * table, so what the list promises is what the statement enforces. Each is a
+ * lateral join over `ctx` (table_id, n, restaurant_id), bounded by the table and
+ * the restaurant, reading the index on (restaurant_id, starts_at).
+ *
+ *  - held: the blocking booking holding the table at n with the latest hold.
+ *    bookings_hold_capped keeps a hold within 960 minutes of its start, so nothing
+ *    that started earlier can still hold the table. Raising that cap means raising
+ *    this bound too. `resetting` is the buffer after a finish: the party is gone
+ *    (completed, ends_at passed) and only the reset buffer holds the table.
+ *  - upcoming: the earliest blocking booking starting after n.
+ */
+const blocking = sql.join(
+  blockingStatuses.map((status) => sql`${status}`),
+  sql`, `,
+);
+const minute = sql`interval '1 minute'`;
+const heldNow = sql`left join lateral (
+  select b.id as busy_id, b.guest_name as busy_name, b.party_size as busy_party,
+    b.starts_at as busy_starts, b.hold_ends_at as busy_hold,
+    (b.status = 'completed' and b.ends_at <= ctx.n) as busy_resetting
+  from bookings b
+  where b.restaurant_id = ctx.restaurant_id and b.table_id = ctx.table_id
+    and b.status in (${blocking}) and b.starts_at <= ctx.n and b.hold_ends_at > ctx.n
+    and b.starts_at > ctx.n - 960 * ${minute}
+  order by b.hold_ends_at desc, b.id
+  limit 1) held on true`;
+const upcoming = sql`left join lateral (
+  select b.id as next_id, b.guest_name as next_name, b.party_size as next_party, b.starts_at as next_starts
+  from bookings b
+  where b.restaurant_id = ctx.restaurant_id and b.table_id = ctx.table_id
+    and b.status in (${blocking}) and b.starts_at > ctx.n
+  order by b.starts_at, b.id
+  limit 1) upcoming on true`;
+
+const bookingOf = (
+  id: string | null,
+  name: string | null,
+  party: number | null,
+  startMs: number | null,
+  timezone: string,
+): WalkInBooking => {
+  const starts = new Date(Number(startMs));
+  return {
+    id: id as string,
+    href: bookingHref(id as string, localToday(starts, timezone)),
+    guestName: name as string,
+    partySize: party as number,
+    time: localTime(starts, timezone),
+    day: dateLabel(localToday(starts, timezone)),
+  };
 };
 
 /**
@@ -94,16 +163,11 @@ export async function seatWalkIn(
   now?: Date,
 ): Promise<WalkInOutcome> {
   const at = now ? sql`${now.toISOString()}::timestamptz` : sql`now()`;
-  const blocking = sql.join(
-    blockingStatuses.map((status) => sql`${status}`),
-    sql`, `,
-  );
-  const minute = sql`interval '1 minute'`;
   try {
     return await withTenant(actor, async (tx) => {
       const { rows } = await tx.execute<Calculated>(sql`
         with ctx as (
-          select t.id as table_id, t.label, t.archived_at is not null as archived, r.timezone,
+          select t.id as table_id, t.restaurant_id, t.label, t.archived_at is not null as archived, r.timezone,
             ${at} as n,
             s.buffer_minutes * ${minute} as buffer,
             (case when ${party} >= s.large_party_size then s.large_party_sitting_minutes
@@ -113,18 +177,10 @@ export async function seatWalkIn(
           join restaurants r on r.id = t.restaurant_id
           where t.restaurant_id = ${actor.restaurantId} and t.id = ${tableId}
         ), calc as (
-          select ctx.*,
-            (select max(b.hold_ends_at) from bookings b
-              where b.restaurant_id = ${actor.restaurantId} and b.table_id = ctx.table_id
-                and b.status in (${blocking}) and b.starts_at <= ctx.n and b.hold_ends_at > ctx.n
-                -- bookings_hold_capped keeps a hold within 960 minutes of its start, so
-                -- nothing that started earlier can still hold the table. Raising that
-                -- cap means raising this bound too.
-                and b.starts_at > ctx.n - 960 * ${minute}) as busy,
-            (select min(b.starts_at) from bookings b
-              where b.restaurant_id = ${actor.restaurantId} and b.table_id = ctx.table_id
-                and b.status in (${blocking}) and b.starts_at > ctx.n) as next
-          from ctx
+          select ctx.*, held.*, upcoming.*,
+            held.busy_hold as busy,
+            upcoming.next_starts as next
+          from ctx ${heldNow} ${upcoming}
         ), plan as (
           select calc.*,
             least(calc.n + calc.sitting, calc.next - calc.buffer) as ends,
@@ -143,6 +199,9 @@ export async function seatWalkIn(
         select plan.table_id, plan.label, plan.archived, plan.timezone, plan.ok,
           extract(epoch from plan.busy) * 1000 as busy_ms,
           extract(epoch from plan.next) * 1000 as next_ms,
+          plan.busy_id, plan.busy_resetting, plan.busy_name, plan.busy_party,
+          extract(epoch from plan.busy_starts) * 1000 as busy_start_ms,
+          plan.next_id, plan.next_name, plan.next_party,
           seated.id,
           extract(epoch from seated.ends_at) * 1000 as ends_ms,
           extract(epoch from seated.hold_ends_at) * 1000 as hold_ms
@@ -153,10 +212,21 @@ export async function seatWalkIn(
       const clock = (ms: number) => localTime(new Date(Number(ms)), row.timezone);
       if (row.archived) return { outcome: "table_archived", table: row.label };
       if (row.busy_ms !== null) {
-        return { outcome: "table_occupied", table: row.label, freeAt: clock(row.busy_ms) };
+        return {
+          outcome: "table_occupied",
+          table: row.label,
+          freeAt: clock(row.busy_ms),
+          resetting: row.busy_resetting === true,
+          booking: bookingOf(row.busy_id, row.busy_name, row.busy_party, row.busy_start_ms, row.timezone),
+        };
       }
       if (!row.ok || !row.id) {
-        return { outcome: "booking_soon", table: row.label, at: clock(row.next_ms as number) };
+        return {
+          outcome: "booking_soon",
+          table: row.label,
+          at: clock(row.next_ms as number),
+          booking: bookingOf(row.next_id, row.next_name, row.next_party, row.next_ms, row.timezone),
+        };
       }
       await recordAdminAction(tx, actor, {
         action: "booking.walk_in",
@@ -185,13 +255,78 @@ export async function seatWalkIn(
   }
 }
 
-/** The tables a walk-in can be seated at: live ones, bookable or not (walk-in only means exactly this). */
-export function walkInTables(tenant: Pick<TenantContext, "restaurantId">) {
-  return withTenant(tenant, (tx) =>
-    tx
-      .select({ id: diningTables.id, label: diningTables.label, capacity: diningTables.capacity })
-      .from(diningTables)
-      .where(and(eq(diningTables.restaurantId, tenant.restaurantId), isNull(diningTables.archivedAt)))
-      .orderBy(asc(diningTables.sortOrder), asc(diningTables.label)),
-  );
+/** What the walk-in list says about one table: its availability right now. */
+export type WalkInTable = {
+  id: string;
+  label: string;
+  capacity: number;
+  /**
+   * free: seat now (`until` is when the next booking's reset buffer starts, if any);
+   * in_use: a party is there or a booking runs late, `until` when it frees;
+   * resetting: the party has gone and only the reset buffer holds it;
+   * booking_soon: free now, but the next booking is under 30 minutes off (refused).
+   */
+  state: "free" | "in_use" | "resetting" | "booking_soon";
+  /** Restaurant-clock "HH:MM", or null for a free table with nothing booked after it. */
+  until: string | null;
+  /** The booking at (or about to be at) the table, for a link. */
+  booking: WalkInBooking | null;
+};
+
+type Listed = Omit<Calculated, "id" | "ends_ms" | "hold_ms" | "ok" | "archived"> & {
+  capacity: number;
+  buffer_ms: number;
+  n_ms: number;
+};
+
+/**
+ * Which tables a walk-in can take, in one statement under the same rules as
+ * seatWalkIn (it shares `heldNow` and `upcoming`, and the 30-minute floor on the
+ * room before the next booking's buffer). One row per live table of the session's
+ * restaurant, in the restaurant's timezone; the lateral reads are bounded by table
+ * and restaurant, so the cost is the number of tables, not the booking history.
+ * `now` is the database's own now() unless a test passes one.
+ */
+export function walkInTables(tenant: Pick<TenantContext, "restaurantId">, now?: Date): Promise<WalkInTable[]> {
+  const at = now ? sql`${now.toISOString()}::timestamptz` : sql`now()`;
+  return withTenant(tenant, async (tx) => {
+    const { rows } = await tx.execute<Listed>(sql`
+      with ctx as (
+        select t.id as table_id, t.restaurant_id, t.label, t.capacity, t.sort_order, r.timezone,
+          ${at} as n, s.buffer_minutes * ${minute} as buffer
+        from tables t
+        join booking_settings s on s.restaurant_id = t.restaurant_id
+        join restaurants r on r.id = t.restaurant_id
+        where t.restaurant_id = ${tenant.restaurantId} and t.archived_at is null
+      )
+      select ctx.table_id, ctx.label, ctx.capacity, ctx.timezone,
+        extract(epoch from ctx.buffer) * 1000 as buffer_ms,
+        extract(epoch from ctx.n) * 1000 as n_ms,
+        extract(epoch from held.busy_hold) * 1000 as busy_ms,
+        extract(epoch from upcoming.next_starts) * 1000 as next_ms,
+        held.busy_id, held.busy_resetting, held.busy_name, held.busy_party,
+        extract(epoch from held.busy_starts) * 1000 as busy_start_ms,
+        upcoming.next_id, upcoming.next_name, upcoming.next_party
+      from ctx ${heldNow} ${upcoming}
+      order by ctx.sort_order, ctx.label
+    `);
+    return rows.map((row): WalkInTable => {
+      const clock = (ms: number) => localTime(new Date(Number(ms)), row.timezone);
+      const base = { id: row.table_id, label: row.label, capacity: row.capacity };
+      if (row.busy_ms !== null) {
+        return {
+          ...base,
+          state: row.busy_resetting ? "resetting" : "in_use",
+          until: clock(row.busy_ms),
+          booking: bookingOf(row.busy_id, row.busy_name, row.busy_party, row.busy_start_ms, row.timezone),
+        };
+      }
+      if (row.next_ms === null) return { ...base, state: "free", until: null, booking: null };
+      const room = Number(row.next_ms) - Number(row.buffer_ms) - Number(row.n_ms);
+      const booking = bookingOf(row.next_id, row.next_name, row.next_party, row.next_ms, row.timezone);
+      return room >= WALK_IN_MIN_MINUTES * 60_000
+        ? { ...base, state: "free", until: clock(Number(row.next_ms)), booking }
+        : { ...base, state: "booking_soon", until: clock(Number(row.next_ms)), booking };
+    });
+  });
 }

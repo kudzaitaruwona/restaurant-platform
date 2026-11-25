@@ -105,7 +105,12 @@ export type StaffRequest = z.output<typeof staffRequest>;
 export function parseStaffRequest(form: FormData) {
   const parsed = staffRequest.safeParse(Object.fromEntries(form));
   return parsed.success
-    ? ({ success: true, data: parsed.data } as const)
+    ? ({
+        success: true,
+        data: parsed.data,
+        // Ticked, but there is no number to message: the tick is dropped (decided), and staff are told.
+        consentDropped: form.get("whatsapp") === "on" && parsed.data.phone === null,
+      } as const)
     : ({ success: false, message: parsed.error.issues[0].message } as const);
 }
 

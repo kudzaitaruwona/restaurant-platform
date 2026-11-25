@@ -154,7 +154,7 @@ describe("the next booking and the buffer", () => {
     const result = await seatWalkIn(who, tableId, 2, new Date(NOW.getTime() + 1000));
 
     // The booking is at 19:45 Harare.
-    expect(result).toEqual({ outcome: "booking_soon", table: "T1", at: "19:45" });
+    expect(result).toMatchObject({ outcome: "booking_soon", table: "T1", at: "19:45" });
     expect(await walkInsOf(restaurantId)).toEqual([]);
   });
 
@@ -162,7 +162,7 @@ describe("the next booking and the buffer", () => {
     const { restaurantId, tableId, actor: who } = await restaurant({ rules: { ...rules, bufferMinutes: 30 } });
     await bookOn(restaurantId, tableId, 60, 120);
 
-    expect(await seatWalkIn(who, tableId, 2, at(0.5))).toEqual({ outcome: "booking_soon", table: "T1", at: "20:00" });
+    expect(await seatWalkIn(who, tableId, 2, at(0.5))).toMatchObject({ outcome: "booking_soon", table: "T1", at: "20:00" });
     expect(await seatWalkIn(who, tableId, 2, NOW)).toMatchObject({ outcome: "seated" });
   });
 
@@ -212,7 +212,7 @@ describe("the next booking and the buffer", () => {
     const result = await seatWalkIn(who, tableId, 2, NOW);
 
     // 17:20Z on 6 Nov is 06:20 on 7 Nov in Auckland (UTC+13).
-    expect(result).toEqual({ outcome: "booking_soon", table: "T1", at: "06:20" });
+    expect(result).toMatchObject({ outcome: "booking_soon", table: "T1", at: "06:20" });
     const response = walkInResponse(result, new Request("http://localhost/"));
     expect(response.status).toBe(409);
     expect((await response.json()).error).toBe(
@@ -232,7 +232,7 @@ describe("a table that is occupied now", () => {
 
     const result = await seatWalkIn(who, tableId, 2, NOW);
 
-    expect(result).toEqual({ outcome: "table_occupied", table: "T1", freeAt: "20:15" });
+    expect(result).toMatchObject({ outcome: "table_occupied", table: "T1", freeAt: "20:15" });
     expect(await walkInsOf(restaurantId)).toEqual([]);
   });
 
@@ -333,6 +333,92 @@ describe("which tables, and which parties", () => {
     const tables = await walkInTables({ restaurantId });
 
     expect(tables.map((t) => t.label)).toEqual(["A", "B"]);
+  });
+});
+
+describe("what the refusals link to and say", () => {
+  it("a booking soon names that booking and links to its row on the day", async () => {
+    const { restaurantId, tableId, actor: who } = await restaurant();
+    const [soon] = await bookOn(restaurantId, tableId, 20, 105, { guestName: "Tendai", partySize: 4 });
+
+    const result = await seatWalkIn(who, tableId, 2, NOW);
+    const response = walkInResponse(result, new Request("http://localhost/"));
+
+    expect(result).toMatchObject({
+      outcome: "booking_soon",
+      booking: { id: soon.id, href: `/dashboard/bookings?date=${date}#booking-${soon.id}`, time: "19:20" },
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "Table T1 has a booking at 19:20 — move that booking, or seat the walk-in elsewhere",
+      bookings: [
+        { id: soon.id, summary: "Fri 6 Nov, 19:20 · Tendai · 4 guests", href: `/dashboard/bookings?date=${date}#booking-${soon.id}` },
+      ],
+    });
+  });
+
+  it("a party at the table is 'in use'; after a finish the same table is 'being reset', each linking to its booking", async () => {
+    const { restaurantId, tableIds, actor: who } = await restaurant({ tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const [seated] = await bookOn(restaurantId, tableIds[0], -30, 105, { status: "seated" });
+    const [finished] = await bookOn(restaurantId, tableIds[1], -60, 105, { status: "completed", endsAt: at(-5) });
+
+    const inUse = await seatWalkIn(who, tableIds[0], 2, NOW);
+    const reset = await seatWalkIn(who, tableIds[1], 2, NOW);
+
+    expect(inUse).toMatchObject({ outcome: "table_occupied", resetting: false, booking: { id: seated.id } });
+    expect(reset).toMatchObject({ outcome: "table_occupied", resetting: true, freeAt: "19:45", booking: { id: finished.id } });
+    const request = new Request("http://localhost/");
+    const inUseBody = await walkInResponse(inUse, request).json();
+    const resetBody = await walkInResponse(reset, request).json();
+    expect(inUseBody.error).toMatch(/^Table T1 is in use until 20:15\./);
+    expect(inUseBody.bookings[0].href).toBe(`/dashboard/bookings?date=${date}#booking-${seated.id}`);
+    expect(resetBody.error).toMatch(/^Table T2 is being reset until 19:45\./);
+    expect(resetBody.bookings[0].href).toBe(`/dashboard/bookings?date=${date}#booking-${finished.id}`);
+  });
+});
+
+describe("the availability list", () => {
+  it("says free, in use, resetting and booking soon per table, from the rules the seating enforces", async () => {
+    const { restaurantId, tableIds, actor: who } = await restaurant({
+      tables: [{ label: "A", capacity: 2 }, { label: "B", capacity: 2 }, { label: "C", capacity: 2 }, { label: "D", capacity: 2 }, { label: "E", capacity: 2 }],
+    });
+    await bookOn(restaurantId, tableIds[1], -30, 105, { status: "seated" });
+    await bookOn(restaurantId, tableIds[2], -60, 105, { status: "completed", endsAt: at(-5) });
+    await bookOn(restaurantId, tableIds[3], 20, 105);
+    await bookOn(restaurantId, tableIds[4], 90, 105);
+
+    const list = await walkInTables(who, NOW);
+
+    expect(list.map(({ label, state, until }) => ({ label, state, until }))).toEqual([
+      { label: "A", state: "free", until: null },
+      { label: "B", state: "in_use", until: "20:15" },
+      { label: "C", state: "resetting", until: "19:45" },
+      { label: "D", state: "booking_soon", until: "19:20" },
+      { label: "E", state: "free", until: "20:30" },
+    ]);
+    // The list and the seating can't disagree: what it calls free seats, the rest is refused.
+    for (const [index, table] of list.entries()) {
+      const outcome = await seatWalkIn(who, tableIds[index], 2, NOW);
+      expect(outcome.outcome === "seated").toBe(table.state === "free");
+    }
+  });
+
+  it("is tenant-scoped: another restaurant's bookings and tables never show", async () => {
+    const mine = await restaurant();
+    const theirs = await restaurant();
+    await bookOn(theirs.restaurantId, theirs.tableId, -30, 105, { status: "seated" });
+
+    const list = await walkInTables(mine.actor, NOW);
+
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: mine.tableId, state: "free" });
+  });
+
+  it("reads the restaurant's clock", async () => {
+    const { restaurantId, tableId, actor: who } = await restaurant({ timezone: "Pacific/Auckland" });
+    await bookOn(restaurantId, tableId, -30, 105, { status: "seated" });
+
+    expect((await walkInTables(who, NOW))[0]).toMatchObject({ state: "in_use", until: "07:15" });
   });
 });
 

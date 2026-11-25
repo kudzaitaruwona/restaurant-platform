@@ -245,9 +245,31 @@ describe("seat walk-in on the day view", () => {
     expect(html).toContain("Seat a walk-in");
     expect(html).toContain('action="/api/bookings/walk-in"');
     expect(html).toContain('method="post"');
-    expect(html).toContain("Table 7 (seats 2)");
-    expect(html).toContain("Bar (seats 4)");
+    expect(html).toContain("Table 7 (seats 2), free");
+    expect(html).toContain("Bar (seats 4), free");
     expect(html).toContain('name="party"');
+  });
+
+  it("says which tables are free, in use, being reset or have a booking too soon, and chooses none for staff", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2, label: "Free" }, { capacity: 2, label: "Busy" }, { capacity: 2, label: "Reset" }, { capacity: 2, label: "Soon" }],
+    });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+    const minutes = (n: number) => new Date(Date.now() + n * 60_000).toISOString();
+    await owner.db.insert(bookings).values([
+      { ...aBooking(restaurantId, tableIds[1], minutes(-30), minutes(75)), status: "seated" },
+      { ...aBooking(restaurantId, tableIds[2], minutes(-60), minutes(45)), status: "completed", endsAt: new Date(minutes(-5)) },
+      aBooking(restaurantId, tableIds[3], minutes(20), minutes(125)),
+    ]);
+
+    const html = await render();
+
+    expect(html).toContain("Choose a table");
+    expect(html.match(/<option[^>]*selected[^>]*>[^<]*/g)).toEqual([expect.stringContaining("Choose a table")]);
+    expect(html).toMatch(/<option(?![^>]*disabled)[^>]*>Free \(seats 2\), free</);
+    expect(html).toMatch(/<option[^>]*disabled[^>]*>Busy \(seats 2\), in use until \d\d:\d\d</);
+    expect(html).toMatch(/<option[^>]*disabled[^>]*>Reset \(seats 2\), being reset until \d\d:\d\d</);
+    expect(html).toMatch(/<option[^>]*disabled[^>]*>Soon \(seats 2\), booking at \d\d:\d\d, too soon</);
   });
 
   it("is not offered on another day: a walk-in sits down now", async () => {
