@@ -22,6 +22,7 @@ import {
   VOID_REASON_MAX,
   voidReasonFrom,
 } from "./kitchen-board";
+import { startPolling } from "./kitchen-poll";
 
 const MINUTE = 60_000;
 const placedAt = "2026-11-11T10:00:00.000Z";
@@ -436,20 +437,72 @@ describe("a move that hangs (#101)", () => {
     expect(poller.refreshes).toBe(0);
   });
 
-  it("keeps #100's guard: the spot is released when the move gives up, then held for the moment after", async () => {
+  it("keeps the spot of a timed-out move that did work held until a poll shows it, then for the moment after", async () => {
     vi.useFakeTimers();
     const guard = sameSpotGuard();
-    const tap = (itemId: string, at: number) => ({ itemId, x: 300, y: 200, at, fromPointer: true });
-    const server = hung();
-    const { deps: d } = deps(server.fetch);
+    const now = () => performance.now();
+    const tap = (itemId: string) => ({ itemId, x: 300, y: 200, at: now(), fromPointer: true });
     const first = item({ id: "a" });
-    expect(guard.allow(tap("a", 0))).toBe(true);
-    const done = sendMove(first, "cooking", d).finally(() => guard.settled("a", MOVE_TIMEOUT_MS));
-    expect(guard.allow(tap("b", 3_000))).toBe(false); // in flight
+    let asked = 0;
+    const shown: string[][] = [];
+    const poller = startPolling({
+      cursor: "1",
+      fetch: async () => {
+        asked = now();
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        return new Response(JSON.stringify({ cursor: "2", now: placedAt, items: [{ ...first, status: "cooking" }] }));
+      },
+      onChanges: (changes) => {
+        shown.push(changes.items.map((it) => it.id));
+        guard.polled(asked, now());
+      },
+      onConnection: () => {},
+    });
+    expect(guard.allow(tap("a"))).toBe(true);
+    const server = hung();
+    const done = sendMove(first, "cooking", {
+      ...deps(server.fetch).deps,
+      poller,
+      timedOut: () => guard.unanswered("a", now()),
+    }).finally(() => guard.settled("a", now()));
     await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
     await done;
-    expect(guard.allow(tap("b", MOVE_TIMEOUT_MS + 100))).toBe(false); // the moment after
-    expect(guard.allow(tap("b", MOVE_TIMEOUT_MS + SAME_SPOT_MS + 200))).toBe(true);
+    shown.length = 0;
+    expect(guard.allow(tap("a"))).toBe(true); // the item itself is free again
+    guard.settled("a", now()); // ... and that retap never reached the server
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(guard.allow(tap("b"))).toBe(false); // past 0.6 s, but no poll has answered yet
+    await vi.advanceTimersByTimeAsync(500);
+    expect(shown).toEqual([["a"]]); // A slides away, 1.5 s after the timeout
+    await vi.advanceTimersByTimeAsync(100);
+    expect(guard.allow(tap("b"))).toBe(false);
+    await vi.advanceTimersByTimeAsync(SAME_SPOT_MS);
+    expect(guard.allow(tap("b"))).toBe(true);
+    poller.stop();
+  });
+
+  it("marks the timeout before it polls, and not for a move that was answered or refused", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const server = hung();
+    const timed = deps(server.fetch).deps;
+    const done = sendMove(item(), "cooking", {
+      ...timed,
+      poller: { refresh: () => void order.push("poll") },
+      timedOut: () => void order.push("timed out"),
+    });
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    expect(order).toEqual(["timed out", "poll"]);
+
+    order.length = 0;
+    for (const answer of [
+      () => Promise.resolve(new Response("{}", { status: 409 })),
+      () => Promise.reject(new TypeError("Failed to fetch")),
+    ]) {
+      await sendMove(item(), "cooking", { ...timed, fetch: answer, timedOut: () => void order.push("timed out") });
+    }
+    expect(order).toEqual([]);
   });
 
   it("times out a void or reject too, says so and leaves the form to try again", async () => {
@@ -626,14 +679,42 @@ describe("a double tap on one spot (#100)", () => {
     expect(guard.allow(tap("b", 500 + SAME_SPOT_MS))).toBe(true);
   });
 
-  it("stops holding the spot of a hung move, but guards it again if the answer comes at last", () => {
+  it("holds the spot of an unanswered move for 10 seconds at most", () => {
     const guard = sameSpotGuard();
     guard.allow(tap("a", 0));
     expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS - 1))).toBe(false);
     expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS))).toBe(true);
-    guard.settled("b", SAME_SPOT_HOLD_MS + 100);
-    guard.settled("a", 67_000);
+  });
+
+  it("keeps a timed-out move's spot for a poll asked after it, not one already on its way (#101)", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.unanswered("a", 8_000);
+    guard.settled("a", 8_000);
+    guard.polled(7_000, 8_500); // may have been read before the move was applied
+    expect(guard.allow(tap("b", 9_500))).toBe(false);
+    guard.polled(8_500, 10_000);
+    expect(guard.allow(tap("b", 10_000 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("doesn't lock a timed-out move's spot while polls fail, and guards it again when one answers (#101)", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.unanswered("a", 8_000);
+    const lapses = 8_000 + SAME_SPOT_HOLD_MS;
+    expect(guard.allow(tap("b", lapses - 1))).toBe(false); // refused taps don't extend it
+    expect(guard.allow(tap("b", lapses))).toBe(true);
+    guard.settled("b", lapses + 100);
+    guard.polled(66_000, 67_000); // the outage ends, and A slides now
     expect(guard.allow(tap("c", 67_050))).toBe(false);
+    expect(guard.allow(tap("c", 67_050 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("is not released by a poll while its move may still be answered", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.polled(100, 200);
+    expect(guard.allow(tap("b", 2_000))).toBe(false);
   });
 
   it("never blocks an activation that isn't a pointer's", () => {

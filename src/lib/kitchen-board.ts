@@ -158,7 +158,7 @@ export const itemsOfOrder = (board: ReadonlyMap<string, BoardItem>, orderId: str
 export const SAME_SPOT_MS = 600;
 /** How far from a guarded spot still counts as on it, in CSS px. */
 export const SAME_SPOT_PX = 40;
-/** The longest an unanswered move holds its spot, so a hung one can't lock it. */
+/** The longest an unanswered move holds its spot, and again once it has timed out, so nothing can lock it. */
 export const SAME_SPOT_HOLD_MS = 10_000;
 
 /** Where and when a tap landed (`event.timeStamp`), and on which item. */
@@ -170,14 +170,20 @@ export type Tap = { itemId: string; x: number; y: number; at: number; fromPointe
  * start another table's order. A ticket slides when the move is answered, or a
  * poll shows it, not when it is tapped, so a tap's spot is held while its move is
  * in flight and for SAME_SPOT_MS after, and a tap there on another item is
- * refused. Other spots work as ever. A click that isn't a pointer's (`detail` 0,
+ * refused. A move that timed out may still have worked, so its spot is held on
+ * until a poll asked since then is shown (#101). Other spots work as ever. A click that isn't a pointer's (`detail` 0,
  * such as a keyboard's) has no position and is never refused; a touch screen
  * reader may send a pointer's click, which is guarded like a tap.
  */
 export function sameSpotGuard() {
   // One per accepted tap. `until` is when it stops guarding. A spot in flight is
-  // kept past that: its late answer still slides a ticket, so it guards again.
-  let spots: (Tap & { until: number; inFlight: boolean })[] = [];
+  // kept past that: the poll that shows its move still slides a ticket, so it
+  // guards again. `unansweredAt` is when its move timed out.
+  let spots: (Tap & { until: number; inFlight: boolean; unansweredAt?: number })[] = [];
+  const release = (spot: (typeof spots)[number], at: number) => {
+    spot.inFlight = false;
+    spot.until = at + SAME_SPOT_MS;
+  };
   return {
     /** True when the tap should act. A pointer's is recorded: call `settled` when its move is over. */
     allow(tap: Tap): boolean {
@@ -197,12 +203,24 @@ export function sameSpotGuard() {
       spots.push({ ...tap, until: tap.at + SAME_SPOT_HOLD_MS, inFlight: true });
       return true;
     },
-    /** The item's move was applied, refused or failed, `at` (`performance.now()`, the taps' clock). */
+    /** The item's move was applied, refused or failed, `at` (`performance.now()`, the taps' clock). Leaves a timed-out one to a poll. */
     settled(itemId: string, at: number) {
       for (const spot of spots) {
-        if (!spot.inFlight || spot.itemId !== itemId) continue;
-        spot.inFlight = false;
-        spot.until = at + SAME_SPOT_MS;
+        if (spot.inFlight && spot.unansweredAt === undefined && spot.itemId === itemId) release(spot, at);
+      }
+    },
+    /** The item's move timed out `at`, so whether it worked isn't known until a poll says. */
+    unanswered(itemId: string, at: number) {
+      for (const spot of spots) {
+        if (!spot.inFlight || spot.unansweredAt !== undefined || spot.itemId !== itemId) continue;
+        spot.unansweredAt = at;
+        spot.until = at + SAME_SPOT_HOLD_MS;
+      }
+    },
+    /** A poll asked at `askedAt` was shown `at`. One asked before a timeout may not know of that move. */
+    polled(askedAt: number, at: number) {
+      for (const spot of spots) {
+        if (spot.inFlight && spot.unansweredAt !== undefined && spot.unansweredAt <= askedAt) release(spot, at);
       }
     },
   };
@@ -258,7 +276,7 @@ export function arrivals(options: {
  * How long a move, void or reject may go unanswered (#101). Past it the request
  * is cancelled, so its late answer can never be applied, the row is free again
  * and the board says so. Longer than a poll's 4 seconds, and shorter than
- * SAME_SPOT_HOLD_MS, so the row is free before the same-spot guard's cap runs out.
+ * SAME_SPOT_HOLD_MS, so the spot is still held when a timeout holds it on.
  */
 export const MOVE_TIMEOUT_MS = 8_000;
 
@@ -285,7 +303,8 @@ async function withTimeout<T>(
  * One move from the board (spec 07): posts the status the card showed and the
  * one wanted. A move that worked is applied. A refused one (409: skipped, or
  * another tablet moved it first) shows the item where it really is, says so, and
- * refreshes the board.
+ * refreshes the board. One that timed out calls `timedOut`, then refreshes: only
+ * a poll asked after that says whether it worked.
  */
 export async function sendMove(
   item: BoardItem,
@@ -295,6 +314,7 @@ export async function sendMove(
     apply: (items: BoardItem[]) => void;
     say: (message: string | undefined) => void;
     poller: { refresh: () => void } | null;
+    timedOut?: () => void;
   },
 ) {
   deps.say(undefined);
@@ -313,6 +333,7 @@ export async function sendMove(
   if (sent.failed) {
     if (sent.timedOut) {
       deps.say(MOVE_TIMEOUT_MESSAGE);
+      deps.timedOut?.();
       deps.poller?.refresh();
     } else {
       deps.say("That didn't reach the server. Try again.");

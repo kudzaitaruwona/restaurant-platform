@@ -130,13 +130,18 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
   useEffect(() => {
     skew.current = Date.parse(initial.now) - Date.now();
     const tick = setInterval(() => setClock(Date.now() + skew.current), TICK_MS);
+    let askedAt = 0; // One poll at a time, so it is the answering poll's.
     poller.current = startPolling({
       cursor: initial.cursor,
-      fetch: (url, signal) => fetch(url, { signal, cache: "no-store" }),
+      fetch: (url, signal) => {
+        askedAt = performance.now();
+        return fetch(url, { signal, cache: "no-store" });
+      },
       onChanges: (changes) => {
         skew.current = Date.parse(changes.now) - Date.now();
         setClock(Date.parse(changes.now));
         updateRef.current(changes.items);
+        spot.current.polled(askedAt, performance.now());
       },
       onConnection: setConnection,
     });
@@ -170,9 +175,11 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
         apply: applyAnswer,
         say: setMessage,
         poller: poller.current,
+        timedOut: () => spot.current.unanswered(item.id, performance.now()),
       });
     } finally {
-      // The ticket moves about now, so the spot is guarded from here (#100).
+      // The ticket moves about now, so the spot is guarded from here (#100). A
+      // timed-out move's is kept for the poll that shows where the item is.
       spot.current.settled(item.id, performance.now());
       setPending((was) => {
         const next = new Set(was);

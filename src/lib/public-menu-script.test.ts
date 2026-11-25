@@ -1221,6 +1221,25 @@ describe("the order tracker", () => {
     expect(page.confirmation.textContent).toBe("");
   });
 
+  it("doesn't count an ended session's voids against an order placed in the next one (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      feed: { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] },
+    });
+    await page.add(page.stew);
+    // The table was closed and taken again since the last poll: the order is first to find out.
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "The session has changed.", code: "session_changed" } };
+    await page.placeAs("Rudo");
+    page.state.orderReply = undefined;
+    page.state.feed = { session: "session-2", items: [item({ name: "Dish 1" })] };
+    await page.placeAs("Rudo");
+    expect(page.confirmation.textContent).toContain("Ordered");
+
+    page.state.feed = { session: "session-2", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toBe("");
+  });
+
   it("doesn't confirm a retry whose item was voided while its answer was lost (#99)", async () => {
     const page = await loadPage(new Map(), "session-1");
     page.state.loseOrderReply = true;

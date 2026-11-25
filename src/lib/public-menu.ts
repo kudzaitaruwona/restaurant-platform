@@ -286,7 +286,7 @@ export const ORDER_SCRIPT = `(() => {
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
   // The session the page is now in. A new one asks for the name again.
   const enter = (next) => {
-    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; showCall(false, ""); clearRefusal(); }
+    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; items = []; showCall(false, ""); clearRefusal(); }
     session = next;
     ended = false;
     for (const line of cart) line.from = line.from || next;
