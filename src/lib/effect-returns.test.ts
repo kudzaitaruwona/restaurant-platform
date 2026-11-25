@@ -20,17 +20,33 @@ function sources(dir: string): string[] {
   });
 }
 
-function isCleanup(e: ts.Expression): boolean {
-  if (ts.isParenthesizedExpression(e)) return isCleanup(e.expression);
+function isCleanup(e: ts.Expression, body?: ts.Node): boolean {
+  if (ts.isParenthesizedExpression(e)) return isCleanup(e.expression, body);
   if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return true;
-  if (ts.isIdentifier(e)) return true; // a named cleanup
+  // A cleanup named in the effect itself. Any other name could hold anything.
+  if (ts.isIdentifier(e)) {
+    return (
+      body !== undefined &&
+      ts.isBlock(body) &&
+      body.statements.some(
+        (s) =>
+          (ts.isFunctionDeclaration(s) && s.name?.text === e.text) ||
+          (ts.isVariableStatement(s) &&
+            s.declarationList.declarations.some(
+              (d) =>
+                ts.isIdentifier(d.name) && d.name.text === e.text && d.initializer && isCleanup(d.initializer),
+            )),
+      )
+    );
+  }
   return (
     ts.isCallExpression(e) && ts.isIdentifier(e.expression) && CLEANUP_FACTORIES.has(e.expression.text)
   );
 }
 
-function offences(file: string): string[] {
-  const text = readFileSync(file, "utf8");
+const offencesIn = (file: string) => offences(file, readFileSync(file, "utf8"));
+
+function offences(file: string, text: string): string[] {
   const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const found: string[] = [];
   const where = (n: ts.Node) => `${file}:${sf.getLineAndCharacterOfPosition(n.getStart()).line + 1}`;
@@ -47,7 +63,7 @@ function offences(file: string): string[] {
         } else {
           const scan = (m: ts.Node) => {
             if (m !== fn && ts.isFunctionLike(m)) return; // a nested function's returns are its own
-            if (ts.isReturnStatement(m) && m.expression && !isCleanup(m.expression)) {
+            if (ts.isReturnStatement(m) && m.expression && !isCleanup(m.expression, fn.body)) {
               found.push(where(m));
             }
             ts.forEachChild(m, scan);
@@ -66,19 +82,27 @@ function offences(file: string): string[] {
 
 describe("effects return nothing or a cleanup", () => {
   it("no effect in src returns an expression's value", () => {
-    expect(sources("src").flatMap(offences)).toEqual([]);
+    expect(sources("src").flatMap(offencesIn)).toEqual([]);
   });
 
-  it("catches the #105 shape", () => {
-    const sf = ts.createSourceFile(
-      "x.tsx",
-      "useEffect(() => ref.current?.scrollIntoView({}), []);",
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TSX,
-    );
-    const call = (sf.statements[0] as ts.ExpressionStatement).expression as ts.CallExpression;
-    const body = (call.arguments[0] as ts.ArrowFunction).body as ts.Expression;
-    expect(isCleanup(body)).toBe(false);
+  it.each([
+    "useEffect(() => ref.current?.scrollIntoView({}), []);",
+    "useEffect(() => { return ref.current?.scrollIntoView({}); }, []);",
+    "useEffect(() => { if (on) return load(); }, []);",
+    "useEffect(() => { const done = load(); return done; }, []);",
+    "useEffect(() => { return outside; }, []);",
+    "useEffect(load, []);",
+  ])("catches %s", (source) => {
+    expect(offences("x.tsx", source)).toEqual(["x.tsx:1"]);
+  });
+
+  it.each([
+    "useEffect(() => { void ref.current?.scrollIntoView({}); }, []);",
+    "useEffect(() => { if (off) return; return () => stop(); }, []);",
+    "useEffect(() => { const stop = () => {}; return stop; }, []);",
+    "useEffect(() => { items.map((item) => { return item.id; }); }, []);",
+    "useEffect(() => clearOnOtherSend(self, clear), []);",
+  ])("allows %s", (source) => {
+    expect(offences("x.tsx", source)).toEqual([]);
   });
 });

@@ -225,15 +225,24 @@ describe("ruleWarnings", () => {
   });
 });
 
-describe("the rules screen's words", () => {
+describe("the settings screen's words", () => {
   it("explains every rule", () => {
     for (const field of settingFields) expect(field.help.length).toBeGreaterThan(10);
   });
 
-  it("says the cutoff reaches bookings already made, and the rest don't", () => {
-    expect(rulesSavedMessage).toContain("cancellation cutoff");
-    expect(rulesSavedMessage).toContain("already made");
-    expect(rulesSavedMessage).toContain("from now on");
+  it("names both rules that reach bookings already made: the cutoff and the buffer", () => {
+    expect(rulesSavedMessage).toBe(
+      "Saved. The new rules apply to bookings made from now on, with two exceptions: the cancellation cutoff applies to every upcoming booking, and the buffer is also used when a booking already made is finished.",
+    );
+    const help = (key: string) => settingFields.find((field) => field.key === key)?.help;
+    expect(help("guestCancelCutoffMinutes")).toContain("already made");
+    expect(help("bufferMinutes")).toContain("already made");
+  });
+
+  it("says staff aren't held to the per-phone limit", () => {
+    expect(settingFields.find((field) => field.key === "maxActiveBookingsPerPhone")?.help).toBe(
+      "Online booking is refused once a phone number has this many upcoming bookings. Staff can still add more.",
+    );
   });
 
   it("links every gate item to where it is fixed", () => {

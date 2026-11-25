@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bookedPath, forgetBooked, isLeftOver, rememberBooked } from "./just-booked";
+import { bookedPath, canGoForward, forgetBooked, isLeftOver, rememberBooked } from "./just-booked";
 
 const ACTION = "/api/r/mbira/book";
 const stored = new Map<string, string>();
@@ -69,6 +69,15 @@ describe("a booking form after booking (#89)", () => {
     rememberBooked(ACTION);
     expect(isLeftOver(ACTION)).toBe(false);
     expect(() => forgetBooked(ACTION)).not.toThrow();
+  });
+
+  it.each([
+    ["there is somewhere", { canGoForward: true }, true],
+    ["there is nowhere", { canGoForward: false }, false],
+    ["the browser can't say", undefined, false],
+  ])("offers Forward only when the browser says there is somewhere to go: %s", (_, navigation, offered) => {
+    vi.stubGlobal("window", { navigation });
+    expect(canGoForward()).toBe(offered);
   });
 
   it("leads to the booking's own page", () => {

@@ -29,12 +29,12 @@ const numbers = {
   sittingMinutes: { label: "Sitting length, in minutes", min: 1, max: 720, help: "How long a table is kept for a party smaller than the large party size." },
   largePartySize: { label: "Large party size", min: 1, max: 100, help: "A party this size or bigger gets the large party sitting." },
   largePartySittingMinutes: { label: "Large party sitting length, in minutes", min: 1, max: 720, help: "How long a table is kept for a large party. Usually longer than the normal sitting." },
-  bufferMinutes: { label: "Buffer between bookings, in minutes", min: 0, max: 240, help: "Time kept free after each sitting to reset the table." },
+  bufferMinutes: { label: "Buffer between bookings, in minutes", min: 0, max: 240, help: "Time kept free after each sitting to reset the table. It is also used when a booking already made is finished." },
   minLeadMinutes: { label: "Lead time, in minutes", min: 0, max: 10080, help: "Guests can't book a time that is closer than this. 60 means no bookings in the next hour." },
   maxDaysAhead: { label: "Days ahead guests can book", min: 0, max: 365, help: "How far ahead guests can book. 0 means today only." },
   maxOnlinePartySize: { label: "Largest party that can book online", min: 1, max: 100, help: "Bigger parties are asked to contact the restaurant." },
   guestCancelCutoffMinutes: { label: "Cancellation cutoff, in minutes", min: 0, max: 10080, help: "Guests can cancel online until this long before the booking. It applies to bookings already made too." },
-  maxActiveBookingsPerPhone: { label: "Upcoming bookings allowed per phone number", min: 1, max: 20, help: "How many upcoming bookings one phone number can hold at a time." },
+  maxActiveBookingsPerPhone: { label: "Upcoming bookings allowed per phone number", min: 1, max: 20, help: "Online booking is refused once a phone number has this many upcoming bookings. Staff can still add more." },
 } as const;
 
 export type BookingSettingKey = keyof typeof numbers;
@@ -57,9 +57,12 @@ export function ruleWarnings(values: BookingSettingsValues): string[] {
     : [];
 }
 
-/** What a save of the rules changes for bookings already made: only the cancel cutoff. */
+/**
+ * What a save of the rules changes for bookings already made: the cancel cutoff,
+ * read when a guest cancels, and the buffer, read when one is finished (finishedTimes).
+ */
 export const rulesSavedMessage =
-  "Saved. The new rules apply to bookings made from now on, except the cancellation cutoff, which applies to every upcoming booking, including ones already made.";
+  "Saved. The new rules apply to bookings made from now on, with two exceptions: the cancellation cutoff applies to every upcoming booking, and the buffer is also used when a booking already made is finished.";
 
 // Messages are fixed strings, so a refused value is never echoed back.
 const numberField = ({ label, min, max }: (typeof numbers)[BookingSettingKey]) => {
@@ -160,7 +163,7 @@ export const enableBlockedMessage = (missing: readonly GateItem[]) =>
 const gateItems = new Set<string>(Object.keys(gateMessages));
 
 const dbErrorOf = (error: unknown) =>
-  (error as { cause?: { constraint?: string; detail?: string } } | null)?.cause;
+  (error as { cause?: { code?: string; constraint?: string; detail?: string } } | null)?.cause;
 
 /**
  * Turns online booking on or off. The gate is Postgres's, not a check here:
@@ -470,8 +473,8 @@ export type CopyOutcome =
  * Copies one period (name and times) to other weekdays, all or none: if any
  * chosen day already has a period overlapping it, nothing is copied and the
  * clashes come back. The same check is Postgres's exclusion constraint, which
- * also settles two copies racing, and rolls the whole copy back. The source is
- * read by restaurant and id, so another restaurant's period is "not found".
+ * also settles two copies racing, and rolls the whole copy back. Days go in one
+ * order, so two copies can't each wait for the other's days. The source is read by restaurant and id, so another restaurant's period is "not found".
  */
 export async function copyServicePeriod(
   ctx: Writer,
@@ -487,7 +490,9 @@ export async function copyServicePeriod(
           and(eq(servicePeriods.restaurantId, ctx.restaurantId), eq(servicePeriods.id, periodId)),
         );
       if (!source) return { outcome: "not_found" };
-      const targets = weekdays.filter((weekday) => weekday !== source.weekday);
+      const targets = weekdays
+        .filter((weekday) => weekday !== source.weekday)
+        .sort((a, b) => a - b);
       if (targets.length === 0) return { outcome: "no_days" };
 
       const clashes = await tx
@@ -538,8 +543,10 @@ export async function copyServicePeriod(
       return { outcome: "saved", copied: added.length };
     });
   } catch (error) {
-    // Two copies at once: the constraint refused one, and the copy rolled back whole.
-    if (dbErrorOf(error)?.constraint === OVERLAP) return { outcome: "overlaps", clashes: [] };
+    // Two copies at once: the constraint refused one, or Postgres broke their deadlock
+    // (each checking the other's new row). Either way the copy rolled back whole.
+    const cause = dbErrorOf(error);
+    if (cause?.constraint === OVERLAP || cause?.code === "40P01") return { outcome: "overlaps", clashes: [] };
     throw error;
   }
 }

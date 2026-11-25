@@ -237,7 +237,10 @@ describe("in the form's place after booking (#89)", () => {
   it("has no form to send again, and no token in the page", () => {
     const html = renderToStaticMarkup(<AlreadyBooked again={() => {}} />);
 
-    expect(html).toContain("You&#x27;re booked");
+    expect(html).toContain("You booked from this tab");
+    expect(html).toContain("If you have already cancelled it, you can make another booking.");
+    // The booking may be cancelled, or past its cutoff: nothing says otherwise.
+    expect(html).not.toContain("You&#x27;re booked");
     expect(html).toContain("Make another booking");
     expect(html).not.toContain("<form");
     expect(html).not.toContain("/b/");
@@ -246,6 +249,7 @@ describe("in the form's place after booking (#89)", () => {
   it("offers the booking while its page opens, and no second booking", () => {
     const html = renderToStaticMarkup(<AlreadyBooked open={() => {}} />);
 
+    expect(html).toContain("You&#x27;re booked");
     expect(html).toContain("Open your booking");
     expect(html).not.toContain("Make another booking");
     expect(html).not.toContain("<form");

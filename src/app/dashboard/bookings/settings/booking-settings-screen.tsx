@@ -134,44 +134,44 @@ export async function BookingSettingsScreen() {
                 {today.length === 0 && <p className="text-caption text-ink-2">No service periods.</p>}
                 {today.map((period) => (
                   <div key={period.id} className="flex flex-col gap-2">
-                  <div className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
-                    <div className="min-w-0 flex-1">
-                      <ActionForm
-                        action={`/api/bookings/periods/${period.id}`}
-                        savedMessage="Saved."
-                        className={periodGrid}
-                      >
-                        <PeriodFields period={period} />
-                        <Button type="submit" variant="secondary" size="staff">
-                          Save
-                        </Button>
-                      </ActionForm>
-                    </div>
-                    <div className="md:w-24">
-                      <DeletePeriodForm
-                        action={`/api/bookings/periods/${period.id}/delete`}
-                        confirmation={{
-                          title: `Delete ${period.name} on ${weekdayNames[weekday]}?`,
-                          description:
+                    <div className="flex flex-col gap-2 md:flex-row md:items-end md:gap-3">
+                      <div className="min-w-0 flex-1">
+                        <ActionForm
+                          action={`/api/bookings/periods/${period.id}`}
+                          savedMessage="Saved."
+                          className={periodGrid}
+                        >
+                          <PeriodFields period={period} />
+                          <Button type="submit" variant="secondary" size="staff">
+                            Save
+                          </Button>
+                        </ActionForm>
+                      </div>
+                      <div className="md:w-24">
+                        <DeletePeriodForm
+                          action={`/api/bookings/periods/${period.id}/delete`}
+                          confirmation={{
+                            title: `Delete ${period.name} on ${weekdayNames[weekday]}?`,
+                            description:
+                              settings.enabled && periods.length === 1
+                                ? "It's the last service period, so online booking will switch off."
+                                : undefined,
+                            confirmLabel: "Delete period",
+                            cancelLabel: "Keep it",
+                          }}
+                          deletedMessage={`Deleted ${period.name} on ${weekdayNames[weekday]}.${
                             settings.enabled && periods.length === 1
-                              ? "It's the last service period, so online booking will switch off."
-                              : undefined,
-                          confirmLabel: "Delete period",
-                          cancelLabel: "Keep it",
-                        }}
-                        deletedMessage={`Deleted ${period.name} on ${weekdayNames[weekday]}.${
-                          settings.enabled && periods.length === 1
-                            ? " It was the last service period, so online booking is switched off."
-                            : ""
-                        }`}
-                      >
-                        <Button type="submit" variant="danger-ghost" size="staff">
-                          Delete
-                        </Button>
-                      </DeletePeriodForm>
+                              ? " It was the last service period, so online booking is switched off."
+                              : ""
+                          }`}
+                        >
+                          <Button type="submit" variant="danger-ghost" size="staff">
+                            Delete
+                          </Button>
+                        </DeletePeriodForm>
+                      </div>
                     </div>
-                  </div>
-                  <CopyPeriodForm period={period} />
+                    <CopyPeriodForm period={period} />
                   </div>
                 ))}
                 {/* Lined up with the periods above, whose Delete sits in the last 6rem. */}
@@ -299,14 +299,14 @@ const periodGrid =
 /** Every other day, to tick: the copy is all or none, and says which days stop it. */
 function CopyPeriodForm({ period }: { period: { id: string; name: string; weekday: number } }) {
   return (
-    <details className="group">
+    <details>
       <summary className="min-h-11 w-fit cursor-pointer py-2 text-caption font-medium text-ink-2 underline underline-offset-4">
         Copy {period.name} to other days
       </summary>
       <ActionForm
         action={`/api/bookings/periods/${period.id}/copy`}
         resetOnSuccess
-        savedMessage="Copied."
+        savedMessage={`Copied ${period.name} to the days you ticked.`}
         className="flex flex-col gap-3 pb-2"
       >
         <p className="text-caption text-ink-2">
@@ -326,7 +326,7 @@ function CopyPeriodForm({ period }: { period: { id: string; name: string; weekda
               </label>
             ))}
         </div>
-        <Button type="submit" variant="secondary" size="staff" className="justify-self-start">
+        <Button type="submit" variant="secondary" size="staff" className="self-start">
           Copy
         </Button>
       </ActionForm>

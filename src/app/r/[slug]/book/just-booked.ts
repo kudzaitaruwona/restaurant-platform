@@ -53,10 +53,8 @@ export const useLeftOver = (action: string) =>
   useSyncExternalStore(subscribe, () => isLeftOver(action), () => false);
 
 const noSubscription = () => () => {};
-/** Whether Forward leads anywhere, where the browser says; otherwise assume so. */
-export const useCanGoForward = () =>
-  useSyncExternalStore(
-    noSubscription,
-    () => (window as { navigation?: { canGoForward: boolean } }).navigation?.canGoForward ?? true,
-    () => false,
-  );
+/** Whether Forward leads anywhere. Not offered where the browser can't say (no Navigation API). */
+export const canGoForward = () =>
+  (window as { navigation?: { canGoForward: boolean } }).navigation?.canGoForward ?? false;
+
+export const useCanGoForward = () => useSyncExternalStore(noSubscription, canGoForward, () => false);

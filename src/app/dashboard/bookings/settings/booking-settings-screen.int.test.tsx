@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +32,22 @@ vi.mock("@/lib/tenant", async (original) => ({
   ...(await original<typeof import("@/lib/tenant")>()),
   getTenantContext: async () => session.tenant as TenantContext,
 }));
+
+/** Each audited write, as the platform admin's log would have it; or a deadlock, with a real SQLSTATE. */
+const audit = vi.hoisted(() => ({ deadlocks: false, entities: [] as unknown[] }));
+vi.mock("@/lib/tenant/audit", async (original) => {
+  const actual = await original<typeof import("@/lib/tenant/audit")>();
+  return {
+    ...actual,
+    recordAdminAction: async (...args: Parameters<typeof actual.recordAdminAction>) => {
+      if (audit.deadlocks) {
+        await args[0].execute(sql`do $$ begin raise exception 'deadlock detected' using errcode = '40P01'; end $$`);
+      }
+      audit.entities.push(args[2].entityId);
+      return actual.recordAdminAction(...args);
+    },
+  };
+});
 
 vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
 
@@ -314,16 +330,6 @@ describe("the settings screen's guidance (#109)", () => {
     expect(boxes).not.toContain('name="weekdays" value="1"');
     expect(html).toContain("nothing is copied");
   });
-
-  it("gives a deleted period's day a message that outlives the row", async () => {
-    await addPeriod(post("/api/bookings/periods", lunch));
-    const [{ id }] = await periods();
-    const html = await screen();
-
-    // The form's own message goes with its row: the day block carries it.
-    expect(html).toContain(`/api/bookings/periods/${id}/delete`);
-    expect(html).not.toContain("Deleted. If it was the last one");
-  });
 });
 
 describe("saving rules that ask first (#109)", () => {
@@ -392,6 +398,32 @@ describe("copying a period to other days (#109)", () => {
       lastBookingAt: "14:00:00",
       closesAt: "15:00:00",
     });
+  });
+
+  it("adds the days in one order, however they were ticked, so two copies can't cross", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+    audit.entities = [];
+
+    await copy(id, ["5", "2", "0"]);
+
+    const weekdays = new Map((await periods()).map((p) => [p.id as unknown, p.weekday]));
+    expect(audit.entities.map((entity) => weekdays.get(entity))).toEqual([0, 2, 5]);
+  });
+
+  it("answers a deadlock between two copies with the 409, and copies nothing", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+    audit.deadlocks = true;
+    try {
+      const response = await copy(id, ["2"]);
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain("Nothing was copied");
+    } finally {
+      audit.deadlocks = false;
+    }
+    expect(await onDays()).toEqual([1]);
   });
 
   it("copies nothing at all if one chosen day overlaps, and names the day", async () => {

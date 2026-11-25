@@ -120,7 +120,6 @@ export function DetailsForm({
 }) {
   const [time, setTime] = useState(firstChoice);
   const [refusal, setRefusal] = useState<Refusal>();
-  const { container: turnstileContainer, token: turnstileToken } = useTurnstile(turnstileSiteKey);
   // Where the new booking is, until the browser gets there. Never in a URL or markup
   // of this page (just-booked.ts).
   const [booked, setBooked] = useState<string>();
@@ -131,6 +130,10 @@ export function DetailsForm({
   // a URL, and without party, date and time the route stores nothing), but a
   // disabled button spares them the JSON.
   const hydrated = useHydrated();
+  // Not before hydration, which is when a left-over form is known to be one.
+  const { container: turnstileContainer, token: turnstileToken } = useTurnstile(
+    hydrated && !leftOver ? turnstileSiteKey : undefined,
+  );
   const id = useId();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -307,7 +310,8 @@ export function DetailsForm({
 
 /**
  * In the form's place once it has booked (#89): for the moment before the booking's
- * own page opens, and for a guest who comes Back to a form from before it.
+ * own page opens, and for a guest who comes Back to a form from before it. By then
+ * the booking may be cancelled or past its cutoff, so that text claims neither.
  */
 export function AlreadyBooked({ open, again }: { open?: () => void; again?: () => void }) {
   const canGoForward = useCanGoForward();
@@ -317,11 +321,15 @@ export function AlreadyBooked({ open, again }: { open?: () => void; again?: () =
       role="status"
       className="flex scroll-mt-4 flex-col gap-3 rounded-card border border-line bg-surface px-4 py-5"
     >
-      <h2 className="text-lead font-semibold text-ink">You&apos;re booked</h2>
+      <h2 className="text-lead font-semibold text-ink">
+        {again ? "You booked from this tab" : "You're booked"}
+      </h2>
       <p className="text-body text-ink-2">
-        {again
-          ? "You just made a booking here. Its page has the cancel link, and so does your WhatsApp confirmation."
-          : "Opening your booking."}
+        {!again
+          ? "Opening your booking."
+          : canGoForward
+            ? "Open that booking to see or cancel it, or use the link in your WhatsApp confirmation. If you have already cancelled it, you can make another booking."
+            : "To see or cancel that booking, use the link in your WhatsApp confirmation. If you have already cancelled it, you can make another booking."}
       </p>
       {(open || canGoForward) && (
         <button

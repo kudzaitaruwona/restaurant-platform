@@ -1,9 +1,23 @@
 "use client";
 
-import { createContext, type ComponentProps, type ReactNode, useContext, useState } from "react";
+import { createContext, type ComponentProps, type ReactNode, useContext, useEffect, useState } from "react";
 import { ActionForm } from "../../action-form";
+import { clearOnOtherSend } from "../../refusals";
 
-const Say = createContext<(message: string) => void>(() => {});
+export const Say = createContext<(message: string) => void>(() => {});
+
+/**
+ * Clears a message when any form on the page is sent, so it never sits beside a
+ * newer answer. Its own delete's send comes before the save that sets it. Stopping
+ * (the page left, or hidden and kept) clears it too.
+ */
+export function clearWithSends(clear: () => void) {
+  const off = clearOnOtherSend(Symbol("day-feedback"), clear);
+  return () => {
+    off();
+    clear();
+  };
+}
 
 /**
  * A day's block on the settings screen. Deleting a period removes the row the
@@ -12,6 +26,10 @@ const Say = createContext<(message: string) => void>(() => {});
  */
 export function DayFeedback({ className, children }: { className?: string; children: ReactNode }) {
   const [message, setMessage] = useState<string>();
+  useEffect(() => {
+    const stop = clearWithSends(() => setMessage(undefined));
+    return () => stop();
+  }, []);
   return (
     <Say value={setMessage}>
       <div className={className}>
