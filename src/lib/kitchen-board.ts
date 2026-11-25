@@ -73,7 +73,14 @@ export function ageOf(item: BoardItem, now: Date) {
           ? "amber"
           : "fresh";
   const whole = Math.floor(minutes);
-  return { level, label: whole < 1 ? "just now" : `${whole} min ago` } as const;
+  // Past an hour, "95 min ago" is a sum to do in the head (#101).
+  const label =
+    whole < 1
+      ? "just now"
+      : whole < 60
+        ? `${whole} min ago`
+        : `${Math.floor(whole / 60)} h${whole % 60 ? ` ${whole % 60} min` : ""} ago`;
+  return { level, label } as const;
 }
 
 /**
@@ -89,11 +96,26 @@ export function applyChanges(board: ReadonlyMap<string, BoardItem>, changes: Boa
       next.delete(change.id);
       continue;
     }
-    if (!next.has(change.id)) arrived.push(change.id);
+    const held = next.get(change.id);
+    // A change older than what the board holds is a late answer: it must not undo a newer state (#101).
+    if (held && Date.parse(change.statusChangedAt) < Date.parse(held.statusChangedAt)) continue;
+    if (!held) arrived.push(change.id);
     next.set(change.id, change);
   }
   return { board: next, arrived };
 }
+
+/**
+ * The items of one move's answer worth applying (#101): only ones the board still
+ * holds, since a poll may have taken the item off it (delivered, voided) while
+ * the answer was on its way, and an answer must not bring it back, as a new
+ * arrival with a flash and a beep. Older ones are dropped by applyChanges.
+ */
+export const freshAnswers = (board: ReadonlyMap<string, BoardItem>, items: BoardItem[]) =>
+  items.filter((item) => {
+    const held = board.get(item.id);
+    return held !== undefined && Date.parse(item.statusChangedAt) >= Date.parse(held.statusChangedAt);
+  });
 
 /** An order's items in one column, so the kitchen can plate a table together. */
 export type BoardGroup = { orderId: string; table: string; customerName: string; items: BoardItem[] };
@@ -233,6 +255,33 @@ export function arrivals(options: {
 }
 
 /**
+ * How long a move, void or reject may go unanswered (#101). Past it the request
+ * is cancelled, so its late answer can never be applied, the row is free again
+ * and the board says so. Longer than a poll's 4 seconds, and shorter than
+ * SAME_SPOT_HOLD_MS, so the row is free before the same-spot guard's cap runs out.
+ */
+export const MOVE_TIMEOUT_MS = 8_000;
+
+/** Said when a move timed out. It may still have worked: the board is refreshed to find out. */
+export const MOVE_TIMEOUT_MESSAGE =
+  "The server took too long to answer. Check the board, then tap again if it didn't move.";
+
+/** Runs `request` with a signal that aborts after MOVE_TIMEOUT_MS; `timedOut` says that is why it failed. */
+async function withTimeout<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<{ failed: false; value: T } | { failed: true; timedOut: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MOVE_TIMEOUT_MS);
+  try {
+    return { failed: false, value: await request(controller.signal) };
+  } catch {
+    return { failed: true, timedOut: controller.signal.aborted };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * One move from the board (spec 07): posts the status the card showed and the
  * one wanted. A move that worked is applied. A refused one (409: skipped, or
  * another tablet moved it first) shows the item where it really is, says so, and
@@ -242,32 +291,41 @@ export async function sendMove(
   item: BoardItem,
   to: ItemStatus,
   deps: {
-    fetch: (url: string, init: { method: string; body: FormData }) => Promise<Response>;
+    fetch: (url: string, init: { method: string; body: FormData; signal: AbortSignal }) => Promise<Response>;
     apply: (items: BoardItem[]) => void;
     say: (message: string | undefined) => void;
     poller: { refresh: () => void } | null;
   },
 ) {
   deps.say(undefined);
-  try {
-    const body = new FormData();
-    body.set("from", item.status);
-    body.set("to", to);
-    const response = await deps.fetch(`/api/kitchen/items/${item.id}/status`, { method: "POST", body });
-    const answer = (await response.json().catch(() => ({}))) as {
-      item?: BoardItem;
-      status?: ItemStatus;
-      error?: string;
-    };
-    if (response.ok && answer.item) {
-      deps.apply([answer.item]);
-    } else {
-      deps.say(answer.error ?? "That didn't work. Try again.");
-      if (answer.status) deps.apply([{ ...item, status: answer.status }]);
+  const body = new FormData();
+  body.set("from", item.status);
+  body.set("to", to);
+  const sent = await withTimeout(async (signal) => {
+    const response = await deps.fetch(`/api/kitchen/items/${item.id}/status`, { method: "POST", body, signal });
+    const answer = (await response.json().catch((error) => {
+      // A body that never finishes is a timeout, not an empty answer.
+      if (signal.aborted) throw error;
+      return {};
+    })) as { item?: BoardItem; status?: ItemStatus; error?: string };
+    return { ok: response.ok, answer };
+  });
+  if (sent.failed) {
+    if (sent.timedOut) {
+      deps.say(MOVE_TIMEOUT_MESSAGE);
       deps.poller?.refresh();
+    } else {
+      deps.say("That didn't reach the server. Try again.");
     }
-  } catch {
-    deps.say("That didn't reach the server. Try again.");
+    return;
+  }
+  const { ok, answer } = sent.value;
+  if (ok && answer.item) {
+    deps.apply([answer.item]);
+  } else {
+    deps.say(answer.error ?? "That didn't work. Try again.");
+    if (answer.status) deps.apply([{ ...item, status: answer.status }]);
+    deps.poller?.refresh();
   }
 }
 
@@ -287,7 +345,7 @@ export function voidReasonFrom(value: FormDataEntryValue | null): string | null 
 type OverrideDeps = {
   fetch: (
     url: string,
-    init: { method: string; body: FormData; headers?: Record<string, string> },
+    init: { method: string; body: FormData; headers?: Record<string, string>; signal: AbortSignal },
   ) => Promise<Response>;
   apply: (items: BoardItem[]) => void;
   say: (message: string | undefined) => void;
@@ -301,26 +359,38 @@ type OverrideDeps = {
  */
 async function sendOverride(url: string, reason: string, gone: BoardItem[], deps: OverrideDeps) {
   deps.say(undefined);
-  try {
-    const body = new FormData();
-    body.set("reason", reason);
+  const body = new FormData();
+  body.set("reason", reason);
+  const sent = await withTimeout(async (signal) => {
     const response = await deps.fetch(url, {
       method: "POST",
       body,
       headers: { [FORM_FETCH_HEADER]: "1" },
+      signal,
     });
-    if (response.ok) {
-      deps.apply(gone.map((item) => ({ ...item, status: "voided" as const })));
-      return true;
+    if (response.ok) return { ok: true as const };
+    const answer = (await response.json().catch((error) => {
+      if (signal.aborted) throw error;
+      return {};
+    })) as { error?: string };
+    return { ok: false as const, error: answer.error };
+  });
+  if (sent.failed) {
+    if (sent.timedOut) {
+      deps.say(MOVE_TIMEOUT_MESSAGE);
+      deps.poller?.refresh();
+    } else {
+      deps.say("That didn't reach the server. Try again.");
     }
-    const answer = (await response.json().catch(() => ({}))) as { error?: string };
-    deps.say(answer.error ?? "That didn't work. Try again.");
-    deps.poller?.refresh();
-    return false;
-  } catch {
-    deps.say("That didn't reach the server. Try again.");
     return false;
   }
+  if (sent.value.ok) {
+    deps.apply(gone.map((item) => ({ ...item, status: "voided" as const })));
+    return true;
+  }
+  deps.say(sent.value.error ?? "That didn't work. Try again.");
+  deps.poller?.refresh();
+  return false;
 }
 
 /** Void one item from its card's menu (#73), with a reason. */

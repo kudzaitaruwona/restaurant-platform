@@ -23,6 +23,7 @@ import {
   type BoardItem,
   boardColumns,
   cardMenuActions,
+  freshAnswers,
   type BoardStatus,
   type ItemStatus,
   itemsOfOrder,
@@ -151,6 +152,9 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     return () => clearTimeout(timer);
   }, [message]);
 
+  /** A move's answer, applied only if it is still true of the board (#101). */
+  const applyAnswer = (items: BoardItem[]) => update(freshAnswers(current.current, items));
+
   function enableSound() {
     alert.enableSound();
     setSoundOn(true);
@@ -162,7 +166,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     try {
       await sendMove(item, to, {
         fetch: (url, init) => fetch(url, init),
-        apply: update,
+        apply: applyAnswer,
         say: setMessage,
         poller: poller.current,
       });
@@ -184,7 +188,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     setPending((was) => new Set([...was, ...busy.map((it) => it.id)]));
     const deps = {
       fetch: (url: string, init: RequestInit & { body: FormData }) => fetch(url, init),
-      apply: update,
+      apply: applyAnswer,
       say: setMessage,
       poller: poller.current,
     };
@@ -361,24 +365,25 @@ function Ticket({
     >
       <div
         className={cn(
-          "flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line py-2.5 pr-3 pl-4",
+          "flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line py-2.5 pr-3 pl-4",
           status === "done" && "bg-accent-soft",
           age.level !== "fresh" && "bg-attention-soft",
         )}
       >
         <span className="text-[2em] leading-none font-bold tracking-tight">{group.table}</span>
-        {/* At least 5em, so a narrow column wraps the age under the name instead of breaking the name per letter; nothing on a card is cut off. */}
-        <span className="min-w-[5em] flex-1 break-words text-[1.0625em] font-medium text-ink-2">
+        {/* The name has a line of its own (last in the flow, first in the markup), so it breaks between words and only breaks a word that is longer than the card; nothing on a card is cut off (#101). */}
+        <span className="order-last basis-full break-words text-[1.0625em] font-medium text-ink-2">
           {group.customerName}
         </span>
         {isNew && (
-          <span className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[.8125em] font-semibold text-on-accent motion-safe:animate-pulse">
+          <span className="ml-auto shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[.8125em] font-semibold text-on-accent motion-safe:animate-pulse">
             New
           </span>
         )}
         <span
           className={cn(
             "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums",
+            !isNew && "ml-auto",
             status === "done" ? "text-[.9375em] font-medium text-ink-2" : "text-[1.25em] font-semibold",
             age.level === "amber" && "text-attention-ink",
             age.level === "red" && "rounded-control bg-attention px-3 py-1.5 text-on-attention",
@@ -444,12 +449,18 @@ function ItemRow({
     setTimeout(() => row.current?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.click());
 
   return (
-    <div ref={row} className="flex items-stretch border-line not-first-of-type:border-t">
+    // The "..." button sits over the row's top-right corner, so a note below it
+    // can use the ticket's whole width instead of what is left beside the button (#101).
+    <div ref={row} className="relative border-line not-first-of-type:border-t">
       <button
         type="button"
         disabled={pending}
         aria-label={`${forwardWords[item.status]}: ${item.quantity} × ${item.name}, ${item.table}`}
-        className="grid min-h-16 min-w-0 flex-1 touch-manipulation grid-cols-[3em_minmax(0,1fr)] items-start gap-x-2 py-3 pr-1 pl-4 text-left transition-colors duration-150 ease-out outline-none select-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset active:bg-accent-soft disabled:cursor-progress disabled:opacity-55"
+        className={cn(
+          "grid min-h-16 w-full min-w-0 touch-manipulation grid-cols-[3em_minmax(0,1fr)] items-start gap-x-2 py-3 pr-4 pl-4 text-left transition-colors duration-150 ease-out outline-none select-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset active:bg-accent-soft disabled:cursor-progress disabled:opacity-55",
+          // The name's row is as tall as the menu button, so a note never runs under it.
+          item.note && "grid-rows-[minmax(3.25rem,auto)_auto]",
+        )}
         onPointerDown={() => {
           longPressed.current = false;
           cancelPress();
@@ -476,11 +487,11 @@ function ItemRow({
           {item.quantity}
           <span className="ml-px text-[.7em] font-medium text-ink-2">×</span>
         </span>
-        <span className="text-[1.25em] leading-[1.28] font-semibold break-words">{item.name}</span>
+        <span className="pr-10 text-[1.25em] leading-[1.28] font-semibold break-words">{item.name}</span>
         {item.note && (
           <span
             data-note="true"
-            className="col-start-2 mt-2 flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2 text-[1.0625em] font-semibold whitespace-pre-wrap break-words text-ink"
+            className="col-span-2 mt-2 flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2 text-[1.0625em] font-semibold whitespace-pre-wrap break-words text-ink"
           >
             <MessageSquareText aria-hidden className="mt-0.5 size-[1.1em] shrink-0 text-attention-ink" />
             <span className="min-w-0">{item.note}</span>
@@ -489,7 +500,7 @@ function ItemRow({
       </button>
       <RowMenu
         label={`More for ${item.quantity} × ${item.name}`}
-        className="h-auto min-h-16 w-14 rounded-none border-0 bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink focus-visible:ring-inset focus-visible:ring-offset-0 aria-expanded:bg-surface-2 aria-expanded:text-ink [&_svg]:size-6"
+        className="absolute top-0 right-0 h-16 w-14 rounded-none border-0 bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink focus-visible:ring-inset focus-visible:ring-offset-0 aria-expanded:bg-surface-2 aria-expanded:text-ink [&_svg]:size-6"
       >
         <RowMenuLabel>
           {item.quantity} × {item.name}, {item.table}
@@ -535,9 +546,16 @@ function ReasonForm({
   onSubmit: (reason: string) => Promise<void>;
 }) {
   const [reason, setReason] = useState("");
+  const form = useRef<HTMLFormElement>(null);
+  // The field's autofocus only scrolls the field into view, which leaves the
+  // buttons below the fold on a lower ticket (#101): bring the whole form in.
+  useEffect(() => {
+    form.current?.scrollIntoView({ block: "nearest" });
+  }, []);
   return (
     <form
-      className="grid gap-2.5 border-t border-line p-3"
+      ref={form}
+      className="grid scroll-mb-24 gap-2.5 border-t border-line p-3"
       onSubmit={(event) => {
         event.preventDefault();
         const trimmed = voidReasonFrom(reason);
