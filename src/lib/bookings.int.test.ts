@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { bookings, bookingSettings, diningTables, servicePeriods } from "@/db/schema";
+import { bookings, bookingSettings, diningTables, notifications, servicePeriods } from "@/db/schema";
 import { addDays, localToday } from "@/lib/booking-engine";
 import { settingFields } from "@/lib/booking-settings";
 import {
@@ -16,6 +16,8 @@ import {
 } from "../../test/integration/database";
 import {
   confirmBooking,
+  type ConfirmOutcome,
+  findEarlierBooking,
   firstTableToTake,
   getBookingPage,
   type GuestRequest,
@@ -74,6 +76,12 @@ describe("a guest's request", () => {
       success: true,
       data: guest(),
     });
+  });
+
+  it("keeps the page's id for the submission, and needs none (#134)", () => {
+    const request = crypto.randomUUID();
+    expect(parseGuestRequest(form({ ...filled, request }))).toMatchObject({ success: true, data: { request } });
+    expect(parseGuestRequest(form({ ...filled, request: "mine" })).success).toBe(false);
   });
 
   it("defaults the country code to +263", () => {
@@ -973,5 +981,221 @@ describe("the booking page for large parties", () => {
       threshold: 5,
     });
     expect((await getBookingPage({ restaurantId }, { party: "4", date }, now)).largeParty).toBeUndefined();
+  });
+});
+
+describe("a retry after a lost answer (#134)", () => {
+  const live = new Date();
+  const day = addDays(localToday(live, "Africa/Harare"), 2);
+  const submission = (overrides: Partial<GuestRequest> = {}) =>
+    guest({ date: day, request: crypto.randomUUID(), ...overrides });
+  const queuedFor = (restaurantId: string) =>
+    owner.db.select({ kind: notifications.kind }).from(notifications).where(eq(notifications.restaurantId, restaurantId));
+  const tokenOf = (result: ConfirmOutcome) =>
+    "confirmation" in result ? result.confirmation.manageToken : undefined;
+
+  it("answers with the original booking and writes nothing: no booking, no message", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const sent = submission({ note: "birthday" });
+    const first = await confirmBooking({ restaurantId }, sent, live);
+    const queued = await queuedFor(restaurantId);
+
+    const again = await confirmBooking({ restaurantId }, sent, live);
+
+    expect(first.outcome).toBe("confirmed");
+    expect(again).toEqual({ ...first, outcome: "replayed" });
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+    expect(queued.map(({ kind }) => kind).sort()).toEqual(["booking_confirmed", "booking_reminder"]);
+    expect(await queuedFor(restaurantId)).toHaveLength(2);
+  });
+
+  it("answers whatever would refuse it now: the limit, the table, the lead time, the date, the size, online booking off", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      rules: { maxActiveBookingsPerPhone: 1 },
+    });
+    const sent = submission();
+    const token = tokenOf(await confirmBooking({ restaurantId }, sent, live));
+    const inTime = new Date(new Date(`${day}T17:00:00Z`).getTime() - 60_000);
+    const settings = (rules: Partial<typeof bookingSettings.$inferInsert>) =>
+      owner.db.update(bookingSettings).set(rules).where(eq(bookingSettings.restaurantId, restaurantId));
+
+    // Its own booking is the phone's one place, and has the only table.
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, live))).toBe(token);
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, inTime))).toBe(token);
+    const dayAfter = new Date(inTime.getTime() + 86_400_000);
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, dayAfter))).toBe(token);
+    await settings({ maxOnlinePartySize: 1 });
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, live))).toBe(token);
+    await settings({ enabled: false });
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, live))).toBe(token);
+    await owner.db.update(bookings).set({ status: "cancelled", cancelledBy: "guest" }).where(eq(bookings.tableId, tableIds[0]));
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, live))).toBe(token);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is the same booking after staff move it to another table", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const sent = submission();
+    const token = tokenOf(await confirmBooking({ restaurantId }, sent, live));
+    await owner.db.update(bookings).set({ tableId: tableIds[1] }).where(eq(bookings.restaurantId, restaurantId));
+
+    expect(tokenOf(await confirmBooking({ restaurantId }, sent, live))).toBe(token);
+  });
+
+  it("is the same id however its letters are cased", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const sent = submission();
+    const token = tokenOf(await confirmBooking({ restaurantId }, sent, live));
+
+    const shouted = { ...sent, request: sent.request!.toUpperCase() };
+    expect(tokenOf(await confirmBooking({ restaurantId }, shouted, live))).toBe(token);
+  });
+
+  it.each([
+    ["party", { party: 1 }],
+    ["date", { date: addDays(day, 1) }],
+    ["time", { time: "20:00" }],
+    ["name", { name: "Rudo" }],
+    ["note", { note: "window seat" }],
+  ] as const)("with another %s books nothing, says what was booked, and gives no way into it", async (_what, change) => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const sent = submission();
+    const token = tokenOf(await confirmBooking({ restaurantId }, sent, live));
+
+    const changed = await confirmBooking({ restaurantId }, { ...sent, ...change }, live);
+
+    expect(changed).toEqual({
+      outcome: "already_booked",
+      booked: { party: 2, dateLabel: expect.any(String), time: "19:00" },
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
+    });
+    expect(JSON.stringify(changed)).not.toContain(token);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+    expect(await queuedFor(restaurantId)).toHaveLength(2);
+  });
+
+  it("with another phone says nothing about the booking, which is somebody else's as far as anyone can tell", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const sent = submission();
+    await confirmBooking({ restaurantId }, sent, live);
+
+    expect(await confirmBooking({ restaurantId }, { ...sent, phone: "+263772000000" }, live)).toEqual({
+      outcome: "already_booked",
+      booked: undefined,
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
+    });
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is never another restaurant's booking: the same id there is a booking of its own", async () => {
+    const mine = await bookableRestaurant(owner.db);
+    const theirs = await bookableRestaurant(owner.db);
+    const sent = submission();
+    const token = tokenOf(await confirmBooking(theirs, sent, live));
+
+    const here = await confirmBooking(mine, sent, live);
+
+    expect(here.outcome).toBe("confirmed");
+    expect(tokenOf(here)).not.toBe(token);
+    expect(await bookingsOf(owner.db, mine.restaurantId)).toHaveLength(1);
+    expect(await findEarlierBooking(await bookableRestaurant(owner.db), sent)).toBeUndefined();
+  });
+
+  it("books what a first try that was refused asks for next, under the same id", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    await owner.db.insert(bookings).values(aBooking(restaurantId, tableIds[0], `${day}T17:00:00Z`, `${day}T18:00:00Z`));
+    const sent = submission();
+    expect((await confirmBooking({ restaurantId }, sent, live)).outcome).toBe("race_lost");
+
+    expect((await confirmBooking({ restaurantId }, { ...sent, time: "21:00" }, live)).outcome).toBe("confirmed");
+  });
+
+  it("with no id, two submissions are two bookings, as before", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const sent = guest({ date: day });
+
+    expect((await confirmBooking({ restaurantId }, sent, live)).outcome).toBe("confirmed");
+    expect((await confirmBooking({ restaurantId }, sent, live)).outcome).toBe("confirmed");
+    expect(await findEarlierBooking({ restaurantId }, sent)).toBeUndefined();
+  });
+
+  it("finds the booking without making one, for a retry refused before the confirm", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const sent = submission();
+    expect(await findEarlierBooking({ restaurantId }, sent)).toBeUndefined();
+    const first = await confirmBooking({ restaurantId }, sent, live);
+
+    expect(await findEarlierBooking({ restaurantId }, sent)).toEqual({ ...first, outcome: "replayed" });
+    expect((await findEarlierBooking({ restaurantId }, { ...sent, time: "20:00" }))?.outcome).toBe("already_booked");
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  describe("racing the original", () => {
+    /** Stops the first confirm inside its insert, and the second behind the first. */
+    async function race(second: (sent: GuestRequest) => GuestRequest, rules = {}) {
+      const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+        tables: [{ capacity: 2, sortOrder: 1 }, { capacity: 2, sortOrder: 2 }],
+        rules,
+      });
+      const sent = submission();
+      const holder = await owner.pool.connect();
+      const behind = (pid: number) =>
+        vi.waitFor(
+          async () => {
+            const { rows } = await owner.db.execute<{ pid: number }>(sql`
+              select pid from pg_stat_activity
+              where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+            expect(rows).toHaveLength(1);
+            return rows[0].pid;
+          },
+          { timeout: 15_000, interval: 20 },
+        );
+      try {
+        await holder.query("begin");
+        await holder.query("select pg_advisory_xact_lock(hashtextextended('table_seat:' || $1, 0))", [tableIds[0]]);
+        const { rows } = await holder.query("select pg_backend_pid() as pid");
+        const original = confirmBooking({ restaurantId }, sent, live);
+        const originalPid = await behind(rows[0].pid);
+        const retry = confirmBooking({ restaurantId }, second(sent), live);
+        await behind(originalPid);
+        await holder.query("commit");
+        return { restaurantId, original: await original, retry: await retry };
+      } finally {
+        holder.release(true);
+      }
+    }
+
+    it("waits for it and answers with its booking", async () => {
+      const { restaurantId, original, retry } = await race((sent) => sent, { maxActiveBookingsPerPhone: 1 });
+
+      expect(original.outcome).toBe("confirmed");
+      expect(retry).toEqual({ ...original, outcome: "replayed" });
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+      expect(await queuedFor(restaurantId)).toHaveLength(2);
+    });
+
+    it("with other details waits for it, and books nothing", async () => {
+      const { restaurantId, original, retry } = await race((sent) => ({ ...sent, time: "21:00" }));
+
+      expect(original.outcome).toBe("confirmed");
+      expect(retry.outcome).toBe("already_booked");
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+    });
+
+    it("is one booking and one set of messages however many land at once", async () => {
+      const { restaurantId } = await bookableRestaurant(owner.db, {
+        tables: [{ capacity: 2 }, { capacity: 2 }, { capacity: 2 }],
+      });
+      const sent = submission();
+
+      const results = await Promise.all(Array.from({ length: 5 }, () => confirmBooking({ restaurantId }, sent, live)));
+
+      expect(results.map(({ outcome }) => outcome).sort()).toEqual(["confirmed", "replayed", "replayed", "replayed", "replayed"]);
+      expect(new Set(results.map(tokenOf)).size).toBe(1);
+      expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+      expect(await queuedFor(restaurantId)).toHaveLength(2);
+    });
   });
 });

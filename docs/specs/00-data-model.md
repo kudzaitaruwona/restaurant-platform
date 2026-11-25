@@ -236,6 +236,7 @@ bookings
   source                enum(online, staff)
   guest_note            text null           -- "birthday", max 200 chars
   manage_token          text unique         -- guest's cancel link
+  request_id            uuid null           -- (proposed, #134) the page's id for the submission; null from staff, and from a page without one
   cancelled_by          enum(guest, staff) null
   cancelled_at          timestamptz null
   created_at
@@ -261,6 +262,9 @@ bookings
   -- so neither can wait on the other in a cycle, as long as a transaction makes one booking (src/db/booking-lock-order.int.test.ts).
   -- It fires on insert only. A move leaves the count as it was, so it needs nothing. A reopen would add a booking the rule never
   -- saw, but nothing reopens one (spec 04: nothing leads out of cancelled): whatever adds that must decide whether the limit applies.
+  -- (proposed, #134) UNIQUE (restaurant_id, request_id), bookings_request_once: a submission books once, whatever becomes of the
+  -- booking. bookings_request_frozen (BEFORE UPDATE) refuses any change to request_id, whoever asks (migration 0054).
+  -- A confirm first takes an advisory lock per (restaurant, request_id), before the phone's, so a retry waits for the original.
   -- (proposed) table_id is NOT NULL and its foreign key is composite, (restaurant_id, table_id).
   -- UNIQUE (restaurant_id, id), and an index on (restaurant_id, starts_at) for the day list.
   -- (proposed) Partial indexes for the scheduled job (S-35), which looks across every restaurant and so can't use the

@@ -30,7 +30,7 @@ describe("spending a submission", () => {
   it("allows five and refuses the sixth, with how long to wait", async () => {
     const key = newKey();
     for (let attempt = 1; attempt <= SUBMISSIONS_PER_WINDOW; attempt++) {
-      expect(await spendSubmission(key)).toEqual({ allowed: true });
+      expect(await spendSubmission(key)).toMatchObject({ allowed: true });
     }
 
     const refused = await spendSubmission(key);
@@ -46,7 +46,7 @@ describe("spending a submission", () => {
     const [one, other] = [newKey(), newKey()];
     for (let attempt = 0; attempt < SUBMISSIONS_PER_WINDOW + 1; attempt++) await spendSubmission(one);
 
-    expect(await spendSubmission(other)).toEqual({ allowed: true });
+    expect(await spendSubmission(other)).toMatchObject({ allowed: true });
   });
 
   it("lets exactly five of a burst of parallel posts through", async () => {
@@ -76,7 +76,7 @@ describe("spending a submission", () => {
       .set({ windowStartedAt: sql`now() - interval '10 minutes 1 second'` })
       .where(eq(bookingRateLimit.key, key));
 
-    expect(await spendSubmission(key)).toEqual({ allowed: true });
+    expect(await spendSubmission(key)).toMatchObject({ allowed: true });
     expect((await rowOf(key)).attempts).toBe(1);
   });
 
@@ -89,6 +89,51 @@ describe("spending a submission", () => {
       .where(eq(bookingRateLimit.key, key));
 
     expect((await spendSubmission(key)).allowed).toBe(false);
+  });
+});
+
+describe("giving a submission back (#134)", () => {
+  /** Spends one that is allowed, and what gives it back. */
+  const spend = async (key: string) => {
+    const spent = await spendSubmission(key);
+    if (!spent.allowed) throw new Error("refused");
+    return spent.giveBack;
+  };
+
+  it("uncounts that one", async () => {
+    const key = newKey();
+    await spend(key);
+    const giveBack = await spend(key);
+
+    await giveBack();
+
+    expect((await rowOf(key)).attempts).toBe(1);
+  });
+
+  it("counts what was allowed, not the refusals the count stops at", async () => {
+    const key = newKey();
+    for (let attempt = 1; attempt < SUBMISSIONS_PER_WINDOW; attempt++) await spendSubmission(key);
+    const giveBack = await spend(key);
+    for (let attempt = 0; attempt < 3; attempt++) await spendSubmission(key);
+
+    await giveBack();
+
+    expect((await spendSubmission(key)).allowed).toBe(true);
+    expect((await spendSubmission(key)).allowed).toBe(false);
+  });
+
+  it("gives nothing back to a window it wasn't counted in", async () => {
+    const key = newKey();
+    const giveBack = await spend(key);
+    await owner.db
+      .update(bookingRateLimit)
+      .set({ windowStartedAt: sql`now() - interval '10 minutes 1 second'` })
+      .where(eq(bookingRateLimit.key, key));
+    await spend(key);
+
+    await giveBack();
+
+    expect((await rowOf(key)).attempts).toBe(1);
   });
 });
 

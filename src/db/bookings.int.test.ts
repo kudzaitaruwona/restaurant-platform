@@ -204,3 +204,66 @@ describe("tenant isolation", () => {
     expect(await app.db.select().from(bookings)).toEqual([]);
   });
 });
+
+describe("a submission books once (#134)", () => {
+  const ONCE = { cause: { code: "23505", constraint: "bookings_request_once" } };
+  const submitted = (restaurantId: string, tableId: string, requestId: string | null, from = SEVEN, to = EIGHT) => ({
+    ...aBooking(restaurantId, tableId, from, to),
+    requestId,
+  });
+
+  it("refuses a second booking of the same submission, at any time and table, even by the owner role", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2 }, { capacity: 2 }],
+    });
+    const requestId = crypto.randomUUID();
+    await insert(submitted(restaurantId, tableIds[0], requestId));
+
+    const second = submitted(restaurantId, tableIds[1], requestId, EIGHT, NINE);
+    await expect(insert(second)).rejects.toMatchObject(ONCE);
+    await expect(owner.db.insert(bookings).values(second)).rejects.toMatchObject(ONCE);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("still refuses it once the first is cancelled, so a late retry can't book again", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const requestId = crypto.randomUUID();
+    await insert({ ...submitted(restaurantId, tableIds[0], requestId), status: "cancelled" });
+
+    await expect(insert(submitted(restaurantId, tableIds[0], requestId))).rejects.toMatchObject(ONCE);
+  });
+
+  it("keeps the id to its restaurant, and lets bookings with none be", async () => {
+    const first = await bookableRestaurant(owner.db);
+    const second = await bookableRestaurant(owner.db);
+    const requestId = crypto.randomUUID();
+    await insert(submitted(first.restaurantId, first.tableIds[0], requestId));
+    await insert(submitted(first.restaurantId, first.tableIds[0], null, EIGHT, NINE));
+    await insert(submitted(second.restaurantId, second.tableIds[0], null));
+
+    await expect(
+      insert(submitted(second.restaurantId, second.tableIds[0], requestId, EIGHT, NINE)),
+    ).resolves.toBeDefined();
+  });
+
+  it.each([sql`null`, sql`gen_random_uuid()`])(
+    "refuses a change to a booking's request_id, even by the owner role",
+    async (value) => {
+      const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+      await insert(submitted(restaurantId, tableIds[0], crypto.randomUUID()));
+
+      await expect(
+        owner.db.update(bookings).set({ requestId: value }).where(eq(bookings.restaurantId, restaurantId)),
+      ).rejects.toMatchObject({ cause: { code: "23514", constraint: "bookings_request_frozen" } });
+    },
+  );
+
+  it("lets everything else about the booking change", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    await insert(submitted(restaurantId, tableIds[0], crypto.randomUUID()));
+
+    await expect(
+      asTenant(app.db, restaurantId, (tx) => tx.update(bookings).set({ status: "seated" })),
+    ).resolves.toBeDefined();
+  });
+});

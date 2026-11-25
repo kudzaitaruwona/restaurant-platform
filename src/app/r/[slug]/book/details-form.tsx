@@ -5,12 +5,19 @@ import { Calendar, MessageCircle, Phone } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 import { inputClassName } from "@/components/ui/input";
-import type { Confirmation, TimeChoice } from "@/lib/bookings";
 import { displayPhone } from "@/lib/display-phone";
-import { postForm } from "@/lib/form-response";
 import { cn } from "@/lib/utils";
 import { useSteps } from "./booking-steps";
-import { bookedPath, forgetBooked, rememberBooked, useCanGoForward } from "./just-booked";
+import { forgetBooked, goToBooking, rememberBooked, useBookingAhead } from "./just-booked";
+import {
+  bookingOfLost,
+  type Contact,
+  lostMessage,
+  type Refusal,
+  submissionBooked,
+  submissionId,
+  submit as send,
+} from "./submission";
 import { byPeriod } from "./times";
 
 /** The part of Cloudflare's script this form uses. */
@@ -93,13 +100,6 @@ const noSubscription = () => () => {};
 const useHydrated = () =>
   useSyncExternalStore(noSubscription, () => true, () => false);
 
-type Contact = { contactPhone: string | null; whatsappLink: string | null };
-type Refusal = {
-  error: string;
-  times?: TimeChoice[];
-  available?: TimeChoice[];
-} & Partial<Contact>;
-
 /**
  * The answer as it is shown. The rate limit answers before the restaurant is looked
  * up, so the number to ring instead is the one this page already has (#103).
@@ -129,6 +129,8 @@ export function DetailsForm({
 }) {
   const { time, setTime, setAvailable, pending, setPending, booked, setBooked, leftOver } = useSteps();
   const [refusal, setRefusal] = useState<Refusal>();
+  // The tries whose answers never came. Any of them may have booked (#134).
+  const lost = useRef<FormData[]>([]);
   const summary = useRef<HTMLSpanElement>(null);
   // Until the script is running, a submit would be a native post and the guest
   // would see raw JSON. The post is safe (method and action below: nothing goes in
@@ -148,38 +150,50 @@ export function DetailsForm({
     body.set("party", String(party));
     body.set("date", date);
     body.set("time", time);
+    body.set("request", submissionId(action)); // the same one until it has booked
     setPending(true);
     setRefusal(undefined);
     try {
       const token = await turnstileToken();
       if (token) body.set(TURNSTILE_FIELD, token);
-      const response = await postForm(action, body);
-      const answer = await response.json();
-      if (response.ok) {
-        // Replaced, so Back can't return to this form (#89).
-        const path = bookedPath((answer.confirmation as Confirmation).manageToken);
-        rememberBooked(action);
-        setBooked(path);
-        window.location.replace(path);
+      const answer = await send(action, body);
+      if ("booked" in answer) {
+        submissionBooked(action);
+        open(answer.booked);
       } else {
-        setRefusal(refusalOf(response.status, answer, contact));
-        if (answer.available) {
-          const left = answer.available as TimeChoice[];
+        const refused = refusalOf(answer.status, answer.refusal, contact);
+        if (refused.alreadyBooked) {
+          refused.booked = await bookingOfLost(action, lost.current);
+          submissionBooked(action);
+          lost.current = [];
+        }
+        setRefusal(refused);
+        if (refused.available) {
+          const left = refused.available;
           setAvailable(left);
           if (!left.some((choice) => choice.time === time)) setTime(undefined);
         }
       }
     } catch {
-      setRefusal({ error: "That didn't reach the restaurant. Try again." });
+      lost.current.push(body);
+      setRefusal({ error: lostMessage });
     } finally {
       setPending(false);
     }
   }
 
+  // Replaced, so Back can't return to this form (#89).
+  function open(path: string) {
+    rememberBooked(action);
+    setBooked(path);
+    window.location.replace(path);
+  }
+
   // A new page, not just the form shown again: the bot check's widget went with it.
+  // Opened, not reloaded, so that it is live where storage is blocked too (isLeftOver).
   function startAgain() {
     forgetBooked(action);
-    window.location.reload();
+    window.location.replace(window.location.pathname + window.location.search);
   }
 
   if (booked || leftOver) {
@@ -286,6 +300,7 @@ export function DetailsForm({
         {refusal && (
           <RefusalNotice
             refusal={refusal}
+            open={open}
             choose={(choice) => {
               setTime(choice);
               setRefusal(undefined);
@@ -302,11 +317,14 @@ export function DetailsForm({
 /** Why it wasn't booked. It comes up under the button, so it brings itself to the guest (#103). */
 export function RefusalNotice({
   refusal,
+  open,
   choose,
 }: {
   refusal: Refusal;
+  open: (path: string) => void;
   choose: (time: string) => void;
 }) {
+  const { booked } = refusal;
   const notice = useRef<HTMLDivElement>(null);
   useEffect(() => {
     notice.current?.focus({ preventScroll: true });
@@ -322,6 +340,15 @@ export function RefusalNotice({
       <Notice tone="attention">
         <div className="flex flex-col gap-3">
           <p>{refusal.error}</p>
+          {booked && (
+            <button
+              type="button"
+              onClick={() => open(booked)}
+              className={cn(buttonVariants({ variant: "secondary" }), "self-start")}
+            >
+              Open that booking
+            </button>
+          )}
           {(refusal.contactPhone || refusal.whatsappLink) && (
             <p className="flex flex-wrap gap-2">
               {refusal.contactPhone && (
@@ -372,7 +399,7 @@ export function RefusalNotice({
  * the booking may be cancelled or past its cutoff, so that text claims neither.
  */
 export function AlreadyBooked({ open, again }: { open?: () => void; again?: () => void }) {
-  const canGoForward = useCanGoForward();
+  const ahead = useBookingAhead();
   return (
     <section
       id="details"
@@ -385,14 +412,14 @@ export function AlreadyBooked({ open, again }: { open?: () => void; again?: () =
       <p className="text-body text-ink-2">
         {!again
           ? "Opening your booking."
-          : canGoForward
+          : ahead
             ? "Open that booking to see or cancel it, or use the link in your WhatsApp confirmation. If you have already cancelled it, you can make another booking."
             : "To see or cancel that booking, use the link in your WhatsApp confirmation. If you have already cancelled it, you can make another booking."}
       </p>
-      {(open || canGoForward) && (
+      {(open || ahead) && (
         <button
           type="button"
-          onClick={open ?? (() => window.history.forward())}
+          onClick={open ?? (() => ahead && goToBooking(ahead))}
           className={cn(buttonVariants({ variant: "primary" }), "h-12 w-full")}
         >
           {open ? "Open your booking" : "Forward to your booking"}

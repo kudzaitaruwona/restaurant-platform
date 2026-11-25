@@ -706,6 +706,10 @@ export const bookings = pgTable(
     source: bookingSource().notNull(),
     guestNote: text("guest_note"),
     manageToken: text("manage_token").notNull().unique(),
+    // The booking page's id for the submission that made it (#134); null from staff,
+    // and from a page loaded before there was one. Never changes once written
+    // (bookings_request_frozen).
+    requestId: uuid("request_id"),
     cancelledBy: bookingCancelledBy("cancelled_by"),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -722,6 +726,8 @@ export const bookings = pgTable(
       foreignColumns: [diningTables.restaurantId, diningTables.id],
     }),
     unique().on(table.restaurantId, table.id),
+    // One submission books once: a retry can't make a second booking (#134).
+    unique("bookings_request_once").on(table.restaurantId, table.requestId),
     // The day list reads one restaurant's day.
     index().on(table.restaurantId, table.startsAt),
     // The scheduled job's status rules (spec 04, S-35) look across every

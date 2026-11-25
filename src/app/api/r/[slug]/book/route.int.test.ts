@@ -1,8 +1,9 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { bookingRateLimit, bookings } from "@/db/schema";
 import { ipBucket, limitKey, MAX_BODY_BYTES } from "@/lib/booking-limits";
 import { addDays, localToday } from "@/lib/booking-engine";
+import { confirmBooking, parseGuestRequest } from "@/lib/bookings";
 import {
   aBooking,
   bookableRestaurant,
@@ -180,10 +181,7 @@ describe("POST /api/r/[slug]/book", () => {
 
 const tomorrowIn = (days: number) => addDays(localToday(new Date(), "Africa/Harare"), days);
 
-const postWith = (
-  slug: string,
-  { headers, fields = {}, body }: { headers?: Record<string, string>; fields?: Record<string, string>; body?: BodyInit } = {},
-) => {
+const submissionOf = (fields: Record<string, string>) => {
   const form = new FormData();
   for (const [key, value] of Object.entries({
     party: "2",
@@ -196,10 +194,16 @@ const postWith = (
   })) {
     form.set(key, value);
   }
-  return POST(new Request("http://localhost/x", { method: "POST", body: body ?? form, headers }), {
+  return form;
+};
+
+const postWith = (
+  slug: string,
+  { headers, fields = {}, body }: { headers?: Record<string, string>; fields?: Record<string, string>; body?: BodyInit } = {},
+) =>
+  POST(new Request("http://localhost/x", { method: "POST", body: body ?? submissionOf(fields), headers }), {
     params: Promise.resolve({ slug }),
   });
-};
 
 describe("the refusals, each with its own message", () => {
   it("lead time, with the next times", async () => {
@@ -435,5 +439,278 @@ describe("the bot check", () => {
     const response = await postWith(slug, { headers: { "cf-turnstile-response": "t" } });
 
     expect(response.status).toBe(403);
+  });
+});
+
+describe("a retry after a lost answer (#134)", () => {
+  const usedKeys: string[] = [];
+  const from = (ip: string) => {
+    usedKeys.push(limitKey(ipBucket(ip), process.env.AUTH_SECRET || undefined));
+    return { "x-forwarded-for": ip };
+  };
+  const attemptsFrom = async (ip: string) => {
+    const [row] = await owner.db
+      .select({ attempts: bookingRateLimit.attempts })
+      .from(bookingRateLimit)
+      .where(eq(bookingRateLimit.key, limitKey(ipBucket(ip), process.env.AUTH_SECRET || undefined)));
+    return row?.attempts;
+  };
+  afterEach(async () => {
+    for (const key of usedKeys.splice(0)) await owner.db.delete(bookingRateLimit).where(eq(bookingRateLimit.key, key));
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+  });
+  const manageTokenIn = async (response: Response) => (await response.json()).confirmation.manageToken;
+  /** The lock a confirm holds for its submission. */
+  const lockSubmission = (client: { query: (text: string, values: string[]) => Promise<unknown> }, restaurantId: string, request: string) =>
+    client.query(
+      "select pg_advisory_xact_lock(hashtextextended('booking_request:' || $1 || ':' || $2, 0))",
+      [restaurantId, request],
+    );
+  /** Turns the bot check on, with Cloudflare answering as given. */
+  const botCheck = (answer: () => Promise<{ success: boolean }>) => {
+    const siteverify = vi.fn(answer);
+    const realFetch = globalThis.fetch;
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret");
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("cloudflare") ? Response.json(await siteverify()) : realFetch(input, init),
+    );
+    return siteverify;
+  };
+  const TOKEN = { "cf-turnstile-response": "t" };
+
+  it("answers as the first did, with the same booking", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+
+    const first = await postWith(slug, { fields });
+    const again = await postWith(slug, { fields });
+
+    expect([first.status, again.status]).toEqual([201, 201]);
+    expect(await again.json()).toEqual(await first.json());
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("with other details is a 409 that says what was booked, with the contacts and no token", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const request = crypto.randomUUID();
+    const token = await manageTokenIn(await postWith(slug, { fields: { request } }));
+
+    const changed = await postWith(slug, { fields: { request, time: "20:30" } });
+
+    expect(changed.status).toBe(409);
+    const answer = await changed.json();
+    expect(answer).toEqual({
+      error: expect.stringMatching(/^Your earlier try did go through: it booked a table for 2 on .+ at 19:00\./),
+      alreadyBooked: true,
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
+    });
+    expect(JSON.stringify(answer)).not.toContain(token);
+    const stranger = await (await postWith(slug, { fields: { request, phone: "0772000000" } })).json();
+    expect(stranger.error).toMatch(/^An earlier try from this page did go through, with other details\./);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("opens nothing at another restaurant", async () => {
+    const theirs = await bookableRestaurant(owner.db);
+    const mine = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+    const token = await manageTokenIn(await postWith(theirs.slug, { fields }));
+
+    const here = await postWith(mine.slug, { fields });
+
+    expect(here.status).toBe(201);
+    expect(await manageTokenIn(here)).not.toBe(token);
+  });
+
+  it("is a 400 for an id that isn't one", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+
+    expect((await postWith(slug, { fields: { request: "1" } })).status).toBe(400);
+  });
+
+  it("doesn't count against the rate limit again, at any number of retries", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.60";
+    const headers = from(ip);
+    const request = crypto.randomUUID();
+    await postWith(slug, { headers, fields: { request } });
+
+    for (let retry = 0; retry < 7; retry++) {
+      expect((await postWith(slug, { headers, fields: { request } })).status).toBe(201);
+    }
+
+    expect(await attemptsFrom(ip)).toBe(1);
+  });
+
+  it("counts with other details, like any submission, and is refused past the limit, saying nothing", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const ip = "198.51.100.63";
+    const headers = from(ip);
+    const request = crypto.randomUUID();
+    const changed = { request, time: "20:30" };
+    const token = await manageTokenIn(await postWith(slug, { headers, fields: { request } }));
+
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      statuses.push((await postWith(slug, { headers, fields: changed })).status);
+    }
+    expect(statuses).toEqual([409, 409, 409, 409]);
+    expect(await attemptsFrom(ip)).toBe(5);
+
+    const refused = await postWith(slug, { headers, fields: changed });
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({
+      error: "Too many booking attempts. Wait a few minutes, then try again, or contact the restaurant.",
+    });
+    // The submission itself is still answered, and that changes nothing for the others.
+    expect(await manageTokenIn(await postWith(slug, { headers, fields: { request } }))).toBe(token);
+    expect((await postWith(slug, { headers, fields: changed })).status).toBe(429);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("waits for nothing once the rate limit refuses it: it reads, and takes no lock", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const headers = from("198.51.100.64");
+    const fields = { request: crypto.randomUUID() };
+    const unbooked = { request: crypto.randomUUID() };
+    const token = await manageTokenIn(await postWith(slug, { headers, fields }));
+    for (let attempt = 0; attempt < 4; attempt++) await postWith(slug, { headers, fields: { consent: "" } });
+    const holder = await owner.pool.connect();
+    try {
+      await holder.query("begin");
+      for (const { request } of [fields, unbooked]) await lockSubmission(holder, restaurantId, request);
+
+      expect(await manageTokenIn(await postWith(slug, { headers, fields }))).toBe(token);
+      expect((await postWith(slug, { headers, fields: unbooked })).status).toBe(429);
+    } finally {
+      holder.release(true);
+    }
+  });
+
+  it("lands on its booking with the rate limit already reached, and leaves it reached", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.61";
+    const headers = from(ip);
+    const fields = { request: crypto.randomUUID() };
+    for (let attempt = 0; attempt < 4; attempt++) await postWith(slug, { headers, fields: { consent: "" } });
+    const token = await manageTokenIn(await postWith(slug, { headers, fields })); // the fifth
+
+    for (let retry = 0; retry < 3; retry++) {
+      const again = await postWith(slug, { headers, fields });
+      expect(again.status).toBe(201);
+      expect(await manageTokenIn(again)).toBe(token);
+    }
+    // Anything that would be a new booking is still refused, whatever id it makes up.
+    expect((await postWith(slug, { headers, fields: { request: crypto.randomUUID(), time: "20:30" } })).status).toBe(429);
+    expect((await postWith(slug, { headers })).status).toBe(429);
+    expect((await postWith("no-such-restaurant", { headers, fields })).status).toBe(429);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("gives back only what it spent: attempts refused by the limit aren't returned", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.62";
+    const headers = from(ip);
+    const fields = { request: crypto.randomUUID() };
+    await postWith(slug, { headers, fields });
+    for (let attempt = 0; attempt < 4; attempt++) await postWith(slug, { headers, fields: { consent: "" } });
+
+    await Promise.all(Array.from({ length: 4 }, () => postWith(slug, { headers, fields })));
+
+    expect((await postWith(slug, { headers, fields: { consent: "" } })).status).toBe(429);
+  });
+
+  it("needs no bot check, because it books nothing, but a new booking still does", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+    const token = await manageTokenIn(await postWith(slug, { fields }));
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret"); // and no token in the post
+
+    const again = await postWith(slug, { fields });
+
+    expect(again.status).toBe(201);
+    expect(await manageTokenIn(again)).toBe(token);
+    expect((await postWith(slug, { fields: { request: crypto.randomUUID(), time: "20:30" } })).status).toBe(403);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("is answered without asking Cloudflare, whatever token it carries and whatever its details", async () => {
+    const { slug } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const request = crypto.randomUUID();
+    const token = await manageTokenIn(await postWith(slug, { fields: { request } }));
+    const siteverify = botCheck(async () => ({ success: false }));
+
+    for (let retry = 0; retry < 3; retry++) {
+      expect(await manageTokenIn(await postWith(slug, { fields: { request, ...TOKEN } }))).toBe(token);
+    }
+    expect((await postWith(slug, { fields: { request, time: "20:30", ...TOKEN } })).status).toBe(409);
+    expect(siteverify).not.toHaveBeenCalled();
+
+    expect((await postWith(slug, { fields: { request: crypto.randomUUID(), time: "20:30", ...TOKEN } })).status).toBe(403);
+    expect(siteverify).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for an original still confirming, so its spent token is never asked about", async () => {
+    const { slug, restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const request = crypto.randomUUID();
+    const siteverify = botCheck(async () => ({ success: false }));
+    const holder = await owner.pool.connect();
+    try {
+      await holder.query("begin");
+      await lockSubmission(holder, restaurantId, request);
+      const { rows } = await holder.query("select pg_backend_pid() as pid");
+      const retry = postWith(slug, { fields: { request, ...TOKEN } });
+      await vi.waitFor(
+        async () => {
+          const { rows: waiting } = await owner.db.execute(sql`
+            select pid from pg_stat_activity where ${rows[0].pid} = any(pg_blocking_pids(pid))`);
+          expect(waiting).toHaveLength(1);
+        },
+        { timeout: 15_000, interval: 20 },
+      );
+      const [{ manageToken }] = await owner.db
+        .insert(bookings)
+        .values({
+          ...aBooking(restaurantId, tableIds[0], `${tomorrow()}T17:00:00Z`, `${tomorrow()}T18:00:00Z`),
+          guestName: "Tariro",
+          guestPhone: "+263771234567",
+          requestId: request,
+        })
+        .returning({ manageToken: bookings.manageToken });
+      await holder.query("commit");
+
+      expect(await manageTokenIn(await retry)).toBe(manageToken);
+      expect(siteverify).not.toHaveBeenCalled();
+    } finally {
+      holder.release(true);
+    }
+  });
+
+  // Its original books while Cloudflare is being asked about the retry.
+  it.each([
+    { what: "the same details, a token refused", success: false, time: "19:00", status: 201, counted: 0 },
+    { what: "the same details, a good token", success: true, time: "19:00", status: 201, counted: 0 },
+    { what: "other details, a token refused", success: false, time: "20:30", status: 403, counted: 1 },
+    { what: "other details, a good token", success: true, time: "20:30", status: 409, counted: 1 },
+  ])("overtaken by its original during the bot check, with $what: $status", async ({ success, time, status, counted }) => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const ip = "198.51.100.65";
+    const headers = from(ip);
+    const request = crypto.randomUUID();
+    botCheck(async () => {
+      const guest = parseGuestRequest(submissionOf({ request }));
+      if (!guest.success) throw new Error("not a submission");
+      await confirmBooking({ restaurantId }, guest.data);
+      return { success };
+    });
+
+    const response = await postWith(slug, { headers, fields: { request, time, ...TOKEN } });
+
+    expect(response.status).toBe(status);
+    expect(await attemptsFrom(ip)).toBe(counted);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
   });
 });
