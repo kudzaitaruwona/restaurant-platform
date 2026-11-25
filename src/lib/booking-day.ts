@@ -12,6 +12,7 @@ import {
   localTime,
   weekdayOf,
 } from "@/lib/booking-engine";
+import { closuresOnDay } from "@/lib/booking-closures";
 import { chooseDay, type DayRow, groupByPeriod } from "@/lib/booking-day-view";
 import { finishedTimes } from "@/lib/booking-finish";
 import { queueBookingCancelled } from "@/lib/notifications";
@@ -103,6 +104,8 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       )
       .orderBy(asc(bookings.startsAt), asc(diningTables.label));
 
+    const closed = await closuresOnDay(tx, tenant.restaurantId, date, timezone);
+
     const lateBefore = now.getTime() - LATE_AFTER_MINUTES * MINUTE;
     const dayRows: DayRow[] = rows.map(({ startsAt, confirmationStatus, ...row }) => ({
       ...row,
@@ -117,6 +120,11 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       date,
       dateLabel: dateLabel(date),
       isToday: date === today,
+      /** Before today on the restaurant's calendar: nothing can be booked on it. */
+      isPast: date < today,
+      /** Closures touching the day, and whether one shuts it from first to last instant. */
+      closures: closed.closures,
+      closedAllDay: closed.wholeDay,
       refused,
       previous: addDays(date, -1),
       next: addDays(date, 1),

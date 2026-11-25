@@ -344,6 +344,48 @@ describe("saving over bookings", () => {
     expect(await closuresOf(restaurantId)).toEqual([]);
   });
 
+  it("links each booking to its day on the bookings page, at its row", async () => {
+    const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
+    const [booked] = await book(restaurantId, one).then(() =>
+      owner.db.select().from(bookings).where(eq(bookings.restaurantId, restaurantId)),
+    );
+
+    const result = await closeEvening(restaurantId);
+
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      bookings: [{ id: booked.id, href: `/dashboard/bookings?date=${date}#booking-${booked.id}` }],
+    });
+  });
+
+  it("refuses the same closure twice, even with another reason, and says so", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const request = parsed({ startDate: date, reason: "Holiday" });
+    expect(await addClosure(actor(restaurantId), request, now)).toMatchObject({ outcome: "saved" });
+
+    const again = await addClosure(actor(restaurantId), { ...request, reason: "Another note" }, now);
+    const sameTimes = await addClosure(actor(restaurantId), parsed({ startDate: date }), now);
+
+    expect(again).toEqual({ outcome: "invalid", message: "That closure is already saved." });
+    expect(sameTimes).toEqual(again);
+    expect(await closuresOf(restaurantId)).toHaveLength(1);
+    // A different window on the same day is another closure.
+    expect(await closeEvening(restaurantId)).toMatchObject({ outcome: "saved" });
+    expect(await closuresOf(restaurantId)).toHaveLength(2);
+  });
+
+  it("has one winner when the same closure is saved twice at once", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+
+    const results = await Promise.all(
+      [1, 2, 3].map(() => addClosure(actor(restaurantId), parsed({ startDate: date }), now)),
+    );
+
+    expect(results.filter(({ outcome }) => outcome === "saved")).toHaveLength(1);
+    expect(results.filter(({ outcome }) => outcome === "invalid")).toHaveLength(2);
+    expect(await closuresOf(restaurantId)).toHaveLength(1);
+  });
+
   it("saves once those bookings are cancelled", async () => {
     const { restaurantId, tableIds: [one] } = await bookableRestaurant(owner.db);
     await book(restaurantId, one);

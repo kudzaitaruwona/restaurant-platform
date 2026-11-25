@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import type { PoolClient } from "@neondatabase/serverless";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -69,6 +70,64 @@ describe("the closures table", () => {
     await insertClosure(restaurantId, 5, 6, "x".repeat(200));
     await insertClosure(restaurantId, 7, 8, null);
     expect(await closuresOf(restaurantId)).toHaveLength(2);
+  });
+
+  it("refuses the same window twice, whatever the reason, and allows it for another restaurant or another window", async () => {
+    const a = await bookableRestaurant(owner.db);
+    const b = await bookableRestaurant(owner.db);
+    await insertClosure(a.restaurantId, 5, 6, "Holiday");
+
+    await expect(insertClosure(a.restaurantId, 5, 6, "Holiday")).rejects.toMatchObject({
+      cause: { code: "23505", constraint: "closures_window_unique" },
+    });
+    await expect(insertClosure(a.restaurantId, 5, 6, null)).rejects.toMatchObject({
+      cause: { code: "23505", constraint: "closures_window_unique" },
+    });
+    await insertClosure(a.restaurantId, 5, 7); // a different end
+    await insertClosure(a.restaurantId, 4, 6); // a different start
+    await insertClosure(b.restaurantId, 5, 6); // another restaurant's
+    expect(await closuresOf(a.restaurantId)).toHaveLength(3);
+  });
+
+  it("the migration removes existing repeats, keeping one that has a reason, before it adds the rule", async () => {
+    const a = await bookableRestaurant(owner.db);
+    const b = await bookableRestaurant(owner.db);
+    const text = readFileSync("db/migrations/0051_closures_window_unique.sql", "utf8");
+    const [removeRepeats, addRule] = text.split("--> statement-breakpoint");
+    const client = await owner.pool.connect();
+    const insert = (restaurantId: string, from: number, to: number, reason: string | null) =>
+      client.query(
+        "insert into closures (restaurant_id, starts_at, ends_at, reason) values ($1, $2, $3, $4)",
+        [restaurantId, at(from), at(to), reason],
+      );
+    try {
+      await client.query("begin");
+      await client.query('alter table "closures" drop constraint "closures_window_unique"');
+      await insert(a.restaurantId, 5, 6, null);
+      await insert(a.restaurantId, 5, 6, "Holiday");
+      await insert(a.restaurantId, 5, 6, "Holiday");
+      await insert(a.restaurantId, 7, 8, null);
+      await insert(a.restaurantId, 7, 8, null);
+      await insert(a.restaurantId, 9, 10, "Once");
+      await insert(b.restaurantId, 5, 6, null);
+
+      await client.query(removeRepeats);
+      await client.query(addRule);
+      const { rows } = await client.query<{ restaurant_id: string; reason: string | null }>(
+        "select restaurant_id, reason from closures where restaurant_id in ($1, $2) order by starts_at",
+        [a.restaurantId, b.restaurantId],
+      );
+
+      expect(rows.filter((r) => r.restaurant_id === a.restaurantId).map((r) => r.reason)).toEqual([
+        "Holiday",
+        null,
+        "Once",
+      ]);
+      expect(rows.filter((r) => r.restaurant_id === b.restaurantId)).toHaveLength(1);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
   });
 
   it("is invisible across restaurants, and a forged restaurant id is refused", async () => {
