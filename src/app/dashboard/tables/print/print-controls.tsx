@@ -126,7 +126,7 @@ export function TablePicker({
               value={table.id}
               checked={picked.ids.includes(table.id)}
               onChange={(event) => setPicked(pickTable(picked, table.id, event.target.checked))}
-              className="[&>span]:h-10 [&>span]:min-w-12 [&>span]:px-3.5"
+              className="[&>span]:min-h-10 [&>span]:min-w-12 [&>span]:px-3.5"
             >
               {table.label}
             </ChoiceChip>

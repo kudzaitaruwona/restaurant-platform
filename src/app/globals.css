@@ -212,8 +212,14 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /*
+   * A name, note or label with no spaces in it (a 200-character paste) wraps
+   * wherever it must, so it never widens the page (#94). `anywhere`, not
+   * `break-word`: it also shrinks the text's minimum width, so a flex or grid
+   * cell holding it can narrow without each one needing min-w-0.
+   */
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground [overflow-wrap:anywhere];
   }
   html {
     @apply font-sans;

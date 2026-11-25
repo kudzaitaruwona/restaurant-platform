@@ -432,4 +432,13 @@ describe("the build", () => {
   it("answers the sample without a restaurant: the build has no database", async () => {
     expect((await scan(BUILD_SAMPLE_TOKEN)).status).toBe(404);
   });
+  it("lets a 200-character unbroken name or note in the tracker wrap, so it can't widen a guest's page (#94)", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "W".repeat(200));
+    const body = await (await scan(qrToken)).text();
+    // The tracker's rows are drawn by the script from the table's orders; its text
+    // sits in the wrapping column, under the body's overflow-wrap rule.
+    expect(body).toMatch(/body\{[^}]*overflow-wrap:anywhere/);
+    expect(body).toMatch(/\.tw\{[^}]*min-width:0;overflow-wrap:anywhere/);
+    expect(body).toContain("W".repeat(200));
+  });
 });

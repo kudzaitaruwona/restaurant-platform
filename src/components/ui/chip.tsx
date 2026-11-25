@@ -3,7 +3,7 @@ import type { InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const chipBase =
-  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border px-4 text-body font-medium whitespace-nowrap no-underline transition-colors duration-150 ease-out outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background [&_svg]:size-4 [&_svg]:shrink-0";
+  "inline-flex min-h-11 max-w-full shrink-0 items-center justify-center gap-2 rounded-full border px-4 py-1 text-center text-body font-medium no-underline transition-colors duration-150 ease-out outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background [&_svg]:size-4 [&_svg]:shrink-0";
 
 const chipTone = (selected: boolean) =>
   selected

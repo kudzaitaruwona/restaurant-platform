@@ -1050,4 +1050,19 @@ describe("layout (issue 26)", () => {
     // No ids from the database on the page, only the positional ones.
     expect([...body.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])).toEqual(["specials", "c1"]);
   });
+  it("keeps a 200-character unbroken name, description and category whole, and lets the page wrap them (#94)", async () => {
+    const long = "W".repeat(200);
+    const { id, menuToken } = await newRestaurant(long);
+    const category = await addCategory(id, long);
+    await addItem(id, category, { name: long, description: long, priceUsd: "8" });
+    const body = await page(menuToken);
+    // Nothing is cut or truncated: the full string is on the page, three times
+    // over (name, description, category) and once more as the restaurant's own.
+    expect(body.split(long).length - 1).toBeGreaterThanOrEqual(5);
+    // Unbroken text wraps wherever it must (the body's rule), so no sideways
+    // scroll at 390px, and the price column is the one that never shrinks.
+    expect(body).toMatch(/body\{[^}]*overflow-wrap:anywhere/);
+    expect(body).toMatch(/\.right\{[^}]*flex:none/);
+    expect(body).not.toMatch(/nav a\{[^}]*white-space:nowrap/);
+  });
 });
