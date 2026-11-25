@@ -394,10 +394,10 @@ export type DayClosure = {
 
 /**
  * The closures that touch one local day, for the day view and Add booking to
- * explain a closed day. `wholeDay` is when one closure covers the day from its
- * first instant to its last, so nothing can be booked on it. Closures that
- * together cover the day, none of them all of it, are listed but don't make it
- * `wholeDay`: the engine still judges those times.
+ * explain a closed day. `wholeDay` is when they cover the day between them, from
+ * its first instant to its last, so nothing can be booked on it. Every one is
+ * read, as the engine does (readClosures): one left out could be the one that
+ * closes the gap.
  */
 export async function closuresOnDay(
   tx: TenantTransaction,
@@ -417,16 +417,18 @@ export async function closuresOnDay(
         sql`${closures.startsAt} < ${dayEnds.toISOString()}::timestamptz`,
       ),
     )
-    .orderBy(asc(closures.startsAt), asc(closures.id))
-    .limit(20);
+    .orderBy(asc(closures.startsAt), asc(closures.id));
+  // Soonest first, so the covered part only ever grows from the day's start.
+  let covered = dayStarts.getTime();
+  for (const { startsAt, endsAt } of rows) {
+    if (startsAt.getTime() > covered) break;
+    covered = Math.max(covered, endsAt.getTime());
+  }
   return {
     closures: rows.map(({ startsAt, endsAt, reason }) => ({
       label: closureLabel(startsAt, endsAt, timezone),
       reason,
     })),
-    wholeDay: rows.some(
-      ({ startsAt, endsAt }) =>
-        startsAt.getTime() <= dayStarts.getTime() && endsAt.getTime() >= dayEnds.getTime(),
-    ),
+    wholeDay: covered >= dayEnds.getTime(),
   };
 }

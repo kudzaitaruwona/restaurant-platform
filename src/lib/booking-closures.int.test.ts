@@ -8,11 +8,13 @@ import {
   addClosure,
   type ClosureRequest,
   closureLabel,
+  closuresOnDay,
   deleteClosure,
   listClosures,
   parseClosure,
 } from "./booking-closures";
 import { addStaffBooking, getStaffBookingForm, type StaffRequest } from "./booking-staff";
+import { withTenant } from "@/lib/tenant/scope";
 import { confirmBooking, getBookingPage, type GuestRequest } from "./bookings";
 import { seatWalkIn } from "./walk-in";
 
@@ -677,6 +679,36 @@ describe("listing and removing", () => {
     expect(await deleteClosure(actor(mine.restaurantId), crypto.randomUUID())).toBe("not_found");
 
     expect(await closuresOf(theirs.restaurantId)).toHaveLength(1);
+  });
+});
+
+describe("the closures on a day", () => {
+  const dayOf = async (windows: [string, string][]) => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const at = (when: string) => instantOf(when === "24:00" ? addDays(date, 1) : date, when === "24:00" ? "00:00" : when, HARARE);
+    await owner.db
+      .insert(closures)
+      .values(windows.map(([from, to]) => ({ restaurantId, startsAt: at(from), endsAt: at(to) })));
+    return withTenant({ restaurantId }, (tx) => closuresOnDay(tx, restaurantId, date, HARARE));
+  };
+
+  it.each<[string, [string, string][], boolean]>([
+    ["one over the whole day", [["00:00", "24:00"]], true],
+    ["two that meet", [["15:00", "24:00"], ["00:00", "15:00"]], true],
+    ["one inside another", [["00:00", "24:00"], ["12:00", "13:00"]], true],
+    ["three that overlap", [["00:00", "10:00"], ["05:00", "08:00"], ["09:00", "24:00"]], true],
+    ["a minute's gap", [["00:00", "15:00"], ["15:01", "24:00"]], false],
+    ["a minute short of the end", [["00:00", "23:59"]], false],
+    ["a minute late to start", [["00:01", "24:00"]], false],
+  ])("%s", async (_, windows, wholeDay) => {
+    expect((await dayOf(windows)).wholeDay).toBe(wholeDay);
+  });
+
+  it("counts every closure, however many there are", async () => {
+    const hour = (n: number) => `${String(n).padStart(2, "0")}:00`;
+    const result = await dayOf(Array.from({ length: 24 }, (_, n) => [hour(n), hour(n + 1)]));
+    expect(result.wholeDay).toBe(true);
+    expect(result.closures).toHaveLength(24);
   });
 });
 

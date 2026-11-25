@@ -287,6 +287,9 @@ const messages = {
   choice: "That booking request wasn't complete. Choose a time again.",
   name: "Enter your name, up to 100 characters.",
   phone: "Enter a WhatsApp number we can reach you on.",
+  phoneLong: "That number looks too long. Check the digits and the country code.",
+  phoneCountry:
+    "We can't tell which country that number is in. Enter it in full, starting with + and the country code.",
   phoneShort: "That number looks too short. Check the digits and the country code.",
   countryCode: "Enter the country code with a +, like +263.",
   note: "Keep the note to 200 characters.",
@@ -306,20 +309,60 @@ function codeDigits(countryCode: string) {
 export const isCountryCode = (countryCode: string) => codeDigits(countryCode) !== null;
 export const countryCodeMessage = messages.countryCode;
 
+/** The digits a number was typed as, without the spaces and punctuation people add. */
+export const bareNumber = (number: string) => number.replace(/[\s().-]/g, "");
+
+/** Whether a bare number says its own country, so the code box doesn't matter. */
+export const carriesCountry = (bare: string) => /^(?:\+|00)/.test(bare);
+
+/**
+ * How many digits follow the code in the numbers guests have, [fewest, most], where
+ * that is settled: enough to tell a code typed twice from a number that begins like
+ * its code. A code that isn't here is only ever guessed at by refusing (toE164).
+ */
+const nationalLengths: Record<string, readonly [number, number]> = {
+  "1": [10, 10], "7": [10, 10], "20": [10, 10], "27": [9, 9], "31": [9, 9], "32": [8, 9], "33": [9, 9],
+  "34": [9, 9], "39": [9, 10], "44": [9, 10], "49": [10, 11], "55": [10, 11], "61": [9, 9], "63": [10, 10],
+  "65": [8, 8], "81": [9, 10], "84": [9, 10], "86": [11, 11], "90": [10, 10], "91": [10, 10], "92": [10, 10],
+  "234": [10, 10], "254": [9, 9], "255": [9, 9], "256": [9, 9], "258": [9, 9], "260": [9, 9], "264": [8, 9],
+  "265": [9, 9], "266": [8, 8], "267": [8, 8], "268": [8, 8], "351": [9, 9], "971": [8, 9],
+};
+
+/** Whether `national`, which begins with `code`, has it as its country code; null when it can't be told. */
+function codeIsTyped(code: string, national: string): boolean | null {
+  // No Zimbabwean mobile begins 263, so there it is always the code.
+  if (code === "263") return true;
+  const rest = national.length - code.length;
+  const lengths = nationalLengths[code];
+  // Seven digits after the code is the least that could be a number anywhere.
+  if (!lengths) return rest >= 7 ? null : false;
+  const plausible = (digits: number) => digits >= lengths[0] && digits <= lengths[1];
+  return plausible(rest) === plausible(national.length) ? null : plausible(rest);
+}
+
 /**
  * The number as E.164. A local number's leading 0 is the trunk prefix, not part
- * of it. A number typed with its own + or 00 keeps its own country code, and one
- * that already starts with the chosen code (263…, 0263…) isn't given it twice
+ * of it. A number typed with its own + or 00 keeps its own country code. One that
+ * begins with the chosen code (263…, 0263…, or a national number like India's
+ * 91234…) is read the one way its length allows; when that leaves two ways, or
+ * none, it comes back without a +, for phoneProblem to refuse: a message and its
+ * link must never go to a guessed number. A 0 kept after +263 is dropped
  * *(proposed, #88)*. The code box may hold 263, +263 or 00263.
  */
 export function toE164(countryCode: string, number: string) {
-  const typed = number.replace(/[\s().-]/g, "");
+  return withCode(countryCode, bareNumber(number)).replace(/^\+2630/, "+263");
+}
+
+function withCode(countryCode: string, typed: string) {
   if (typed.startsWith("+")) return typed;
   if (typed.startsWith("00")) return `+${typed.slice(2)}`;
   const code = codeDigits(countryCode);
   const national = typed.replace(/^0+/, "");
   if (code === null) return `${countryCode.trim()}${national}`;
-  return national.startsWith(code) ? `+${national}` : `+${code}${national}`;
+  if (!national.startsWith(code)) return `+${code}${national}`;
+  const isTyped = codeIsTyped(code, national);
+  if (isTyped === null) return national;
+  return isTyped ? `+${national}` : `+${code}${national}`;
 }
 
 /** What bookings_guest_phone_e164 accepts. */
@@ -327,13 +370,20 @@ export const E164 = /^[+][1-9][0-9]{7,14}$/;
 
 /**
  * Why an E.164 number is refused, or null. Shorter than any real mobile number is
- * refused, and Zimbabwe's, being the default, is held to its length *(proposed, #88)*.
+ * refused, and Zimbabwe's, being the default, is held to its length and can't have
+ * the code twice *(proposed, #88)*. Digits without a + are toE164 unable to tell
+ * the country.
  */
-export function phoneProblem(phone: string): "phone" | "phoneShort" | null {
+export function phoneProblem(phone: string): "phone" | "phoneShort" | "phoneLong" | "phoneCountry" | null {
+  if (/^[1-9][0-9]*$/.test(phone)) return "phoneCountry";
+  if (/^[+][1-9][0-9]{15,}$/.test(phone)) return "phoneLong";
   if (!E164.test(phone)) return "phone";
   const digits = phone.length - 1;
-  if (phone.startsWith("+263")) return digits === 11 || digits === 12 ? null : "phoneShort";
-  return digits < 9 ? "phoneShort" : null;
+  if (digits < 9) return "phoneShort";
+  if (!phone.startsWith("+263")) return null;
+  if (digits < 11) return "phoneShort";
+  if (digits > 12) return "phoneLong";
+  return phone.startsWith("+263263") ? "phone" : null;
 }
 
 /** For a zod refinement: reports phoneProblem in the booking forms' words. */

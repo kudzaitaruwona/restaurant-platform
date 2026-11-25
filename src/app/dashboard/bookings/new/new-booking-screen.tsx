@@ -28,6 +28,9 @@ export async function NewBookingScreen({
   const query = (await searchParams) ?? {};
   const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);
   const form = await getStaffBookingForm(tenant, { party: first(query.party), date: first(query.date) });
+  // In place of the times: a day closed from end to end, whatever the party, or one
+  // whose closures are part of why it has no times.
+  const closed = form.closures.length > 0 && (form.closedAllDay || form.times?.length === 0);
   const backDate = form.date ?? form.pastDate;
   const back = `/dashboard/bookings${backDate ? `?date=${backDate}` : ""}`;
 
@@ -86,7 +89,28 @@ export async function NewBookingScreen({
         </Notice>
       )}
 
-      {form.party && form.date && form.times && (
+      {closed && (
+        <Notice
+          tone="attention"
+          icon={<CalendarOff />}
+          title={
+            form.closedAllDay
+              ? "The restaurant is closed on that day."
+              : "There are no times on that day, and the restaurant is closed for part of it."
+          }
+        >
+          <ul>
+            {form.closures.map((closure) => (
+              <li key={`${closure.label}-${closure.reason}`}>
+                <span className="font-semibold tabular-nums">{closure.label}</span>
+                {closure.reason && <span> · {closure.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+
+      {!closed && form.party && form.date && form.times && (
         <section aria-labelledby="booking-details" className={card}>
           <ActionForm
             action="/api/bookings"
@@ -100,20 +124,7 @@ export async function NewBookingScreen({
               Party of {form.party}, {dateLabel(form.date)}
             </h2>
             {form.times.length === 0 ? (
-              form.closedAllDay ? (
-                <Notice tone="attention" icon={<CalendarOff />} title="The restaurant is closed on that day.">
-                  <ul>
-                    {form.closures.map((closure) => (
-                      <li key={`${closure.label}-${closure.reason}`}>
-                        <span className="font-semibold tabular-nums">{closure.label}</span>
-                        {closure.reason && <span> · {closure.reason}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </Notice>
-              ) : (
-                <Notice>The restaurant has no service period on that day, or every time on it has passed.</Notice>
-              )
+              <Notice>The restaurant has no service period on that day, or every time on it has passed.</Notice>
             ) : (
               <>
                 <div className="grid items-start gap-4 sm:grid-cols-2">

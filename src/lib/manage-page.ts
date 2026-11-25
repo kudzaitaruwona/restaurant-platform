@@ -96,9 +96,13 @@ const noticeOf = (outcome: CancelOutcome["outcome"] | undefined) => {
 
 const managePath = (token: string) => `/b/${encodeURIComponent(token)}`;
 
-/** The way back after a cancel: this restaurant's own booking page, on this site. */
+/**
+ * The way back after a cancel: this restaurant's own booking page, on this site.
+ * Without a referrer, because that page runs a third party's script (Turnstile) and
+ * this one's URL is the secret.
+ */
 const bookAgain = (slug: string) =>
-  html`<a class="btn btn-primary btn-block" href="${`/r/${encodeURIComponent(slug)}/book`}">Book again</a>`;
+  html`<a class="btn btn-primary btn-block" href="${`/r/${encodeURIComponent(slug)}/book`}" rel="noreferrer">Book again</a>`;
 
 /**
  * The step before a guest's cancel (#104): a plain page with the POST form, so it

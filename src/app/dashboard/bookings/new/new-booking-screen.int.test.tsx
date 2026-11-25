@@ -95,4 +95,58 @@ describe("add booking", () => {
     expect(html).not.toContain("no service period");
     expect(html).not.toContain('name="name"');
   });
+
+  const close = (from: string, to: string, reason: string) =>
+    owner.db.insert(closures).values({
+      restaurantId: (session.tenant as TenantContext).restaurantId,
+      startsAt: instantOf(soon, from, "Africa/Harare"),
+      endsAt: to === "24:00" ? instantOf(addDays(soon, 1), "00:00", "Africa/Harare") : instantOf(soon, to, "Africa/Harare"),
+      reason,
+    });
+
+  it("says a day is closed before a party is chosen", async () => {
+    await aRestaurant();
+    await close("00:00", "24:00", "Staff holiday");
+
+    const html = await render({ date: soon });
+
+    expect(html).toContain("The restaurant is closed on that day.");
+    expect(html).toContain("Staff holiday");
+  });
+
+  it("shows the closure that takes every time, though it isn't the whole day", async () => {
+    await aRestaurant();
+    await close("12:00", "23:00", "Private event");
+
+    const html = await render({ party: "2", date: soon });
+
+    expect(html).toContain("There are no times on that day, and the restaurant is closed for part of it.");
+    expect(html).toContain("12:00 to 23:00");
+    expect(html).toContain("Private event");
+    expect(html).not.toContain("no service period");
+    expect(html).not.toContain('name="name"');
+  });
+
+  it("counts closures that meet as closing the whole day", async () => {
+    await aRestaurant();
+    await close("00:00", "15:00", "Morning");
+    await close("15:00", "24:00", "Evening");
+
+    const html = await render({ party: "2", date: soon });
+
+    expect(html).toContain("The restaurant is closed on that day.");
+    expect(html).toContain("Morning");
+    expect(html).toContain("Evening");
+    expect(html).not.toContain("no service period");
+  });
+
+  it("a closure that leaves times says nothing in their place", async () => {
+    await aRestaurant();
+    await close("09:00", "10:00", "Delivery");
+
+    const html = await render({ party: "2", date: soon });
+
+    expect(html).toContain('name="name"');
+    expect(html).not.toContain("Delivery");
+  });
 });

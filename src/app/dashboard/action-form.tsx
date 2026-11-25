@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
@@ -132,9 +131,10 @@ export function ActionForm({
                 {error.bookings.map((booking) => (
                   <li key={booking.id}>
                     {booking.href ? (
-                      <Link href={booking.href} className="underline underline-offset-2">
+                      // A full load, so the day's row is the page's :target.
+                      <a href={booking.href} className="underline underline-offset-2">
                         {booking.summary}
-                      </Link>
+                      </a>
                     ) : (
                       booking.summary
                     )}

@@ -181,7 +181,8 @@ describe("POST /b/{manage_token}", () => {
     expect(page).toContain("Your booking is cancelled.");
     expect(page).not.toContain("<form");
     // The way back: this restaurant's booking page, on this site.
-    expect(page).toContain(`href="/r/${slug}/book"`);
+    // Without a referrer: that page runs a third party's script, and this URL is the secret.
+    expect(page).toContain(`href="/r/${slug}/book" rel="noreferrer"`);
     expect(page).toContain("Book again");
     expect(await statusOf(token)).toBe("cancelled");
   });

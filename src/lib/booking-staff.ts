@@ -21,6 +21,9 @@ import { closuresOnDay } from "@/lib/booking-closures";
 import {
   dbErrorOf,
   countryCodeMessage,
+  bareNumber,
+  carriesCountry,
+  DEFAULT_COUNTRY_CODE,
   isCountryCode,
   refinePhone,
   firstTableToTake,
@@ -72,15 +75,20 @@ const staffRequest = z
       .min(1, messages.name)
       .max(100, messages.name)
       .refine(noNul, messages.name),
-    countryCode: z.string(messages.phone).max(8, messages.phone).refine(isCountryCode, countryCodeMessage).default("+263"),
+    countryCode: z.string(messages.phone).max(8, messages.phone).default(DEFAULT_COUNTRY_CODE),
     // Optional: a booking taken in person or for a walk-up has none.
     phone: z.string(messages.phone).max(40, messages.phone).default(""),
     note: z.string(messages.note).trim().max(200, messages.note).refine(noNul, messages.note).optional(),
     whatsapp: z.string().optional(),
   })
+  // The code box matters only to a number that doesn't say its own country.
+  .superRefine(({ countryCode, phone }, ctx) => {
+    const number = bareNumber(phone);
+    if (number === "" || carriesCountry(number) || isCountryCode(countryCode)) return;
+    ctx.addIssue({ code: "custom", path: ["countryCode"], message: countryCodeMessage });
+  })
   .transform(({ countryCode, phone, note, whatsapp, tableId, ...rest }) => {
-    const number = phone.replace(/[\s().-]/g, "");
-    const e164 = number === "" ? null : toE164(countryCode, phone);
+    const e164 = bareNumber(phone) === "" ? null : toE164(countryCode, phone);
     return {
       ...rest,
       tableId: tableId || undefined,

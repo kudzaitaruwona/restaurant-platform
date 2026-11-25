@@ -2,7 +2,7 @@ import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
-import { DEFAULT_COUNTRY_CODE, toE164 } from "@/lib/bookings";
+import { DEFAULT_COUNTRY_CODE } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
@@ -60,7 +60,8 @@ function contactPhoneOf(typed: string) {
     .replace(/^00/, "+");
   if (/^263[0-9]{9}$/.test(digits)) return `+${digits}`;
   const local = /^0[1-9][0-9]{7,8}$/.test(digits) || /^[1-9][0-9]{8}$/.test(digits);
-  return local ? toE164(DEFAULT_COUNTRY_CODE, digits) : digits;
+  // Known to be local, so a number that begins like the code (0263…) still gets it.
+  return local ? `${DEFAULT_COUNTRY_CODE}${digits.replace(/^0/, "")}` : digits;
 }
 
 export const invalidTimezoneMessage = "Choose a timezone from the list.";

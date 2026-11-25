@@ -36,7 +36,30 @@ const normalised: [string, string, string][] = [
   ["+44", "00447700900123", "+447700900123"],
   ["+1", "1 415 555 2671", "+14155552671"],
   ["+1", "415 555 2671", "+14155552671"],
+  // A national number that happens to begin with its own country's code keeps the code.
+  ["+91", "9123456789", "+919123456789"],
+  ["+91", "09123456789", "+919123456789"],
+  ["+91", "919123456789", "+919123456789"],
+  ["+39", "391 234 5678", "+393912345678"],
+  ["+39", "39 391 234 5678", "+393912345678"],
+  ["+84", "084 123 4567", "+84841234567"],
+  ["+84", "84 84 123 4567", "+84841234567"],
+  ["+7", "701 234 5678", "+77012345678"],
+  ["+7", "7 701 234 5678", "+77012345678"],
+  ["+55", "55 99123 4567", "+5555991234567"],
+  ["+49", "4915112345678", "+4915112345678"],
+  ["+49", "04921 123456", "+494921123456"],
+  // The trunk 0 kept after the code.
+  ["+263", "+263 0772000102", "+263772000102"],
+  ["+263", "2630772000102", "+263772000102"],
+  ["+263", "002630772000102", "+263772000102"],
+  ["+27", "+263 (0)77 200 0102", "+263772000102"],
 ];
+
+const short = "That number looks too short. Check the digits and the country code.";
+const long = "That number looks too long. Check the digits and the country code.";
+const plus = "We can't tell which country that number is in. Enter it in full, starting with + and the country code.";
+const unusable = "Enter a WhatsApp number we can reach you on.";
 
 describe("the phone rule, guest and staff alike", () => {
   it.each(normalised)("code %j, typed %j gives %j", (cc, typed, want) => {
@@ -46,20 +69,36 @@ describe("the phone rule, guest and staff alike", () => {
   });
 
   it.each([
-    ["+263", "077 200 00"],
-    ["+263", "0772000"],
-    ["+263", "263772000"],
-    ["+263", "2637720001020"],
-    ["+44", "0770090"],
-    ["+263", "+263 77 200"],
-  ])("refuses an implausibly short or long number: %j %j", (cc, typed) => {
-    expect(guest(cc, typed)).toMatch(/too short|WhatsApp number/);
-    expect(staff(cc, typed)).toMatch(/too short|WhatsApp number/);
-    expect(guest(cc, typed)).not.toMatch(/^\+/);
+    ["+263", "077 200 00", short],
+    ["+263", "0772000", short],
+    ["+263", "263772000", short],
+    ["+263", "0263123456", short],
+    ["+263", "2637720001020", long],
+    ["+263", "27821234567", long],
+    ["+263", "+263263772000102", long],
+    ["+263", "+1234567890123456", long],
+    ["+44", "0770090", short],
+    ["+263", "+263 77 200", short],
+    // The code twice, and by its length a number.
+    ["+263", "+263263772000", unusable],
+    // Both readings, or neither, are a number: not guessed at.
+    ["+43", "436641234567", plus],
+    ["+43", "0436 123 4567", plus],
+    ["+44", "44770090", plus],
+    ["+44", "4407700900123", plus],
+  ])("refuses %j %j, saying why", (cc, typed, why) => {
+    expect(guest(cc, typed)).toBe(why);
+    expect(staff(cc, typed)).toBe(why);
   });
 
-  it("says plainly that a number is too short", () => {
-    expect(guest("+263", "077 200 00")).toBe("That number looks too short. Check the digits and the country code.");
+  it("staff: the code box is checked only for a number that needs it", () => {
+    for (const cc of ["", "abc"]) {
+      expect(staff(cc, "")).toBeNull();
+      expect(staff(cc, " ")).toBeNull();
+      expect(staff(cc, "+263 772 000 102")).toBe("+263772000102");
+      expect(staff(cc, "00263772000102")).toBe("+263772000102");
+      expect(staff(cc, "0772000102")).toBe("Enter the country code with a +, like +263.");
+    }
   });
 
   it.each(["abc", "+", "+0", "12345", "+2a"])("refuses a country code that isn't one: %j", (cc) => {

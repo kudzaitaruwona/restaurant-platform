@@ -210,7 +210,9 @@ closures                                    -- holidays, private events
   -- converted with restaurants.timezone
   -- (proposed, #38) UNIQUE (restaurant_id, id); CHECK (starts_at < ends_at); CHECK a reason is
   -- non-blank and at most 200 characters; an index on (restaurant_id, ends_at), so a read that
-  -- starts from an instant never walks past closures. The two guards are triggers in migration
+  -- starts from an instant never walks past closures.
+  -- (proposed, #108) UNIQUE (restaurant_id, starts_at, ends_at), migration 0051.
+  -- (proposed, #38) The two guards are triggers in migration
   -- 0026: closures_cover_bookings refuses a closure over a confirmed booking's sitting, and
   -- bookings_within_closure refuses a confirmed booking inside one (spec 04 › Settings).
 

@@ -4,8 +4,8 @@
 --
 -- Closures saved before this may already repeat. A repeat closes nothing the first
 -- doesn't, and nothing refers to a closure, so the extras are deleted: the one
--- kept is the one with a reason (the older of those, by id, so the choice doesn't
--- depend on the order rows are read), else the lowest id. The closure guard
+-- kept is the one with a reason (of several, the lowest id: ids are random, so that
+-- is only so the choice doesn't depend on the order rows are read), else the lowest id. The closure guard
 -- triggers fire on insert and on bookings, never on a delete, so this frees times
 -- for no one: the kept row closes the same window.
 DELETE FROM "closures" c

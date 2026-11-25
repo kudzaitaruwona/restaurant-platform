@@ -111,8 +111,8 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       ...row,
       time: localTime(startsAt, timezone),
       late: row.status === "confirmed" && startsAt.getTime() <= lateBefore,
-      // Staff should call a guest still to arrive; once seated, they are here.
       willMessage: row.whatsappOptIn && row.phone !== null,
+      // Staff should call a guest still to arrive; once seated, they are here.
       confirmationFailed: row.status === "confirmed" && confirmationStatus === "failed",
     }));
 
@@ -122,7 +122,7 @@ export function getDayView(tenant: Tenant, rawDate: string | string[] | undefine
       isToday: date === today,
       /** Before today on the restaurant's calendar: nothing can be booked on it. */
       isPast: date < today,
-      /** Closures touching the day, and whether one shuts it from first to last instant. */
+      /** Closures touching the day, and whether they shut it from first to last instant. */
       closures: closed.closures,
       closedAllDay: closed.wholeDay,
       refused,
