@@ -76,7 +76,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Restaurant settings and staff management (owner only)
 - Restaurant settings: name, `contact_phone`, Wi-Fi details, `currency_mode`, timezone.
-- Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
+- Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block. Changing a role and deactivating each ask first in an in-page dialog; on your own row it says you will lose access (or be unable to sign in). Only one refusal shows on the page at a time.
 - *(proposed, S-42)* Adding someone emails them an invite. The list shows each active person as Invited (with when) or Joined, and offers "Send invite again" until they sign in.
 - *(Proposed, S-43)* Staff can also be added from a CSV (`email`, `name`, `role`, blank role is staff), with the same preview and confirm as the menu import (spec 02). Each person goes through the single add, one at a time, so is audited and invited as per S-42. An email already on the staff or earlier in the file is skipped and reported, never duplicated; one another restaurant has shows on import. With no owner yet, an owner row must come before any staff row.
 
