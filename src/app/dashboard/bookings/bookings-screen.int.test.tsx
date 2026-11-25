@@ -250,7 +250,7 @@ describe("seat walk-in on the day view", () => {
     expect(html).toContain('name="party"');
   });
 
-  it("says which tables are free, in use, being reset or have a booking too soon, and chooses none for staff", async () => {
+  it("says which tables are free, in use, being reset or have a booking too soon, leaves every one to the server and chooses none for staff", async () => {
     const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
       tables: [{ capacity: 2, label: "Free" }, { capacity: 2, label: "Busy" }, { capacity: 2, label: "Reset" }, { capacity: 2, label: "Soon" }],
     });
@@ -266,10 +266,14 @@ describe("seat walk-in on the day view", () => {
 
     expect(html).toContain("Choose a table");
     expect(html.match(/<option[^>]*selected[^>]*>[^<]*/g)).toEqual([expect.stringContaining("Choose a table")]);
-    expect(html).toMatch(/<option(?![^>]*disabled)[^>]*>Free \(seats 2\), free</);
-    expect(html).toMatch(/<option[^>]*disabled[^>]*>Busy \(seats 2\), in use until \d\d:\d\d</);
-    expect(html).toMatch(/<option[^>]*disabled[^>]*>Reset \(seats 2\), being reset until \d\d:\d\d</);
-    expect(html).toMatch(/<option[^>]*disabled[^>]*>Soon \(seats 2\), booking at \d\d:\d\d, too soon</);
+    // A list gone stale never overrules the server: a disabled option would post no table,
+    // and the placeholder is what the select falls back to if the chosen table goes.
+    const select = html.match(/<select[^>]*name="tableId"[^>]*required.*?<\/select>/)?.[0] ?? "";
+    expect(select).not.toContain('disabled=""');
+    expect(select).toMatch(/>Free \(seats 2\), free</);
+    expect(select).toMatch(/>Busy \(seats 2\), in use until \d\d:\d\d</);
+    expect(select).toMatch(/>Reset \(seats 2\), being reset until \d\d:\d\d</);
+    expect(select).toMatch(/>Soon \(seats 2\), booking at \d\d:\d\d, too soon</);
   });
 
   it("is not offered on another day: a walk-in sits down now", async () => {

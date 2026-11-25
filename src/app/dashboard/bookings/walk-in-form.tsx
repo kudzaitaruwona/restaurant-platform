@@ -6,7 +6,10 @@ import type { WalkInTable } from "@/lib/walk-in";
 import { cn } from "@/lib/utils";
 import { ActionForm } from "../action-form";
 
-/** What the table's option says: free (and for how long), or why it is not. A reset buffer is not a party. */
+/**
+ * What the table's option says: free (and for how long, when a booking would cut a
+ * sitting short), or why it is not. A reset buffer is not a party.
+ */
 const availability = ({ state, until }: WalkInTable) =>
   ({
     free: until ? `free until ${until}` : "free",
@@ -19,6 +22,9 @@ const availability = ({ state, until }: WalkInTable) =>
  * Seat walk-in (spec 04): a table and a party size, posted to
  * /api/bookings/walk-in. A refusal (a booking within 30 minutes, a table in use)
  * shows in place. Plain post without JavaScript, and nothing personal in it.
+ * No table is ever disabled: the list is as old as the page, so the server answers
+ * for the table (with a link to the booking in its way). A disabled option would
+ * also post no table at all once a refresh disabled the chosen one.
  * The party size's minus and plus buttons are an enhancement on a number input.
  */
 export function WalkInForm({ tables }: { tables: WalkInTable[] }) {
@@ -36,13 +42,13 @@ export function WalkInForm({ tables }: { tables: WalkInTable[] }) {
           Seat a walk-in
         </h2>
         <Field label="Table" className="min-w-0 flex-1 md:w-48 md:flex-none">
-          {/* No table is chosen for them: a default could be one that is in use. */}
+          {/* No table is chosen for them: a default could be one that is in use. The
+              placeholder isn't disabled, so it is what's left when a refresh drops the
+              chosen table (archived), not the first table; `required` refuses it. */}
           <Select name="tableId" required defaultValue="">
-            <option value="" disabled>
-              Choose a table
-            </option>
+            <option value="">Choose a table</option>
             {tables.map((table) => (
-              <option key={table.id} value={table.id} disabled={table.state !== "free"}>
+              <option key={table.id} value={table.id}>
                 {table.label} (seats {table.capacity}), {availability(table)}
               </option>
             ))}

@@ -222,7 +222,7 @@ describe("add booking: the same engine", () => {
 
 describe("add booking: what the form is told", () => {
   it("a fetch gets the day, time and table, a link to the booking's row, and the dropped-consent warning", async () => {
-    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2, label: "Table 7" }] });
+    const { restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2, label: "7" }] });
     const outcome = await addStaffBooking(actor(restaurantId), request(), now);
     if (outcome.outcome !== "added") throw new Error("not added");
     const fetched = new Request("http://localhost/api/bookings", { method: "POST", headers: { [FORM_FETCH_HEADER]: "1" } });

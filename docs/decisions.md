@@ -215,6 +215,7 @@ All of it *proposed, not yet confirmed by Kudzai*.
 ### Abuse controls on the guest's confirm — **proposed, not yet confirmed by Kudzai**
 Spec 04's abuse controls (ticket #33), with the calls the spec left open. Detail is in spec 04 › Abuse controls.
 - **Rate-limit storage:** Postgres (`booking_rate_limit`), not memory or a new service. Hashed key, 5 per 10 minutes, per visitor.
+- **The limit stays as it is (#103) — confirmed by Kudzai:** 5 attempts per 10 minutes per IP, invalid ones counted, shared networks included; the refusal now comes with the restaurant's contact number.
 - **Which address:** `x-vercel-forwarded-for` on Vercel only. Missing in production: one shared count (fails closed). Missing in development: no limit.
 - **Per-phone limit:** a trigger with an advisory lock, because counting then inserting is a race.
 - **Bot check:** fails closed in production and preview deployments with no secret; fails open in every environment only when the guest has a token and siteverify can't answer. A full Cloudflare outage still stops online bookings: the widget loads from the same host, so there is no token and the guest gets a 403.

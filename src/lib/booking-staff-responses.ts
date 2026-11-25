@@ -42,7 +42,7 @@ export function addBookingResponse(outcome: AddOutcome, request: Request, consen
       if (!request.headers.has(FORM_FETCH_HEADER)) return formSaved(request, `/dashboard/bookings?date=${outcome.date}`);
       return Response.json({
         saved: {
-          message: `Booking added: ${dateLabel(outcome.date)}, ${outcome.time}, ${outcome.table}.`,
+          message: `Booking added: ${dateLabel(outcome.date)}, ${outcome.time}, Table ${outcome.table}.`,
           href: bookingHref(outcome.id, outcome.date),
           linkLabel: "View booking",
           ...(consentDropped
