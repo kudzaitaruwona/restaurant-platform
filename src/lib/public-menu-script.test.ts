@@ -53,6 +53,10 @@ class FakeElement {
   dispatch(type: string, event: Record<string, unknown> = {}) {
     return this.listeners.get(type)?.({ target: this, preventDefault() {}, ...event });
   }
+  scrolledTo = 0;
+  scrollIntoView() {
+    this.scrolledTo += 1;
+  }
   focusCount = 0;
   focus() {
     this.focusCount += 1;
@@ -744,7 +748,24 @@ describe("placing the order", () => {
 
     expect(page.cartText()).toContain("Beef stew");
     expect(page.cartText()).not.toContain("Rice");
-    expect(page.error.textContent).toContain("isn't available");
+    expect(page.error.textContent).toBe("Sorry, Rice isn't available right now. It was taken out of your order.");
+  });
+
+  it("can no longer add an item that has sold out, without a reload (#87)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    await page.add(page.rice);
+    page.state.orderReply = {
+      status: 409,
+      json: { error: "Sorry, that item isn't available right now.", code: "unavailable", item: "item-rice" },
+    };
+    await page.placeAs("Tariro");
+
+    expect(page.rice.disabled).toBe(true);
+    expect(page.rice.textContent).toBe("Sold out");
+    expect(page.stew.disabled).toBe(false);
+    await page.add(page.rice);
+    expect(page.cartText()).not.toContain("Rice");
   });
 
   it("doesn't reopen an empty sheet when the only item is no longer available, and says so on the page", async () => {
@@ -759,7 +780,10 @@ describe("placing the order", () => {
 
     expect(page.cart.children).toHaveLength(0);
     expect(page.form.hidden).toBe(true);
-    expect(page.document.getElementById("waiter-status").textContent).toContain("isn't available");
+    const said = page.document.getElementById("waiter-status");
+    expect(said.textContent).toBe("Sorry, Beef stew isn't available right now. It was taken out of your order.");
+    // Wherever the guest had scrolled, it is brought into view (#87).
+    expect(said.scrolledTo).toBe(1);
   });
 
   it("rejoins the table's session when the order says it has changed", async () => {
