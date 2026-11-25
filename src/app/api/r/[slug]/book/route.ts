@@ -51,8 +51,10 @@ export async function POST(request: Request, { params }: RouteContext<"/api/r/[s
       limitKey(ip && ipBucket(ip), env("AUTH_SECRET")),
     );
     if (!spent.allowed) {
+      // The restaurant hasn't been looked up, and isn't for this: the page that posted
+      // knows its number and adds it (#103).
       return refuse(
-        "Too many booking attempts. Wait a few minutes, then try again.",
+        "Too many booking attempts. Wait a few minutes, then try again, or contact the restaurant.",
         429,
         { "Retry-After": String(spent.retryAfterSeconds) },
       );
@@ -79,9 +81,15 @@ export async function POST(request: Request, { params }: RouteContext<"/api/r/[s
     case "confirmed":
       return Response.json({ confirmation: result.confirmation }, { status: 201 });
     case "race_lost":
-      return Response.json({ error: raceLostMessage, times: result.times }, { status: 409 });
+      return Response.json(
+        { error: raceLostMessage, times: result.times, available: result.available },
+        { status: 409 },
+      );
     case "lead_time":
-      return Response.json({ error: leadTimeMessage, times: result.times }, { status: 409 });
+      return Response.json(
+        { error: leadTimeMessage, times: result.times, available: result.available },
+        { status: 409 },
+      );
     case "phone_limit":
       // No link to the bookings: whoever is asking has only typed a number (#89).
       return Response.json(

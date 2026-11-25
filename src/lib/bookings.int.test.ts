@@ -386,6 +386,7 @@ describe("confirming", () => {
     expect(await confirmBooking({ restaurantId }, guest(), now)).toEqual({
       outcome: "race_lost",
       times: [{ period: "Dinner", time: "21:00" }],
+      available: [{ period: "Dinner", time: "21:00" }],
     });
   });
 
@@ -467,6 +468,7 @@ describe("two guests at once", () => {
     expect(result).toEqual({
       outcome: "race_lost",
       times: [{ period: "Dinner", time: "21:00" }],
+      available: [{ period: "Dinner", time: "21:00" }],
     });
     const rows = await bookingsOf(owner.db, restaurantId);
     expect(rows.map((row) => row.guestName)).toEqual(["First guest"]);
@@ -691,6 +693,7 @@ describe("the refusals at confirm", () => {
         { period: "Dinner", time: "20:00" },
         { period: "Dinner", time: "20:30" },
       ],
+      available: ["19:00", "19:30", "20:00", "20:30", "21:00"].map((time) => ({ period: "Dinner", time })),
     });
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
     // A time exactly at the end of the lead is fine.

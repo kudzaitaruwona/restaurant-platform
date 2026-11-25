@@ -264,7 +264,7 @@ export function getBookingPage(
 
     return {
       restaurantName: restaurant.name,
-      contactPhone: restaurant.contactPhone,
+      ...contactOf(restaurant.contactPhone),
       enabled: rules.enabled,
       maxParty: rules.maxOnlinePartySize,
       requestedParty,
@@ -512,10 +512,11 @@ export type Confirmation = {
   contactPhone: string | null;
 };
 
+/** `times` are the nearest few to offer; `available` is every time left that day, for the grid. */
 export type ConfirmOutcome =
   | { outcome: "confirmed"; confirmation: Confirmation }
-  | { outcome: "race_lost"; times: TimeChoice[] }
-  | { outcome: "lead_time"; times: TimeChoice[] }
+  | { outcome: "race_lost"; times: TimeChoice[]; available: TimeChoice[] }
+  | { outcome: "lead_time"; times: TimeChoice[]; available: TimeChoice[] }
   | { outcome: "phone_limit"; held: number; contactPhone: string | null; whatsappLink: string | null }
   | { outcome: "date_unavailable" }
   | {
@@ -537,6 +538,11 @@ const isPhoneLimit = (error: unknown) => {
   const cause = dbErrorOf(error);
   return cause?.code === "23514" && cause.constraint === "bookings_max_active_per_phone";
 };
+
+const timesLeft = (remaining: readonly AvailableTime[], wanted: Date) => ({
+  times: choices(nearestTimes(remaining, wanted)),
+  available: choices(remaining),
+});
 
 /** Upcoming confirmed bookings under this number at this restaurant. */
 async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phone: string, now: Date) {
@@ -599,7 +605,7 @@ export async function confirmBooking(
       const wanted = instantOf(date, time, timezone);
       if (wanted.getTime() < now.getTime() + rules.minLeadMinutes * 60_000) {
         const remaining = await timesOn(tx, tenant, read, day);
-        return { outcome: "lead_time", times: choices(nearestTimes(remaining, wanted)) };
+        return { outcome: "lead_time", ...timesLeft(remaining, wanted) };
       }
 
       const held = await upcomingFor(tx, tenant, guest.phone, now);
@@ -670,7 +676,7 @@ export async function confirmBooking(
 
       // Asked again, not reused: this statement's snapshot sees whoever just won.
       const remaining = await timesOn(tx, tenant, read, day);
-      return { outcome: "race_lost", times: choices(nearestTimes(remaining, wanted)) };
+      return { outcome: "race_lost", ...timesLeft(remaining, wanted) };
     });
   } catch (error) {
     // A Drizzle error's message quotes the statement's parameters, which here are
