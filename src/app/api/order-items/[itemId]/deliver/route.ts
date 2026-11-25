@@ -23,6 +23,7 @@ export async function POST(
     return Response.json(
       {
         error: `Mark delivered didn't apply: this item is ${result.status === "delivered" ? "already delivered" : result.status === "voided" ? "voided" : `still ${result.status}, not done`}. Reload to see the latest.`,
+        refresh: true,
       },
       { status: 409 },
     );

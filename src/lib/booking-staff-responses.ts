@@ -10,7 +10,8 @@ const statusWords = {
   no_show: "marked as a no-show",
 } as const;
 
-const refuse = (error: string, status: number) => Response.json({ error }, { status });
+const refuse = (error: string, status: number, refresh = false) =>
+  Response.json(refresh ? { error, refresh } : { error }, { status });
 
 /** Answers the add-booking form. A refusal says what to change, never a 500. */
 export function addBookingResponse(outcome: AddOutcome, request: Request) {
@@ -46,6 +47,7 @@ export function moveBookingResponse(outcome: MoveOutcome, request: Request) {
       return refuse(
         `Move didn't apply: this booking is already ${statusWords[outcome.status]}. Only a confirmed booking can move. Reload to see the latest.`,
         409,
+        true,
       );
     case "same_table":
       return refuse("The booking is already at that table.", 409);

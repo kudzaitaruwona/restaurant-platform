@@ -3,8 +3,9 @@ import { and, asc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { diningTables, orderItems, orders, restaurants, tableSessions } from "@/db/schema";
-import { lastSessionOf } from "@/lib/closing";
+import { REOPEN_WINDOW_MINUTES, lastSessionOf } from "@/lib/closing";
 import { moveItem } from "@/lib/kitchen";
+import { sumAmounts, timesQuantity } from "@/lib/pricing";
 import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
 import { recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
@@ -87,8 +88,46 @@ export const floorCounts = (tx: TenantTransaction, ctx: Tenant, sessionIds: stri
     .groupBy(orders.sessionId, orderItems.status);
 
 /**
+ * The latest session of each given table, by table_latest_session (migration
+ * 0048), the reopen rule's own pinned probe: one entry at the newest end of
+ * table_sessions_table_opened each. Not a join to table_sessions on the
+ * function: Postgres plans that as a scan of the restaurant's sessions
+ * (EXPLAIN-tested). Exported so a test can EXPLAIN it.
+ */
+export const latestSessionIds = (tx: TenantTransaction, ctx: Tenant, tableIds: string[]) =>
+  tx
+    .select({ id: sql<string | null>`table_latest_session(${diningTables.restaurantId}, ${diningTables.id})` })
+    .from(diningTables)
+    .where(and(eq(diningTables.restaurantId, ctx.restaurantId), inArray(diningTables.id, tableIds)));
+
+/**
+ * Of those sessions, the ones that closed within the reopen window (#76, #102),
+ * read by their keys alone. Exported so a test can EXPLAIN it.
+ */
+export const reopenableAmong = (tx: TenantTransaction, sessionIds: string[]) =>
+  tx
+    .select({ tableId: tableSessions.tableId })
+    .from(tableSessions)
+    .where(
+      and(
+        inArray(tableSessions.id, sessionIds),
+        eq(tableSessions.status, "closed"),
+        sql`${tableSessions.closedAt} > now() - make_interval(mins => ${REOPEN_WINDOW_MINUTES})`,
+      ),
+    );
+
+/** The free tables, of those given, whose last session can still be reopened: two reads, however many. */
+async function reopenableTables(tx: TenantTransaction, ctx: Tenant, tableIds: string[]) {
+  if (tableIds.length === 0) return new Set<string>();
+  const latest = (await latestSessionIds(tx, ctx, tableIds)).flatMap((row) => (row.id ? [row.id] : []));
+  if (latest.length === 0) return new Set<string>();
+  return new Set((await reopenableAmong(tx, latest)).map((row) => row.tableId));
+}
+
+/**
  * The live tables in sort order, each free, open or flagged, with its open
- * session's item counts. Flagged (spec 06) is an open session idle long enough
+ * session's item counts, and each free one saying whether its last session can
+ * still be reopened (#102). Flagged (spec 06) is an open session idle long enough
  * for idle expiry that the job can't close, because a line is still placed,
  * cooking or done: staff need to deliver, void or force-close it.
  */
@@ -102,6 +141,8 @@ export function getFloor(ctx: Tenant) {
     const sessionIds = tables.flatMap((table) => (table.sessionId ? [table.sessionId] : []));
     // One grouped read of the open sessions' lines (spec 06: counts by status).
     const grouped = sessionIds.length === 0 ? [] : await floorCounts(tx, ctx, sessionIds);
+    const freeIds = tables.flatMap((table) => (table.sessionId ? [] : [table.id]));
+    const reopenable = await reopenableTables(tx, ctx, freeIds);
 
     return {
       timezone,
@@ -119,6 +160,8 @@ export function getFloor(ctx: Tenant) {
               ? ("flagged" as const)
               : ("open" as const),
           openedAt: openedAt ?? null,
+          /** A free table whose last session closed within the reopen window and can be reopened (#76). */
+          reopenable: reopenable.has(table.id),
           /** Since when the open session has been calling a waiter (spec 06, proposed), if it is. */
           waiterRequestedAt: waiterRequestedAt ?? null,
           counts,
@@ -126,6 +169,32 @@ export function getFloor(ctx: Tenant) {
       }),
     };
   });
+}
+
+type Amounts = { usd: string | null; zig: string | null };
+type TableItem = {
+  id: string;
+  name: string;
+  quantity: number;
+  note: string | null;
+  status: ItemStatus;
+  /** Frozen unit price times quantity (S-21). */
+  price: Amounts;
+};
+
+/**
+ * What the table owes: the frozen prices of every line that isn't voided (a
+ * voided line was never served or owed), per currency. A currency is null when
+ * a counted line has no price in it, since a sum with a hole in it would be too
+ * low. Exact arithmetic (src/lib/pricing.ts).
+ */
+export function billTotal(items: { status: ItemStatus; price: Amounts }[]): Amounts {
+  const counted = items.filter((item) => item.status !== "voided");
+  const sum = (currency: keyof Amounts) => {
+    const amounts = counted.map((item) => item.price[currency]);
+    return amounts.some((amount) => amount === null) ? null : sumAmounts(amounts as string[]);
+  };
+  return { usd: sum("usd"), zig: sum("zig") };
 }
 
 /**
@@ -137,8 +206,8 @@ export function getFloor(ctx: Tenant) {
  */
 export function getTableDetail(ctx: Tenant, tableId: string) {
   return withTenant(ctx, async (tx) => {
-    const [{ timezone }] = await tx
-      .select({ timezone: restaurants.timezone })
+    const [{ timezone, currencyMode }] = await tx
+      .select({ timezone: restaurants.timezone, currencyMode: restaurants.currencyMode })
       .from(restaurants)
       .where(eq(restaurants.id, ctx.restaurantId));
     const [table] = await tx
@@ -158,6 +227,7 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
         id: tableSessions.id,
         openedAt: tableSessions.openedAt,
         waiterRequestedAt: tableSessions.waiterRequestedAt,
+        idle: sql<boolean>`${tableSessions.lastActivityAt} <= now() - make_interval(mins => ${IDLE_EXPIRY_MINUTES})`,
       })
       .from(tableSessions)
       .where(
@@ -174,7 +244,7 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
         last?.status === "closed" && last.inWindow && last.closedAt
           ? { id: last.id, closedAt: last.closedAt, closeReason: last.closeReason }
           : null;
-      return { timezone, table, session: null, orders: [], reopenable };
+      return { timezone, currencyMode, table, session: null, orders: [], reopenable, flagged: false, total: null };
     }
 
     const rows = await tx
@@ -187,6 +257,8 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
         quantity: orderItems.quantity,
         note: orderItems.note,
         status: orderItems.status,
+        unitPriceUsd: orderItems.unitPriceUsd,
+        unitPriceZig: orderItems.unitPriceZig,
       })
       .from(orders)
       .innerJoin(
@@ -198,7 +270,7 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
 
     const byOrder = new Map<
       string,
-      { id: string; customerName: string; placedAt: Date; items: { id: string; name: string; quantity: number; note: string | null; status: ItemStatus }[] }
+      { id: string; customerName: string; placedAt: Date; items: TableItem[] }
     >();
     for (const row of rows) {
       const order =
@@ -210,10 +282,27 @@ export function getTableDetail(ctx: Tenant, tableId: string) {
         quantity: row.quantity,
         note: row.note,
         status: row.status,
+        // What the line cost when it was ordered, times its quantity; null for a currency that couldn't be worked out then.
+        price: {
+          usd: row.unitPriceUsd === null ? null : timesQuantity(row.unitPriceUsd, row.quantity),
+          zig: row.unitPriceZig === null ? null : timesQuantity(row.unitPriceZig, row.quantity),
+        },
       });
       byOrder.set(row.orderId, order);
     }
-    return { timezone, table, session, orders: [...byOrder.values()], reopenable: null };
+    const all = [...byOrder.values()];
+    const items = all.flatMap((order) => order.items);
+    return {
+      timezone,
+      currencyMode,
+      table,
+      session,
+      orders: all,
+      reopenable: null,
+      // An open session idle long enough for idle expiry, with a line the job can't close over (spec 06).
+      flagged: session.idle && items.some((item) => ["placed", "cooking", "done"].includes(item.status)),
+      total: billTotal(items),
+    };
   });
 }
 

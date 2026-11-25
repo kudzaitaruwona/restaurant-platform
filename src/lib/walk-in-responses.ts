@@ -7,7 +7,8 @@ import type { WalkInOutcome } from "./walk-in";
  * is spec 04's prompt, with the time on the restaurant's clock.
  */
 export function walkInResponse(outcome: WalkInOutcome, request: Request) {
-  const refuse = (error: string) => Response.json({ error }, { status: 409 });
+  const refuse = (error: string, refresh = false) =>
+    Response.json(refresh ? { error, refresh } : { error }, { status: 409 });
   switch (outcome.outcome) {
     case "not_found":
       notFound();
@@ -24,6 +25,7 @@ export function walkInResponse(outcome: WalkInOutcome, request: Request) {
     case "table_taken":
       return refuse(
         "That table was just taken by another booking. Reload to see the latest, or seat the walk-in elsewhere.",
+        true,
       );
     case "seated":
       return formSaved(request, "/dashboard/bookings");
