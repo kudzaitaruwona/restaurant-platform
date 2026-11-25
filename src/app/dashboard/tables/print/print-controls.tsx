@@ -1,7 +1,7 @@
 "use client";
 
 import { Printer } from "lucide-react";
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { ChoiceChip } from "@/components/ui/chip";
 
@@ -25,6 +25,27 @@ export function PrintControls({ children }: { children: ReactNode }) {
       </SetStaleContext>
     </StaleContext>
   );
+}
+
+/**
+ * The sheet's page-level CSS (@page, and the rules that make the shell print
+ * black on white), present only while the sheet is on screen. Under
+ * cacheComponents a page left behind is kept mounted but hidden (Activity), and
+ * its <style> elements keep applying: printing another dashboard page would take
+ * the sheet's @page and shell rules. Activity runs layout-effect cleanups when it
+ * hides a tree and the effects again when it shows it, so the styles are dropped
+ * while hidden. The first render keeps them, so the server's HTML (and a visit
+ * without JavaScript) has them.
+ */
+export function PrintStyles({ css }: { css: string[] }) {
+  const [shown, setShown] = useState(true);
+  useLayoutEffect(() => {
+    // Re-showing is the only time this runs again, and it must restore the styles.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setShown(true);
+    return () => setShown(false);
+  }, []);
+  return shown ? css.map((rules) => <style key={rules}>{rules}</style>) : null;
 }
 
 /** Opens the browser's print dialog: the same as Ctrl+P, one tap on a tablet. */
