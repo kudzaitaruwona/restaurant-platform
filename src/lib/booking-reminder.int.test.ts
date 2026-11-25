@@ -10,7 +10,7 @@ import { cancelBooking as guestCancel, confirmBooking, type GuestRequest } from 
 
 /**
  * The booking reminder (#45, spec 05, D-03): queued with the confirmation at
- * starts_at - 3h, skipped when that time has passed, and made `cancelled` on
+ * starts_at - 3h, skipped when that time is not more than 5 minutes ahead, and made `cancelled` on
  * every path that ends the booking early. As app_tenant, each test on a
  * restaurant of its own.
  */
@@ -108,11 +108,29 @@ describe("queueing the reminder", () => {
     expect((await outboxOf(restaurantId)).map(({ kind }) => kind)).toEqual(["booking_confirmed"]);
   });
 
-  it("queues it when starts_at - 3h is exactly now", async () => {
-    const exactly = new Date("2026-11-06T14:00:00Z");
-    const { restaurantId } = await confirmedOnline(exactly, guest(), { minLeadMinutes: 0 });
+  it("skips it when it would go out with the confirmation: 3h01m ahead (#110)", async () => {
+    const soon = new Date("2026-11-06T13:59:00Z");
+    const { restaurantId } = await confirmedOnline(soon, guest(), { minLeadMinutes: 0 });
 
-    expect(await reminderOf(restaurantId)).toMatchObject({ status: "pending", scheduledFor: exactly });
+    expect((await outboxOf(restaurantId)).map(({ kind }) => kind)).toEqual(["booking_confirmed"]);
+  });
+
+  it("skips it when starts_at - 3h is exactly now or exactly one job interval away", async () => {
+    for (const minutesBefore of [0, 5]) {
+      const at = new Date(new Date("2026-11-06T14:00:00Z").getTime() - minutesBefore * 60_000);
+      const { restaurantId } = await confirmedOnline(at, guest(), { minLeadMinutes: 0 });
+      expect((await outboxOf(restaurantId)).map(({ kind }) => kind)).toEqual(["booking_confirmed"]);
+    }
+  });
+
+  it("queues it once it is more than one job interval after the confirmation", async () => {
+    const at = new Date("2026-11-06T13:54:00Z"); // 3h06m ahead
+    const { restaurantId } = await confirmedOnline(at, guest(), { minLeadMinutes: 0 });
+
+    expect(await reminderOf(restaurantId)).toMatchObject({
+      status: "pending",
+      scheduledFor: new Date("2026-11-06T14:00:00Z"),
+    });
   });
 
   it("queues nothing for a guest without opt-in or without a number", async () => {
