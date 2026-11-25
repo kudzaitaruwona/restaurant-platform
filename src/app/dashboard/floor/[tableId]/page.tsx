@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { TableDetailScreen } from "../table-detail-screen";
+
+export const metadata: Metadata = { title: "Table" };
 
 async function Detail({ params }: { params: Promise<{ tableId: string }> }) {
   return <TableDetailScreen tableId={(await params).tableId} />;

@@ -118,20 +118,29 @@ async function requestCode(audience: "staff" | "admin", email: string) {
   });
 }
 
-async function requestLink(audience: "staff" | "admin", email: string) {
-  return postAuth(audience, "/sign-in/magic-link", {
-    email,
-    callbackURL: "/dashboard",
-    errorCallbackURL: "/login",
-  });
+/** What the form on each session type's sign-in page sends. */
+const returning = {
+  staff: { callbackURL: "/dashboard", errorCallbackURL: "/login" },
+  admin: { callbackURL: "/admin", errorCallbackURL: "/login/admin" },
+};
+
+async function requestLink(
+  audience: "staff" | "admin",
+  email: string,
+  urls: Record<string, unknown> = returning[audience],
+) {
+  return postAuth(audience, "/sign-in/magic-link", { email, ...urls });
 }
 
-async function googleSignIn(audience: "staff" | "admin", profile: typeof services.google.profile) {
+async function googleSignIn(
+  audience: "staff" | "admin",
+  profile: typeof services.google.profile,
+  urls: Record<string, unknown> = returning[audience],
+) {
   services.google.profile = profile;
   const started = await postAuth(audience, "/sign-in/social", {
     provider: "google",
-    callbackURL: "/dashboard",
-    errorCallbackURL: "/login",
+    ...urls,
   });
   const { url } = await started.json();
   const state = new URL(url).searchParams.get("state");
@@ -229,6 +238,138 @@ describe("magic link", () => {
       callbackURL: "https://evil.example.test/",
     });
     expect(response.status).toBe(403);
+  });
+});
+
+describe("where sign-in returns to (#116)", () => {
+  const deep = "/dashboard/bookings?date=2026-11-25";
+  const page = `/login?next=${encodeURIComponent(deep)}`;
+  const urls = { callbackURL: deep, errorCallbackURL: page };
+
+  it("comes back to the deep link from an emailed link", async () => {
+    await requestLink("staff", people.active, urls);
+    const link = linkIn(await services.emailTo(people.active));
+    const response = await getAuthUrl("staff", link);
+    expect(response.headers.get("location")).toBe(`http://localhost:3000${deep}`);
+
+    // Reopened, it says so on the sign-in page, which still knows where to go.
+    const again = new URL((await getAuthUrl("staff", link)).headers.get("location")!);
+    expect(again.pathname).toBe("/login");
+    expect(again.searchParams.get("next")).toBe(deep);
+    expect(again.searchParams.get("error")).toBeTruthy();
+  });
+
+  it("comes back to the deep link from Google, and keeps it through a refusal", async () => {
+    const profile = (email: string) => ({ sub: `google-${email}`, email, email_verified: true });
+    const response = await googleSignIn("staff", profile(people.active), urls);
+    expect(response.headers.get("location")).toMatch(/\/dashboard\/bookings\?date=2026-11-25$/);
+
+    const refused = await googleSignIn("staff", profile(people.stranger), urls);
+    const back = new URL(refused.headers.get("location")!, "http://localhost:3000");
+    expect(back.pathname).toBe("/login");
+    expect(back.searchParams.get("next")).toBe(deep);
+  });
+
+  it.each([
+    ["staff", { callbackURL: "/admin" }],
+    ["staff", { callbackURL: "/api/auth/staff/sign-out" }],
+    ["staff", { callbackURL: "//evil.example.test" }],
+    ["staff", { callbackURL: "/dashboard/../api/staff" }],
+    ["staff", { callbackURL: "/dashboard", newUserCallbackURL: "/api/staff" }],
+    ["staff", { callbackURL: "/dashboard", errorCallbackURL: "/login/admin" }],
+    ["staff", { callbackURL: "/dashboard", errorCallbackURL: "/login?next=%2Fadmin" }],
+    ["staff", { callbackURL: "/dashboard", errorCallbackURL: "/login?email=a%40example.test" }],
+    ["staff", { callbackURL: "/dashboard", errorCallbackURL: "/api/staff" }],
+    ["admin", { callbackURL: "/dashboard" }],
+    ["admin", { callbackURL: "/admin", errorCallbackURL: "/login" }],
+  ] as const)("refuses anything else from the %s endpoints: %j", async (audience, urls) => {
+    const email = audience === "staff" ? people.active : people.admin;
+    expect((await requestLink(audience, email, urls)).status).toBe(403);
+    const google = await postAuth(audience, "/sign-in/social", { provider: "google", ...urls });
+    expect(google.status).toBe(403);
+    await settled();
+    expect(services.sent).toEqual([]);
+  });
+
+  it("refuses a link whose return was rewritten, without using it up", async () => {
+    await requestLink("staff", people.active);
+    const link = linkIn(await services.emailTo(people.active));
+    const rewritten = new URL(link);
+    rewritten.searchParams.set("callbackURL", "/api/auth/staff/sign-out");
+    const response = await getAuthUrl("staff", rewritten.toString());
+    expect(response.status).toBe(403);
+    expect(cookiesFrom(response)).toBe("");
+    expect(cookiesFrom(await getAuthUrl("staff", link))).not.toBe("");
+  });
+});
+
+describe("a sign-in page visited while signed in (#116)", () => {
+  const visit = async (audience: "staff" | "admin", query: Record<string, string> = {}) => {
+    const { SignIn } = await import("@/app/login/sign-in");
+    try {
+      const form = await SignIn({ audience, searchParams: Promise.resolve(query) });
+      return form.props as { destination: string; page: string };
+    } catch (error) {
+      return String((error as { digest?: unknown }).digest).split(";")[2];
+    }
+  };
+  const home = async () => (await import("../tenant")).signedInHome();
+
+  it("shows the form to someone signed out, carrying the return", async () => {
+    expect(await visit("staff")).toMatchObject({ destination: "/dashboard", page: "/login" });
+    expect(await visit("staff", { next: "/dashboard/menu" })).toMatchObject({
+      destination: "/dashboard/menu",
+      page: "/login?next=%2Fdashboard%2Fmenu",
+    });
+    expect(await visit("staff", { next: "//evil.example.test" })).toMatchObject({
+      destination: "/dashboard",
+      page: "/login",
+    });
+    expect(await home()).toBeUndefined();
+  });
+
+  it("goes straight on, to the return or the dashboard, even from a used link", async () => {
+    request.cookie = await signIn(services, "staff", people.active);
+    expect(await visit("staff")).toBe("/dashboard");
+    expect(await visit("staff", { next: "/dashboard/menu" })).toBe("/dashboard/menu");
+    expect(await visit("staff", { error: "INVALID_TOKEN" })).toBe("/dashboard");
+    expect(await visit("staff", { next: "/admin" })).toBe("/dashboard");
+    expect(await home()).toBe("/dashboard");
+  });
+
+  it("still shows the form for an invite to somebody else", async () => {
+    request.cookie = await signIn(services, "staff", people.active);
+    expect(await visit("staff", { email: "other@example.test" })).toHaveProperty("destination");
+    expect(await visit("staff", { email: people.active.toUpperCase() })).toBe("/dashboard");
+  });
+
+  it("keeps the session types apart", async () => {
+    request.cookie = await signIn(services, "staff", people.active);
+    expect(await visit("admin")).toMatchObject({ destination: "/admin", page: "/login/admin" });
+
+    request.cookie = await signIn(services, "admin", people.admin);
+    expect(await visit("staff")).toHaveProperty("destination");
+    expect(await visit("admin", { next: "/dashboard" })).toBe("/admin");
+    expect(await home()).toBe("/admin");
+  });
+
+  it("is needed before an unknown dashboard address is even a 404", async () => {
+    const { default: Page } = await import("@/app/dashboard/[...unknown]/page");
+    const unknown = () => Page().props.children.type();
+    expect(await statusOf(unknown)).toBe(401);
+    request.cookie = await signIn(services, "staff", people.active);
+    expect(await statusOf(unknown)).toBe(404);
+  });
+
+  it("shows the form to someone deactivated since", async () => {
+    request.cookie = await signIn(services, "staff", people.active);
+    await owner.db.update(staff).set({ active: false }).where(eq(staff.id, activeId));
+    try {
+      expect(await visit("staff")).toHaveProperty("destination");
+      expect(await home()).toBeUndefined();
+    } finally {
+      await owner.db.update(staff).set({ active: true }).where(eq(staff.id, activeId));
+    }
   });
 });
 

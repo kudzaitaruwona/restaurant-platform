@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
 import { staff } from "@/db/schema";
-import { sessionOf } from "@/lib/auth";
+import { type Audience, sessionOf } from "@/lib/auth";
 import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
 import { enteredRestaurant } from "./admin-entry";
@@ -119,6 +119,39 @@ export const getTenantContext = cache(async (): Promise<TenantContext> => {
 
   return { restaurantId, staffId, role: member.role };
 });
+
+/**
+ * Whose live session of this type the browser has, for the sign-in pages: the
+ * same checks as a request, so a deactivated person gets the form. The dev
+ * bypass isn't a session, and under it the form still shows.
+ */
+export async function signedInEmail(audience: Audience): Promise<string | undefined> {
+  if (devAuthBypassEnabled()) return undefined;
+  const session = await sessionOf(audience, await headers());
+  if (!session) return undefined;
+  const known =
+    audience === "staff"
+      ? await findStaffIdentity(session.email)
+      : await findPlatformAdminId(session.email);
+  return known ? session.email : undefined;
+}
+
+/**
+ * Where whoever is asking belongs, or undefined when signed out. Only for
+ * offering a link: it guards nothing, and the page it names checks for itself.
+ */
+export async function signedInHome(): Promise<"/dashboard" | "/admin" | undefined> {
+  if (devAuthBypassEnabled()) {
+    const identity = await currentIdentity();
+    if (!identity) return undefined;
+    if (!("platformAdminId" in identity)) return "/dashboard";
+    return (await enteredContext(identity)) ? "/dashboard" : "/admin";
+  }
+  if (await signedInEmail("staff")) return "/dashboard";
+  const admin = await sessionPlatformAdmin(await headers());
+  if (!admin) return undefined;
+  return (await enteredContext(admin)) ? "/dashboard" : "/admin";
+}
 
 /** Guards owner-only actions (S-26). RLS is tenant-only, so roles live here. */
 export function requireOwner(ctx: TenantContext) {

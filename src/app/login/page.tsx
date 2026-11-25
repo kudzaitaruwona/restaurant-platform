@@ -2,18 +2,18 @@ import { Mail } from "lucide-react";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { StatusPage } from "../status-page";
-import { SignInForm } from "./sign-in-form";
+import { SignIn } from "./sign-in";
 
 export const metadata: Metadata = { title: "Sign in" };
 
-export default function LoginPage() {
+export default function LoginPage({ searchParams }: PageProps<"/login">) {
   return (
     <StatusPage
       icon={<Mail strokeWidth={1.75} />}
       title="Sign in"
       actions={
         <Suspense>
-          <SignInForm audience="staff" destination="/dashboard" page="/login" />
+          <SignIn audience="staff" searchParams={searchParams} />
         </Suspense>
       }
     >

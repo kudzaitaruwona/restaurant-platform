@@ -4,7 +4,8 @@ import { latestRate } from "@/lib/exchange-rate";
 import { rateAge, rateAgeLabel } from "@/lib/pricing";
 import { getTenantContext, withTenant } from "@/lib/tenant";
 import { SessionControls } from "../session-controls";
-import { type RailRate, showsRate, StaffNavigation } from "./staff-rail";
+import { type RailRate, showsRate } from "./nav";
+import { StaffNavigation } from "./staff-rail";
 
 /**
  * Loads what the staff navigation shows (S-41): the restaurant, who is signed

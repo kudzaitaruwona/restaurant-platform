@@ -2,9 +2,10 @@ import type { ReactNode } from "react";
 
 /**
  * The calm centred page (S-41) behind sign-in, signed-out, no-access and
- * not-found: a quiet icon, a title, a line of help, then the way on. No staff
- * shell, so it reads the same to a guest who wandered in and to a waiter whose
- * session ended. Pinned from the top, not centred: when a step in the card
+ * not-found and error: a quiet icon, a title, a line of help, then the way on. It
+ * brings no staff shell of its own, so it reads the same to a guest who wandered
+ * in and to a waiter whose session ended; under /dashboard it sits inside the
+ * shell. Pinned from the top, not centred: when a step in the card
  * grows or shrinks (sign-in's "check your email"), the card's top stays put
  * and only its bottom edge moves.
  */
