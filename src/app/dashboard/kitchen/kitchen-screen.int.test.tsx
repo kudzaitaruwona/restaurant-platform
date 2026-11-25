@@ -85,6 +85,19 @@ describe("the kitchen screen", () => {
     },
   );
 
+  it("names a table labelled only a number as a table, and spaces the quantity (#99)", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    await owner.db.update(diningTables).set({ label: "12" }).where(eq(diningTables.id, restaurant.tableId));
+    session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };
+    await ordered(restaurant);
+
+    const html = await render();
+
+    expect(html).toContain(">Table 12<");
+    expect(html).toContain("2 × Beef stew, Table 12");
+    expect(html.replace(/<[^>]*>/g, "")).not.toMatch(/2×/);
+  });
+
   it("shows the name the line was ordered under, not the item's name now", async () => {
     const restaurant = await orderingRestaurant(owner.db);
     session.tenant = { restaurantId: restaurant.restaurantId, staffId: restaurant.staffId, role: "staff" };

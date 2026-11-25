@@ -38,6 +38,7 @@ import {
   voidReasonFrom,
 } from "@/lib/kitchen-board";
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
+import { tableName } from "@/lib/table-name";
 import { cn } from "@/lib/utils";
 
 const columnNames: Record<BoardStatus, string> = {
@@ -370,7 +371,7 @@ function Ticket({
           age.level !== "fresh" && "bg-attention-soft",
         )}
       >
-        <span className="text-[2em] leading-none font-bold tracking-tight">{group.table}</span>
+        <span className="text-[2em] leading-none font-bold tracking-tight">{tableName(group.table)}</span>
         {/* The name has a line of its own (last in the flow, first in the markup), so it breaks between words and only breaks a word that is longer than the card; nothing on a card is cut off (#101). */}
         <span className="order-last basis-full break-words text-[1.0625em] font-medium text-ink-2">
           {group.customerName}
@@ -455,7 +456,7 @@ function ItemRow({
       <button
         type="button"
         disabled={pending}
-        aria-label={`${forwardWords[item.status]}: ${item.quantity} × ${item.name}, ${item.table}`}
+        aria-label={`${forwardWords[item.status]}: ${item.quantity} × ${item.name}, ${tableName(item.table)}`}
         className={cn(
           "grid min-h-16 w-full min-w-0 touch-manipulation grid-cols-[3em_minmax(0,1fr)] items-start gap-x-2 py-3 pr-4 pl-4 text-left transition-colors duration-150 ease-out outline-none select-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset active:bg-accent-soft disabled:cursor-progress disabled:opacity-55",
           // The name's row is as tall as the menu button, so a note never runs under it.
@@ -483,9 +484,9 @@ function ItemRow({
           onForward({ x: event.clientX, y: event.clientY, at: event.timeStamp, fromPointer: event.detail > 0 });
         }}
       >
-        <span className="text-[1.5em] leading-[1.07] font-bold tabular-nums">
-          {item.quantity}
-          <span className="ml-px text-[.7em] font-medium text-ink-2">×</span>
+        <span className="text-[1.5em] leading-[1.07] font-bold whitespace-nowrap tabular-nums">
+          {item.quantity}{" "}
+          <span className="text-[.7em] font-medium text-ink-2">×</span>
         </span>
         <span className="pr-10 text-[1.25em] leading-[1.28] font-semibold break-words">{item.name}</span>
         {item.note && (
@@ -503,7 +504,7 @@ function ItemRow({
         className="absolute top-0 right-0 h-16 w-14 rounded-none border-0 bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink focus-visible:ring-inset focus-visible:ring-offset-0 aria-expanded:bg-surface-2 aria-expanded:text-ink [&_svg]:size-6"
       >
         <RowMenuLabel>
-          {item.quantity} × {item.name}, {item.table}
+          {item.quantity} × {item.name}, {tableName(item.table)}
         </RowMenuLabel>
         {actions.includes("back") && back && (
           <>
@@ -566,7 +567,7 @@ function ReasonForm({
       <label className="grid gap-2 text-[.9375em] font-semibold">
         {kind === "void"
           ? `Why void ${item.quantity} × ${item.name}?`
-          : `Why reject ${item.customerName}'s whole order at ${item.table}?`}
+          : `Why reject ${item.customerName}'s whole order at ${tableName(item.table)}?`}
         <Input
           name="reason"
           required

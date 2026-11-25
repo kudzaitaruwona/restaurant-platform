@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { diningTables, orderItems, restaurants, tableSessions } from "@/db/schema";
-import { dismissWaiter } from "@/lib/floor";
+import { diningTables, menuItems, orderItems, restaurants, tableSessions } from "@/db/schema";
+import { dismissWaiter, getTableDetail } from "@/lib/floor";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -61,6 +61,34 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     ]);
   });
 
+  it("keeps the cart's order within an order (#99)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const dishes = Array.from({ length: 12 }, (_, n) => `Dish ${12 - n}`);
+    const rows = await owner.db
+      .insert(menuItems)
+      .values(dishes.map((name) => ({ restaurantId: r.restaurantId, categoryId: r.categoryId, name, priceUsd: "1" })))
+      .returning({ id: menuItems.id, name: menuItems.name });
+    const session = await join(r.qrToken);
+    const form = new URLSearchParams({ name: "Tariro", session });
+    for (const dish of dishes) {
+      form.append("item", rows.find((row) => row.name === dish)!.id);
+      form.append("quantity", "1");
+    }
+    const response = await placeOrder(
+      new Request("http://localhost/x", { method: "POST", body: form }),
+      params(r.qrToken),
+    );
+    expect(response.status).toBe(201);
+
+    const names = (await (await track(r.qrToken)).json()).items.map((item: { name: string }) => item.name);
+    expect(names).toEqual(dishes);
+
+    // And on the floor's page.
+    const ctx = { restaurantId: r.restaurantId };
+    const floor = await getTableDetail(ctx, r.tableId);
+    expect(floor!.orders[0].items.map((item) => item.name)).toEqual(dishes);
+  });
+
   it("carries each item's current status, and shows a voided one as voided", async () => {
     const r = await orderingRestaurant(owner.db);
     const session = await join(r.qrToken);
@@ -96,6 +124,16 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     // The same minute, or the one before it if the clock ticked over.
     const minutes = (text: string) => Number(text.slice(0, 2)) * 60 + Number(text.slice(3));
     expect(Math.abs(minutes(time) - minutes(expected))).toBeLessThanOrEqual(1);
+  });
+
+  it("leaves the table's label to the scan, which names the table as staff see it (#99)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const scanned = async () =>
+      (await joinSession(new Request("http://localhost/x", { method: "POST" }), params(r.qrToken))).json();
+    expect(await scanned()).toEqual({ session: expect.any(String), table: "Table 7" });
+    await owner.db.update(diningTables).set({ label: "12" }).where(eq(diningTables.id, r.tableId));
+    expect((await scanned()).table).toBe("Table 12");
+    expect(Object.keys(await (await track(r.qrToken)).json()).sort()).toEqual(["items", "session", "waiter"]);
   });
 
   it("is empty, with no session, for a table nobody has scanned", async () => {

@@ -116,17 +116,18 @@ afterAll(async () => {
 });
 
 /**
- * Each Add button, Call a waiter in the header, the waiter's answer and the
+ * Each Add button, Call a waiter and the table's empty name (#99) in the header, the waiter's answer and the
  * tracker above the chips, and the order sheet, its styles and its script at the
  * end: all ordering adds.
  */
 const plus = '<svg class="icon"><use href="#i-plus"/></svg>';
 const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<\/button>/g;
 const waiterButton = /<button type="button" id="call-waiter"[^>]* hidden>[\s\S]*?<\/button>/;
+const tableName = '<p id="table-name" class="table" hidden></p>';
 const trackerBlock = /<p id="waiter-status"[^>]*><\/p>\n<section id="tracker"[^>]* hidden>[\s\S]*?<\/section>\n/;
 const orderBlock = /\n<style>[^<]*<\/style>\n<svg hidden>[\s\S]*<\/script>\n/;
 const withoutOrdering = (body: string) =>
-  body.replace(addButton, "").replace(waiterButton, "").replace(trackerBlock, "").replace(orderBlock, "");
+  body.replace(addButton, "").replace(waiterButton, "").replace(tableName, "").replace(trackerBlock, "").replace(orderBlock, "");
 
 const genericPage = (menuToken: string) =>
   menuPage(new Request(`http://localhost:3000/m/${menuToken}`), {

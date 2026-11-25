@@ -40,6 +40,7 @@ main{max-width:40rem;margin:0 auto;padding-bottom:40px}
 .hrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01em;text-wrap:balance}
 .head p{margin:4px 0 0;font-size:15px;color:var(--ink-2)}
+.head .table{font-weight:600;color:var(--ink);overflow-wrap:anywhere}
 .wifi{display:flex;align-items:center;gap:6px}
 .wifi .icon{width:16px;height:16px}
 .head .book-again{margin-top:8px}
@@ -123,18 +124,19 @@ main{padding-bottom:104px}
 .tracker ul{margin-top:8px}
 .tracker li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0}
 .tracker li+li{border-top:1px solid var(--line)}
-.tw{display:flex;flex-direction:column;min-width:0}
+.tw{display:flex;flex-direction:column;min-width:0;overflow-wrap:anywhere}
+.tracker .pill{flex:none}
 .tn{font-size:15px;font-weight:600}
 .tm,.tnote{font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
-.tnote{color:var(--attention-ink)}
+.tnote,.task{color:var(--attention-ink)}
+.task{font-size:13px;font-weight:600}
 .voided .tn{text-decoration:line-through;color:var(--ink-2)}
 .pill-served{--i:var(--i-check);padding:0 2px}.pill-served::before{background:var(--accent)}
 .pay{margin:4px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-2)}
-.confirm{--i:var(--i-ok);display:grid;grid-template-columns:20px 1fr;column-gap:10px;margin:-4px -4px 16px;padding:12px;border-radius:10px;background:var(--accent-soft)}
-.confirm::before{width:20px;height:20px;margin-top:1px;background:var(--accent);grid-row:span 2}
+.confirm{--i:var(--i-ok);display:grid;grid-template-columns:20px minmax(0,1fr);overflow-wrap:anywhere;column-gap:10px;margin:-4px -4px 16px;padding:12px;border-radius:10px;background:var(--accent-soft)}
+.confirm::before{width:20px;height:20px;margin-top:1px;background:var(--accent)}
 .confirm p{margin:0}
 .ct{font-size:15px;font-weight:600}
-.cs{margin-top:2px!important;font-size:13px;color:var(--ink-2)}
 @media (prefers-reduced-motion:no-preference){.confirm,.inorder{animation:in .2s ease-out}.order{animation:up .2s ease-out}}
 @keyframes in{from{translate:0 -4px;opacity:.4}}
 @keyframes up{from{translate:0 32px}}
@@ -165,6 +167,8 @@ body:has(.order:not([hidden])){overflow:hidden}
 .q{min-width:28px;text-align:center;font-weight:600;font-variant-numeric:tabular-nums}
 .rm{--i:var(--i-trash);display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 4px 0 8px;border:0;background:none;color:var(--ink-2);font-size:15px;cursor:pointer}
 .fl{display:flex;flex-direction:column;gap:4px;margin-top:12px;font-size:13px;color:var(--ink-2)}
+.fh{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 8px}
+.note{display:block;resize:none;field-sizing:content;min-height:72px}
 .fname{padding-top:16px;border-top:1px solid var(--line);font-size:15px;font-weight:600;color:var(--ink)}
 .cl+.fname,#cart:empty+.fname{margin-top:8px}
 .order .sheet-foot{display:block}
@@ -216,6 +220,8 @@ export const ORDER_SCRIPT = `(() => {
   const size = $("cart-items");
   const list = $("cart");
   const tracker = $("tracker");
+  const title = $("tracker-title");
+  const tableName = $("table-name");
   const confirmed = $("tracker-confirm");
   const waiter = $("call-waiter");
   const waiterSaid = $("waiter-status");
@@ -288,7 +294,10 @@ export const ORDER_SCRIPT = `(() => {
   const scan = async () => {
     const response = await fetch(api("/session"), Object.assign({ method: "POST" }, AbortSignal.timeout && { signal: AbortSignal.timeout(8000) }));
     if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status, wait: Number(response.headers && response.headers.get("retry-after")) || 0 });
-    return (await response.json()).session;
+    const scanned = await response.json();
+    tableName.textContent = scanned.table || "";
+    tableName.hidden = !scanned.table;
+    return scanned.session;
   };
   // Given up after 8 seconds, body included, on phones without AbortSignal.timeout
   // too: an answer that comes later is dropped, not entered.
@@ -339,21 +348,41 @@ export const ORDER_SCRIPT = `(() => {
       remove.addEventListener("click", () => { cart = cart.filter((other) => other !== line); error.textContent = ""; draw(); });
       const controls = make("div", undefined, "crow");
       controls.append(stepper, remove);
-      const note = make("input", undefined, "input note");
+      // A textarea, so a long note shows whole, but one line of text (#99).
+      const note = make("textarea", undefined, "input note");
+      const used = make("span");
+      const showUsed = () => {
+        const size = note.value.length;
+        used.textContent = size + " of 200 characters" + (size >= 200 ? ". That's the limit." : "");
+      };
       note.maxLength = 200;
+      note.rows = 2;
       note.placeholder = "For example, no onions";
       note.value = line.note;
-      note.setAttribute("aria-label", "Note for " + line.name);
-      note.addEventListener("input", () => { line.note = note.value; });
+      note.setAttribute("aria-label", "Note for " + line.name + ", up to 200 characters");
+      note.addEventListener("input", () => {
+        if (note.value.includes("\\n")) note.value = note.value.replace(/\\s*\\n\\s*/g, " ");
+        line.note = note.value;
+        showUsed();
+      });
+      showUsed();
       const label = make("label", undefined, "fl");
-      label.append(make("span", "Kitchen note (optional)"), note);
+      const head = make("span", undefined, "fh");
+      head.append(make("span", "Kitchen note (optional)"), used);
+      label.append(head, note);
       row.append(top, controls, label);
       return row;
     }));
   };
 
-  const words = { placed: "Ordered", cooking: "Cooking", done: "Ready", delivered: "Served", voided: "Voided" };
+  const words = { placed: "Placed", cooking: "Cooking", done: "Done", delivered: "Served", voided: "Voided" };
   const pills = { placed: "placed", cooking: "cooking", done: "done", delivered: "served ico", voided: "voided" };
+  // The items last polled. A confirmation comes down once the session has more voided
+  // lines of a dish it names than when its submission was made (#99).
+  let items = [];
+  let dishes = [];
+  let voidsBefore = {};
+  const voids = () => items.reduce((counts, item) => { if (item.status === "voided") counts[item.name] = (counts[item.name] || 0) + 1; return counts; }, Object.create(null));
   let shown = false;
   let last = "";
   let polling = false;
@@ -375,7 +404,10 @@ export const ORDER_SCRIPT = `(() => {
       if (!ended) for (const line of cart) line.from = line.from || session;
       if (ended) { if (called || own) showCall(false, ""); clearRefusal(); }
       else if (!!feed.waiter !== called) showCall(!called, called ? "The staff have seen your table's call." : sent);
-      const items = ended ? [] : feed.items;
+      items = ended ? [] : feed.items;
+      const voided = voids();
+      if (dishes.some((name) => (voided[name] || 0) > (voidsBefore[name] || 0))) confirmed.replaceChildren();
+      title.hidden = items.length === 0;
       if (!ended) shown = items.length > 0;
       if (!ended) keep = false;
       else if (!keep) confirmed.replaceChildren();
@@ -386,6 +418,7 @@ export const ORDER_SCRIPT = `(() => {
         const what = make("div", undefined, "tw");
         what.append(make("span", times(item.quantity, item.name), "tn"), make("span", item.customer + " at " + item.time, "tm"));
         if (item.note) what.append(make("span", "Note: " + item.note, "tnote"));
+        if (item.status === "voided") what.append(make("span", "Ask a member of staff about this item.", "task"));
         row.append(what, make("span", words[item.status] || item.status, "pill pill-" + (pills[item.status] || "neutral")));
         return row;
       }));
@@ -489,6 +522,7 @@ export const ORDER_SCRIPT = `(() => {
       const retrying = asked;
       asked = asked || session;
       const to = asked;
+      if (!request) voidsBefore = voids();
       request = request || newId();
       const body = new URLSearchParams();
       for (const line of cart) {
@@ -509,10 +543,8 @@ export const ORDER_SCRIPT = `(() => {
         cart = [];
         error.textContent = "";
         draw();
-        confirmed.replaceChildren(
-          make("p", "Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ".", "ct"),
-          make("p", "Pay at the table with your waiter as usual.", "cs"),
-        );
+        dishes = answer.placed.lines.map((line) => line.name);
+        confirmed.replaceChildren(make("p", "Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ".", "ct"));
         tracker.hidden = false;
         if (tracker.scrollIntoView) tracker.scrollIntoView({ block: "start" });
         last = "";
@@ -553,7 +585,7 @@ const orderScript = trusted(ORDER_SCRIPT);
  * Both stay empty and hidden until the script fills them.
  */
 const trackerBlock = html`<p id="waiter-status" class="said" role="status"></p>
-<section id="tracker" class="tracker" aria-live="polite" hidden><div id="tracker-confirm" class="confirm ico"></div><h2>Your table's orders</h2><p id="tracker-state" class="tstate"></p><ul id="tracker-list"></ul><p class="pay">Pay at the table with your waiter as usual.</p></section>
+<section id="tracker" class="tracker" aria-live="polite" hidden><div id="tracker-confirm" class="confirm ico"></div><h2 id="tracker-title" hidden>Your table's orders</h2><p id="tracker-state" class="tstate"></p><ul id="tracker-list"></ul><p class="pay">Pay at the table with your waiter as usual.</p></section>
 `;
 
 const waiterButton = trusted(
@@ -679,7 +711,7 @@ function menuPage(menu: Menu, bookAgain: string | null, ordering: boolean) {
   return page(
     menu.restaurantName,
     html`<header class="head"><div class="hrow"><div><h1>${menu.restaurantName}</h1>
-${menu.wifiName && html`<p class="wifi">${WIFI}Wi-Fi: ${menu.wifiName}</p>`}
+${ordering && trusted('<p id="table-name" class="table" hidden></p>')}${menu.wifiName && html`<p class="wifi">${WIFI}Wi-Fi: ${menu.wifiName}</p>`}
 ${bookAgainLine(bookAgain)}</div>${ordering && waiterButton}</div></header>
 ${ordering && trackerBlock}${jumpBar}
 <div class="sections">${specials}

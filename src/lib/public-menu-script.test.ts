@@ -89,6 +89,7 @@ async function loadPage(
   const state = {
     feed,
     sessionId,
+    tableName: "Table 7" as string | undefined,
     orderReply: undefined as Reply | undefined,
     /** While true, an order is sent and no answer comes back. */
     loseOrderReply: false,
@@ -125,7 +126,9 @@ async function loadPage(
     "cart-items": new FakeElement(),
     cart: new FakeElement(),
     tracker: Object.assign(new FakeElement(), { hidden: true }),
+    "table-name": Object.assign(new FakeElement(), { hidden: true }),
     "tracker-confirm": new FakeElement(),
+    "tracker-title": Object.assign(new FakeElement(), { hidden: true }),
     "tracker-state": new FakeElement(),
     "tracker-list": new FakeElement(),
     "call-waiter": Object.assign(new FakeElement(), { hidden: true }),
@@ -173,7 +176,7 @@ async function loadPage(
           json: async () => next.json,
         };
       }
-      return { ok: true, status: 200, json: async () => ({ session: state.sessionId }) };
+      return { ok: true, status: 200, json: async () => ({ session: state.sessionId, table: state.tableName }) };
     }
     if (path === "/waiter") {
       const reply = state.waiterReply ?? {
@@ -256,6 +259,8 @@ async function loadPage(
     /** Where the waiter's answer shows: under the header. */
     waiterStatus: elements["waiter-status"],
     cart: elements.cart,
+    tableName: elements["table-name"],
+    trackerTitle: elements["tracker-title"],
     tracker: elements.tracker,
     trackerState: elements["tracker-state"],
     trackerList: elements["tracker-list"],
@@ -266,7 +271,7 @@ async function loadPage(
       [...Object.values(elements), ...Object.values(fields)]
         .flatMap((element) => (element instanceof FakeElement ? element.find(() => true) : []))
         .reduce((sum, element) => sum + element.focusCount, 0),
-    noteInputs: () => elements.cart.find((el) => el.tagName === "input"),
+    noteInputs: () => elements.cart.find((el) => el.tagName === "textarea"),
     /** The quantity each cart line shows in its stepper, by name. */
     quantities: () =>
       Object.fromEntries(
@@ -704,6 +709,34 @@ describe("placing the order", () => {
     expect(body.get("session")).toBe("session-1");
   });
 
+  it("says how much of a note's 200 characters is used, and that the limit is reached (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    expect(page.cartText()).toContain("0 of 200 characters");
+    const [note] = page.noteInputs();
+
+    note.value = "no onions";
+    note.dispatch("input");
+    expect(page.cartText()).toContain("9 of 200 characters");
+
+    note.value = "x".repeat(200);
+    note.dispatch("input");
+    expect(page.cartText()).toContain("200 of 200 characters. That's the limit.");
+
+    // Kept when the cart is drawn again.
+    await page.add(page.rice);
+    expect(page.cartText()).toContain("200 of 200 characters. That's the limit.");
+  });
+
+  it("keeps a note on one line, as the kitchen reads it (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    const [note] = page.noteInputs();
+    note.value = "no onions\nno salt";
+    note.dispatch("input");
+    expect(note.value).toBe("no onions no salt");
+  });
+
   it("sends nothing that says what anything costs", async () => {
     const page = await loadPage(new Map(), "session-1");
     await page.add(page.stew);
@@ -726,7 +759,8 @@ describe("placing the order", () => {
     expect(page.open.hidden).toBe(true);
     expect(page.form.hidden).toBe(true);
     expect(page.confirmation.textContent).toContain("1 × Dish 1, 1 × Dish 2");
-    expect(page.confirmation.textContent).toContain("Pay at the table with your waiter as usual");
+    // The tracker it sits in says "Pay at the table" once, for both (#99).
+    expect(page.confirmation.textContent).not.toContain("Pay at the table");
     expect(page.tracker.hidden).toBe(false);
     expect(page.error.textContent).toBe("");
 
@@ -1123,7 +1157,7 @@ describe("the order tracker", () => {
     expect(text).toContain("no onions");
     expect(text).toContain("Tariro");
     expect(text).toContain("19:42");
-    expect(text).toContain("Ordered");
+    expect(text).toContain("Placed");
     expect(text).toContain("1 × Rice");
     expect(text).toContain("Farai");
   });
@@ -1149,6 +1183,80 @@ describe("the order tracker", () => {
     const row = page.trackerList.children[0];
     expect(row.textContent).toContain("Voided");
     expect(row.className).toContain("voided");
+    expect(row.textContent).toContain("Ask a member of staff about this item.");
+  });
+
+  it("asks nobody to see staff about an item that isn't voided (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1", { feed: { session: "session-1", items: [item()] } });
+    expect(page.trackerList.textContent).not.toContain("Ask a member of staff");
+  });
+
+  it("takes the confirmation down once an item it names is voided (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1" })] };
+    await page.orderOne("Tariro");
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+
+    expect(page.confirmation.textContent).toBe("");
+    expect(page.tracker.hidden).toBe(false);
+    expect(page.trackerList.textContent).toContain("Ask a member of staff about this item.");
+  });
+
+  it("keeps the confirmation of an order placed after the same dish was voided, or when another dish is (#99)", async () => {
+    const old = item({ name: "Dish 1", status: "voided" });
+    const page = await loadPage(new Map(), "session-1", { feed: { session: "session-1", items: [old] } });
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1" })] };
+    await page.orderOne("Tariro");
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1" }), item({ name: "Soup", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toBe("");
+  });
+
+  it("doesn't confirm a retry whose item was voided while its answer was lost (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    page.state.loseOrderReply = false;
+
+    await page.placeAs("Tariro");
+
+    expect(page.confirmation.textContent).toBe("");
+    expect(page.trackerList.textContent).toContain("Voided");
+  });
+
+  it("has no heading over an empty list: not before the first poll, nor once the session ends (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdPolls = true;
+    await page.orderOne("Tariro");
+    expect(page.tracker.hidden).toBe(false);
+    expect(page.trackerTitle.hidden).toBe(true);
+
+    page.state.holdPolls = false;
+    page.state.feed = { session: "session-1", items: [item()] };
+    await page.answer();
+    await page.tick();
+    expect(page.trackerTitle.hidden).toBe(false);
+
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    expect(page.trackerTitle.hidden).toBe(true);
+  });
+
+  it("shows the table's name once joined, as text (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    expect(page.tableName.hidden).toBe(false);
+    expect(page.tableName.textContent).toBe("Table 7");
   });
 
   it("shows the other statuses in plain words", async () => {
@@ -1158,9 +1266,9 @@ describe("the order tracker", () => {
     });
 
     expect(page.trackerList.children.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Ordered"),
+      expect.stringContaining("Placed"),
       expect.stringContaining("Cooking"),
-      expect.stringContaining("Ready"),
+      expect.stringContaining("Done"),
       expect.stringContaining("Served"),
     ]);
     expect(page.trackerList.children.map((row) => row.children[1].className)).toEqual([
