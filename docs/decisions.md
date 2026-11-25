@@ -185,6 +185,9 @@ How invites are built. All of it is *proposed, not yet confirmed by Kudzai*, and
 - **Audit.** A resend is `staff.invite_resend` on the person, by whoever asked (an entered admin as the admin, S-29). The first invite goes with `staff.create`, already audited, and isn't logged twice.
 - **On screen.** The staff screen and the owner card show "Joined {day}", "Invited {day, time}" (restaurant's timezone), "Invite email didn't go" in amber with "Send invite again" in sight, or "Not invited yet" for someone added before invites. The WhatsApp message on the owner card stays, as a second way to reach them.
 
+### Menu price checks (issue #112)
+*Proposed, not yet confirmed by Kudzai.* Details in spec 02, "Prices that get a second look". A special above the item's normal price is refused; a zero price, a duplicate item or category name and an exchange rate that moves by more than half either way are asked about (409 with `confirm.warnings`, then `confirmed=1`), never refused, because each can be real (a free item, "Soda" in two sizes, a devaluation). Duplicates are warned about rather than refused, which differs from the CSV import, where a duplicate row is skipped because nothing there can ask.
+
 ### S-43 in detail
 All of it *proposed, not yet confirmed by Kudzai*.
 - **The parser.** `src/lib/csv.ts`, RFC 4180 (quoted values, `""` inside them, commas and line breaks inside quotes, CRLF or LF), written here rather than added as a dependency: the format is small, and the rules around it (limits, header matching, blank lines skipped, line numbers for the preview) are ours anyway. A UTF-8 byte order mark is stripped. The delimiter is a semicolon when the header row has more semicolons than commas outside quotes, so a spreadsheet saved where the decimal mark is a comma still reads.
