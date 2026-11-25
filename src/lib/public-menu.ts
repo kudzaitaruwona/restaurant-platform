@@ -193,7 +193,9 @@ body:has(.order:not([hidden])){overflow:hidden}
  * endpoint, one call at a time, and says on the page that it went through; the
  * page keeps nothing of it, since the floor view owns when a call ends. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
- * next Add or Place order joins the table's fresh one.
+ * next Add or Place order joins the table's fresh one and clears the name. Each line
+ * remembers the session it was added in: lines from another one are sent only after
+ * the guest has been told and places the order again (#85).
  * Each submission has an id of its own (#84), kept until it is answered as placed,
  * so a retry is the same submission and the server places it once. While the last
  * answer was lost, a retry goes to the session it was first sent to, even one that
@@ -252,13 +254,17 @@ export const ORDER_SCRIPT = `(() => {
   let keep = false;
   // Not crypto.randomUUID: older phones, and plain http, don't have it.
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+  // The session the page is now in. A new one asks for the name again.
+  const enter = (next) => {
+    if (session && next !== session) { fields.name.value = ""; last = ""; }
+    session = next;
+    ended = false;
+    for (const line of cart) line.from = line.from || next;
+  };
   const join = async () => {
     const response = await fetch(api("/session"), { method: "POST" });
     if (!response.ok) throw new Error(String(response.status));
-    const next = (await response.json()).session;
-    if (session && next !== session) fields.name.value = "";
-    session = next;
-    ended = false;
+    enter((await response.json()).session);
     try { fields.name.value = localStorage.getItem("order-name:" + session) || fields.name.value; } catch {}
   };
 
@@ -367,7 +373,7 @@ export const ORDER_SCRIPT = `(() => {
     const line = cart.find((other) => other.id === button.dataset.item);
     if (line) line.quantity = Math.min(20, line.quantity + 1);
     else if (cart.length >= 20) return fail("An order can have up to 20 different items.");
-    else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "" });
+    else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "", from: ended ? null : session });
     error.textContent = "";
     confirmed.replaceChildren();
     draw();
@@ -382,10 +388,7 @@ export const ORDER_SCRIPT = `(() => {
       if (!response.ok) throw new Error(String(response.status));
       const next = (await response.json()).session;
       if (next !== session) {
-        fields.name.value = "";
-        session = next;
-        ended = false;
-        last = "";
+        enter(next);
         poll(true);
       }
       waiter.dataset.called = "";
@@ -401,14 +404,23 @@ export const ORDER_SCRIPT = `(() => {
   bar.addEventListener("click", () => { error.textContent = ""; openSheet(); });
   $("order-cancel").addEventListener("click", closeSheet);
   $("order-scrim").addEventListener("click", closeSheet);
+  // The guest has been told: the cart is this session's now.
+  const keepCart = () => { for (const line of cart) line.from = session; };
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const name = fields.name.value.trim();
     if (cart.length === 0) return;
-    if (!name) return fail("Enter a name for the waiter.");
     fields.place.disabled = true;
     try {
       if (ended && !asked) await join();
+      // A retry goes to its own session, so it can't land in the next one.
+      if (!asked && cart.some((line) => line.from !== session)) {
+        keepCart();
+        poll(true);
+        return fail("This table's session has ended. Check your order and your name, then place it again if you're still at this table.");
+      }
+      // Read after joining, which may have cleared it.
+      const name = fields.name.value.trim();
+      if (!name) return fail("Enter a name for the waiter.");
       const retry = asked;
       asked = asked || session;
       const to = asked;
@@ -443,7 +455,10 @@ export const ORDER_SCRIPT = `(() => {
         return;
       }
       if (answer.code === "session_changed" || answer.code === "already_placed") request = null;
-      if (answer.code === "session_changed") await join().catch(() => {});
+      if (answer.code === "session_changed") {
+        await join().catch(() => {});
+        keepCart();
+      }
       if (answer.code === "unavailable") {
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
