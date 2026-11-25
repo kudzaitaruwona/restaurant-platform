@@ -762,6 +762,18 @@ const routes: TenantRoute[] = [
       ),
   },
   {
+    name: "POST /api/menu/items/[itemId]/move",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/move/route")).POST(
+        request(`/api/menu/items/${target.itemId}/move`, {
+          method: "POST",
+          body: form({ direction: "down" }),
+        }),
+        { params: Promise.resolve({ itemId: target.itemId }) },
+      ),
+  },
+  {
     name: "POST /api/menu/items/[itemId]/archive",
     ownerOnly: true,
     call: async (target) =>

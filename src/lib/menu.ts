@@ -105,7 +105,9 @@ const itemEdit = itemFields
       .string(messages.sortOrder)
       .trim()
       .regex(/^[0-9]{1,4}$/, messages.sortOrder)
-      .transform(Number),
+      .transform(Number)
+      // The editor moves items with Move up / Move down and no longer sends one.
+      .optional(),
   })
   .refine(hasAPrice, noPrice);
 
@@ -720,6 +722,69 @@ export async function updateMenuItem(
     if (errorCode(error) === CHECK_VIOLATION) return "no_price";
     throw error;
   }
+}
+
+/**
+ * Moves a live item one place up or down within its category, so staff never
+ * type a number. The category's live items are renumbered 0, 1, 2... in their
+ * shown order first, so ties and gaps don't stop a move; the first item can't
+ * go up nor the last down, and that is a quiet no-op, as for tables.
+ */
+export async function moveMenuItem(
+  ctx: Writer,
+  itemId: string,
+  direction: "up" | "down",
+): Promise<"saved" | "not_found"> {
+  if (!isId(itemId)) return "not_found";
+
+  const { restaurantId } = ctx;
+  const result = await withTenant(ctx, async (tx) => {
+    const [item] = await tx
+      .select({ categoryId: menuItems.categoryId })
+      .from(menuItems)
+      .where(liveItem(restaurantId, itemId));
+    if (!item) return "not_found";
+
+    const inCategory = and(
+      eq(menuItems.restaurantId, restaurantId),
+      eq(menuItems.categoryId, item.categoryId),
+      isNull(menuItems.archivedAt),
+    );
+    await tx
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(inCategory)
+      .orderBy(asc(menuItems.id))
+      .for("no key update");
+    const items = await tx
+      .select({ id: menuItems.id, sortOrder: menuItems.sortOrder })
+      .from(menuItems)
+      .where(inCategory)
+      .orderBy(asc(menuItems.sortOrder), asc(menuItems.name));
+    const from = items.findIndex(({ id }) => id === itemId);
+    if (from === -1) return "not_found";
+
+    const to = from + (direction === "up" ? -1 : 1);
+    const order = items.map(({ id }) => id);
+    if (to >= 0 && to < order.length) [order[from], order[to]] = [order[to], order[from]];
+
+    for (const [position, id] of order.entries()) {
+      if (items.find((other) => other.id === id)!.sortOrder === position) continue;
+      await tx
+        .update(menuItems)
+        .set({ sortOrder: position })
+        .where(and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.id, id)));
+    }
+    await recordAdminAction(tx, ctx, {
+      action: "menu_item.reorder",
+      entityType: "menu_item",
+      entityId: itemId,
+      details: { direction },
+    });
+    return "saved";
+  });
+  if (result === "saved") revalidateMenu(ctx);
+  return result;
 }
 
 /**

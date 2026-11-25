@@ -204,12 +204,16 @@ export async function TablesScreen() {
                     id={formId("archive")}
                     action={`/api/tables/${table.id}/archive`}
                     className={answerOnly}
-                    confirmation={
-                      `Archive table ${table.label}? Its printed QR code will stop working.` +
-                      (onlyBookableTable && table.bookable
-                        ? " It's the last table guests can book, so online booking will switch off."
-                        : "")
-                    }
+                    confirmation={{
+                      title: `Archive table ${table.label}?`,
+                      description:
+                        "Its printed QR code will stop working. Archiving can't be undone: an archived table can't be brought back." +
+                        (onlyBookableTable && table.bookable
+                          ? " It's the last table guests can book, so online booking will switch off."
+                          : ""),
+                      confirmLabel: "Archive table",
+                      cancelLabel: "Keep table",
+                    }}
                   >
                     {null}
                   </ActionForm>
@@ -217,7 +221,12 @@ export async function TablesScreen() {
                     id={formId("regenerate")}
                     action={`/api/tables/${table.id}/regenerate`}
                     className={answerOnly}
-                    confirmation={`The printed code on Table ${table.label} will stop working. Make a new one?`}
+                    confirmation={{
+                      title: `Make a new code for Table ${table.label}?`,
+                      description: `The printed code on Table ${table.label} will stop working.`,
+                      confirmLabel: "Make new code",
+                      cancelLabel: "Keep current code",
+                    }}
                     savedMessage={`New code made for Table ${table.label}. The old one has stopped working: reprint it from the print sheet.`}
                   >
                     {null}

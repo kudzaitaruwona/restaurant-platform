@@ -23,7 +23,11 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 - Fields: name, description, category, photo, price USD, price ZiG, available toggle, sort order.
 - **Next to the ZiG field, show the live computed value** ("Calculated: ZiG 210 at rate 26.2") so staff can see what they'd get if they leave it blank.
 - **Available toggle on the item list itself**, one tap, for "we've run out tonight." This is the action staff use most.
-- Archive instead of delete.
+- Archive instead of delete. There is no restore in v1 *(proposed, S-44)*: the confirmation says "Archiving can't be undone" and its red button reads "Archive item" (a category's reads "Archive category").
+- **Order is moved, not typed** *(proposed, S-44)*. The item's editor has Move up and Move down, which swap it with its neighbour in the same category. A move renumbers the category's live items 0, 1, 2... so ties and gaps never matter. There is no sort number field.
+- **Finding an item** *(proposed, S-44)*. Above the list, for owners and staff: a search box that narrows every category to the items whose name matches (any case), a row of links that jump to each category, and Collapse all / Expand all, plus a fold on each category. On a phone this is how staff reach one dish to mark it sold out. The page still works as plain links without JavaScript.
+- **Add item keeps the category** *(proposed, S-44)*. After an add, the form clears but the category stays as chosen, so a run of dishes for one category is not re-picked each time.
+- **"See what customers see"** opens the public menu in a new tab *(proposed, S-44)*, so the dashboard is still open behind it.
 
 ### Import from CSV *(proposed, S-43)*
 - Owners, and the platform admin inside a restaurant, can add many items at once from a CSV: columns `category`, `name`, `description`, `price_usd`, `price_zig` and `available` (yes or no, blank is yes). A template is downloadable from the import dialog.
@@ -54,7 +58,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 
 ### Specials
 - Create a promotion by picking an item, then optionally setting a special price and a badge title, a start date, and an end date. A special needs a badge, a price, or both *(proposed)*.
-- **Dates, not times** *(proposed)*. A start date opens the special at 00:00 that day in `restaurants.timezone`. An end date is included: the special runs to the end of that day, so it closes at 00:00 the day after. A blank start means it is on from the moment it is saved, and a blank end means it stays on until turned off. A blank start with an end date already past is refused, because that leaves no window. See spec 00 for the stored form.
+- **Dates, not times** *(proposed)*. Dates in the Specials list stay in ISO form ("2026-11-30"), as typed in the date field *(proposed, S-44)*. A start date opens the special at 00:00 that day in `restaurants.timezone`. An end date is included: the special runs to the end of that day, so it closes at 00:00 the day after. A blank start means it is on from the moment it is saved, and a blank end means it stays on until turned off. A blank start with an end date already past is refused, because that leaves no window. See spec 00 for the stored form.
 - A special can be priced in USD, in ZiG, or both. A price in one currency discounts both (spec 00, special price precedence).
 - **No edit or delete in v1** *(proposed)*. A special is added, and turned on or off. To change its dates or price, turn it off and add another. Bundles inherit this.
 - Create a bundle in one form: it creates a `special_only` item and its special at the same time, in one transaction *(proposed)*: if the special is refused, no item is left behind. The form takes the same rules a promotion does for dates (blank start is the moment of saving, an end date already past is refused with 400). Bundle rules *(proposed)*:
