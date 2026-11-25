@@ -10,6 +10,7 @@ import { POST as editItem } from "@/app/api/menu/items/[itemId]/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as addSpecial } from "@/app/api/menu/specials/route";
 import { categories, exchangeRates, menuItems, restaurants, specials, staff } from "@/db/schema";
+import { FORM_FETCH_HEADER } from "@/lib/form-response";
 import type { TenantContext } from "@/lib/tenant";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../../test/integration/database";
 import { MenuScreen } from "./menu-screen";
@@ -64,10 +65,14 @@ beforeEach(async () => {
   session.tenant = tenant;
 });
 
-const post = (path: string, fields: Record<string, string> = {}) => {
+const post = (path: string, fields: Record<string, string> = {}, plain = false) => {
   const body = new FormData();
   for (const [key, value] of Object.entries(fields)) body.set(key, value);
-  return new NextRequest(new URL(path, "http://localhost:3000"), { method: "POST", body });
+  return new NextRequest(new URL(path, "http://localhost:3000"), {
+    method: "POST",
+    headers: plain ? {} : { [FORM_FETCH_HEADER]: "1" }, // as ActionForm's fetch sends it
+    body,
+  });
 };
 const yes = { confirmed: "1" };
 
@@ -149,9 +154,9 @@ describe("a special above the normal price", () => {
     // Typing both prices, or a USD price low enough for both, is fine.
     expect(
       (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "9", priceZig: "180" }))).status,
-    ).toBe(303);
+    ).toBe(204);
     await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
-    expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "7.60" }))).status).toBe(303);
+    expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "7.60" }))).status).toBe(204);
   });
 
   it("is refused when a ZiG special's calculated USD price is above the fixed one", async () => {
@@ -181,7 +186,7 @@ describe("a special above the normal price", () => {
       { menuItemId: usdOnly, priceZig: "210" },
       { menuItemId: usdOnly, priceZig: "200" },
     ] as Record<string, string>[]) {
-      expect((await addSpecial(post("/api/menu/specials", fields))).status).toBe(303);
+      expect((await addSpecial(post("/api/menu/specials", fields))).status).toBe(204);
       await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
     }
     // Above the calculated normal price is still above.
@@ -211,18 +216,18 @@ describe("a special above the normal price", () => {
     const itemId = await newItem(await newCategory(), "Burger", "19.50");
 
     for (const fields of [{ priceUsd: "15" }, { title: "Chef's pick" }] as Record<string, string>[]) {
-      expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, ...fields }))).status).toBe(303);
+      expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, ...fields }))).status).toBe(204);
       await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
     }
     expect(
       (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "19.50" }))).status,
-    ).toBe(303);
+    ).toBe(204);
   });
 
   it("is not compared against a calculated price before any rate is set", async () => {
     const itemId = await newItem(await newCategory(), "Burger", "10");
     const response = await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceZig: "99999" }));
-    expect(response.status).toBe(303);
+    expect(response.status).toBe(204);
   });
 
   it("shows the item's normal price beside the picker, and tells equal names apart (the first item, Bar before Drinks)", async () => {
@@ -256,7 +261,7 @@ describe("a zero price", () => {
     expect(warnings).toEqual(["The USD price is 0, so this item would be free."]);
     expect(await itemNames()).toEqual([]);
 
-    expect((await addItem(post("/api/menu/items", { ...item(categoryId), ...yes }))).status).toBe(303);
+    expect((await addItem(post("/api/menu/items", { ...item(categoryId), ...yes }))).status).toBe(204);
     expect(await itemNames()).toEqual(["Water"]);
   });
 
@@ -283,10 +288,10 @@ describe("a zero price", () => {
     await asked(await editItem(post(`/api/menu/items/${paid}`, edit("Tea", "0")), itemParams(paid)));
     expect(
       (await editItem(post(`/api/menu/items/${free}`, edit("Bread", "0")), itemParams(free))).status,
-    ).toBe(303);
+    ).toBe(204);
     expect(
       (await editItem(post(`/api/menu/items/${paid}`, { ...edit("Tea", "0"), ...yes }), itemParams(paid))).status,
-    ).toBe(303);
+    ).toBe(204);
   });
 
   it("asks before adding a free special or a free bundle", async () => {
@@ -298,7 +303,7 @@ describe("a zero price", () => {
     expect(await specialsOf()).toEqual([]);
     expect(
       (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "0", ...yes }))).status,
-    ).toBe(303);
+    ).toBe(204);
 
     const bundle = {
       name: "Combo",
@@ -307,7 +312,35 @@ describe("a zero price", () => {
       categoryId,
     };
     await asked(await addBundle(post("/api/menu/bundles", bundle)));
-    expect((await addBundle(post("/api/menu/bundles", { ...bundle, ...yes }))).status).toBe(303);
+    expect((await addBundle(post("/api/menu/bundles", { ...bundle, ...yes }))).status).toBe(204);
+  });
+});
+
+describe("a warning without JavaScript (#130)", () => {
+  it("is a page that confirms, for a plain post, and saves nothing until then", async () => {
+    const categoryId = await newCategory();
+    const fields = { name: "Water", description: "", priceUsd: "0", categoryId };
+
+    const answer = await addItem(post("/api/menu/items", fields, true));
+    expect(answer.status).toBe(409);
+    expect(answer.headers.get("content-type")).toContain("text/html");
+    const page = await answer.text();
+    expect(page).toContain("The USD price is 0, so this item would be free.");
+    expect(page).toContain('action="/api/menu/items"');
+    expect(page).toContain(`name="categoryId" value="${categoryId}"`);
+    expect(page).toContain('name="confirmed" value="1"');
+    expect(await itemNames()).toEqual([]);
+
+    // The page's button posts those fields plus confirmed=1, as a plain form.
+    expect((await addItem(post("/api/menu/items", { ...fields, ...yes }, true))).status).toBe(303);
+    expect(await itemNames()).toEqual(["Water"]);
+  });
+
+  it("covers an exchange rate jump the same way", async () => {
+    await setRateTo("26.2");
+    const answer = await setRate(post("/api/menu/exchange-rate", { usdToZig: "2620" }, true));
+    expect(answer.status).toBe(409);
+    expect(await answer.text()).toContain("This changes the rate from 26.2 to 2620");
   });
 });
 
@@ -326,7 +359,7 @@ describe("a big change of exchange rate", () => {
     ]);
     expect(await rates()).toEqual(["26.2"]);
 
-    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "2620", ...yes }))).status).toBe(303);
+    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "2620", ...yes }))).status).toBe(204);
     expect((await rates()).sort()).toEqual(["26.2", "2620"]);
   });
 
@@ -336,8 +369,8 @@ describe("a big change of exchange rate", () => {
   });
 
   it("lets an ordinary change and the first rate through", async () => {
-    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }))).status).toBe(303);
-    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "28" }))).status).toBe(303);
+    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "26.2" }))).status).toBe(204);
+    expect((await setRate(post("/api/menu/exchange-rate", { usdToZig: "28" }))).status).toBe(204);
     expect(await rates()).toHaveLength(2);
   });
 });
@@ -353,7 +386,7 @@ describe("duplicate names", () => {
     expect(warnings).toEqual([`Mains already has an item called "Beef Stew". Two with one name are hard to tell apart.`]);
     expect(await itemNames()).toEqual(["Beef Stew"]);
 
-    expect((await addItem(post("/api/menu/items", { ...fields(categoryId, "beef stew"), ...yes }))).status).toBe(303);
+    expect((await addItem(post("/api/menu/items", { ...fields(categoryId, "beef stew"), ...yes }))).status).toBe(204);
     expect(await itemNames()).toHaveLength(2);
   });
 
@@ -364,8 +397,8 @@ describe("duplicate names", () => {
     const gone = await newItem(sides, "Rice", "2");
     await owner.db.update(menuItems).set({ archivedAt: new Date() }).where(eq(menuItems.id, gone));
 
-    expect((await addItem(post("/api/menu/items", fields(sides, "Chips")))).status).toBe(303);
-    expect((await addItem(post("/api/menu/items", fields(sides, "Rice")))).status).toBe(303);
+    expect((await addItem(post("/api/menu/items", fields(sides, "Chips")))).status).toBe(204);
+    expect((await addItem(post("/api/menu/items", fields(sides, "Rice")))).status).toBe(204);
   });
 
   it("asks when an edit renames onto, or moves onto, a name, and not when it only keeps its own", async () => {
@@ -377,10 +410,10 @@ describe("duplicate names", () => {
 
     await asked(await editItem(post(`/api/menu/items/${rice}`, edit(mains, "chips")), itemParams(rice)));
     // Moving Chips-named rice into Sides is fine: Sides has no Chips.
-    expect((await editItem(post(`/api/menu/items/${rice}`, edit(sides, "Rice")), itemParams(rice))).status).toBe(303);
+    expect((await editItem(post(`/api/menu/items/${rice}`, edit(sides, "Rice")), itemParams(rice))).status).toBe(204);
     // Saving it as it is asks nothing, even with a twin made since.
     await newItem(sides, "Rice", "3");
-    expect((await editItem(post(`/api/menu/items/${rice}`, edit(sides, "Rice")), itemParams(rice))).status).toBe(303);
+    expect((await editItem(post(`/api/menu/items/${rice}`, edit(sides, "Rice")), itemParams(rice))).status).toBe(204);
   });
 
   it("asks before a duplicate bundle", async () => {
@@ -396,12 +429,12 @@ describe("duplicate names", () => {
     // Changing only its own case is not a duplicate of itself.
     expect(
       (await renameCategory(post(`/api/menu/categories/${mains}`, { name: "MAINS" }), categoryParams(mains))).status,
-    ).toBe(303);
+    ).toBe(204);
 
     await asked(await renameCategory(post(`/api/menu/categories/${drinks}`, { name: "mains" }), categoryParams(drinks)));
 
     const added = await asked(await addCategory(post("/api/menu/categories", { name: "mains" })));
     expect(added).toEqual([`There is already a category called "MAINS". Two with one name are hard to tell apart.`]);
-    expect((await addCategory(post("/api/menu/categories", { name: "mains", ...yes }))).status).toBe(303);
+    expect((await addCategory(post("/api/menu/categories", { name: "mains", ...yes }))).status).toBe(204);
   });
 });

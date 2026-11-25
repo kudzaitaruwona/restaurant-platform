@@ -347,7 +347,9 @@ describe("saving rules that ask first (#109)", () => {
   };
 
   it("answers 409 with the warning and saves nothing, then saves once confirmed", async () => {
-    const asked = await saveRules(post("/api/bookings/settings", rules));
+    const asked = await saveRules(
+      post("/api/bookings/settings", rules, { "x-form-fetch": "1" }),
+    );
 
     expect(asked.status).toBe(409);
     const body = await asked.json();
