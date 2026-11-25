@@ -7,11 +7,13 @@ import {
   boardColumns,
   FLASH_MS,
   cardMenuActions,
+  freshAnswers,
   isMove,
   sameSpotGuard,
   SAME_SPOT_HOLD_MS,
   SAME_SPOT_MS,
   itemsOfOrder,
+  MOVE_TIMEOUT_MS,
   nextStatus,
   previousStatus,
   sendMove,
@@ -82,6 +84,13 @@ describe("ageing (proposed: amber at 15 minutes, red at 25, from ordering)", () 
     expect(ageOf(item(), at(minutes)).level).toBe(level);
   });
 
+  it("reads ninety-five minutes as hours and minutes, not \"95 min ago\" (#101)", () => {
+    expect(ageOf(item(), at(59.9)).label).toBe("59 min ago");
+    expect(ageOf(item(), at(60)).label).toBe("1 h ago");
+    expect(ageOf(item(), at(95)).label).toBe("1 h 35 min ago");
+    expect(ageOf(item(), at(180)).label).toBe("3 h ago");
+  });
+
   it("runs from ordering for a cooking item, however recently it started cooking", () => {
     const cooking = item({ status: "cooking", statusChangedAt: at(20).toISOString() });
     expect(ageOf(cooking, at(26)).level).toBe("red");
@@ -116,6 +125,25 @@ describe("applying a poll's changes", () => {
     expect(result.board.get("moved")?.status).toBe("cooking");
     expect(result.arrived).toEqual(["new"]);
     expect(board.get("moved")?.status).toBe("placed");
+  });
+
+  it("ignores a change older than what the board holds, so a late answer can't undo a newer state (#101)", () => {
+    const newer = item({ id: "a", status: "done", statusChangedAt: "2026-11-11T10:05:00.000Z" });
+    const older = { ...newer, status: "cooking" as const, statusChangedAt: "2026-11-11T10:02:00.000Z" };
+    const { board } = applyChanges(new Map([[newer.id, newer]]), [older]);
+    expect(board.get("a")?.status).toBe("done");
+    // The same moment is as new as the board: a refused move shows where the item is.
+    expect(applyChanges(board, [{ ...newer, status: "cooking" }]).board.get("a")?.status).toBe("cooking");
+  });
+
+  it("takes an answer only for an item the board still holds and hasn't moved past (#101)", () => {
+    const held = item({ id: "a", status: "cooking", statusChangedAt: "2026-11-11T10:05:00.000Z" });
+    const board = new Map([[held.id, held]]);
+    const gone = item({ id: "gone", status: "done" });
+    const stale = { ...held, status: "placed" as const, statusChangedAt: "2026-11-11T10:01:00.000Z" };
+    const fresh = { ...held, status: "done" as const, statusChangedAt: "2026-11-11T10:06:00.000Z" };
+    expect(freshAnswers(board, [gone, stale])).toEqual([]);
+    expect(freshAnswers(board, [fresh])).toEqual([fresh]);
   });
 
   it("doesn't count an item seen before as arriving again", () => {
@@ -306,6 +334,133 @@ describe("a void's reason", () => {
 
   it("refuses a file", () => {
     expect(voidReasonFrom(new File(["x"], "x.txt"))).toBeNull();
+  });
+});
+
+describe("a move that hangs (#101)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** A fetch that never answers, until `answer` is called; it honours its signal as fetch does. */
+  const hung = () => {
+    let answer: (response: Response) => void = () => {};
+    const signals: AbortSignal[] = [];
+    const fetch = (_url: string, init: { signal?: AbortSignal }) =>
+      new Promise<Response>((resolve, reject) => {
+        answer = resolve;
+        if (init.signal) {
+          signals.push(init.signal);
+          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }
+      });
+    return { fetch, answer: (r: Response) => answer(r), signals };
+  };
+  const deps = (fetch: ReturnType<typeof hung>["fetch"]) => {
+    const applied: BoardItem[][] = [];
+    const said: (string | undefined)[] = [];
+    const poller = { refreshes: 0, refresh() { this.refreshes += 1; } };
+    return {
+      deps: {
+        fetch,
+        apply: (items: BoardItem[]) => void applied.push(items),
+        say: (m: string | undefined) => void said.push(m),
+        poller,
+      },
+      applied,
+      said,
+      poller,
+    };
+  };
+
+  it("gives up before the same-spot hold lapses, so the row is back before the guard's cap", () => {
+    expect(MOVE_TIMEOUT_MS).toBeGreaterThan(4_000); // a poll's own limit
+    expect(MOVE_TIMEOUT_MS).toBeLessThan(SAME_SPOT_HOLD_MS);
+  });
+
+  it("times out, says so, applies nothing and refreshes the board to find where the item really is", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, applied, said, poller } = deps(server.fetch);
+    const done = sendMove(item(), "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS - 1);
+    expect(said.at(-1)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(server.signals[0].aborted).toBe(true);
+    expect(said.at(-1)).toMatch(/too long/);
+    expect(said.at(-1)).toMatch(/check the board/i);
+    expect(applied).toEqual([]);
+    expect(poller.refreshes).toBe(1);
+  });
+
+  it("drops a late answer: nothing is applied after the timeout", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, applied } = deps(server.fetch);
+    const card = item({ id: "item-1" });
+    const done = sendMove(card, "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    server.answer(new Response(JSON.stringify({ item: { ...card, status: "cooking" } }), { status: 200 }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(applied).toEqual([]);
+  });
+
+  it("times out an answer whose body never finishes, too", async () => {
+    vi.useFakeTimers();
+    const stuck = (_url: string, init: { signal?: AbortSignal }) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          new Promise((_resolve, reject) =>
+            init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+          ),
+      } as unknown as Response);
+    const { deps: d, said } = deps(stuck);
+    const done = sendMove(item(), "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    expect(said.at(-1)).toMatch(/too long/);
+  });
+
+  it("doesn't time out a move that is answered, and stops its clock", async () => {
+    vi.useFakeTimers();
+    const card = item({ id: "item-1" });
+    const moved = { ...card, status: "cooking" as const };
+    const { deps: d, applied, said, poller } = deps(() =>
+      Promise.resolve(new Response(JSON.stringify({ item: moved }), { status: 200 })),
+    );
+    await sendMove(card, "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS * 2);
+    expect(applied).toEqual([[moved]]);
+    expect(said.at(-1)).toBeUndefined();
+    expect(poller.refreshes).toBe(0);
+  });
+
+  it("keeps #100's guard: the spot is released when the move gives up, then held for the moment after", async () => {
+    vi.useFakeTimers();
+    const guard = sameSpotGuard();
+    const tap = (itemId: string, at: number) => ({ itemId, x: 300, y: 200, at, fromPointer: true });
+    const server = hung();
+    const { deps: d } = deps(server.fetch);
+    const first = item({ id: "a" });
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    const done = sendMove(first, "cooking", d).finally(() => guard.settled("a", MOVE_TIMEOUT_MS));
+    expect(guard.allow(tap("b", 3_000))).toBe(false); // in flight
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    expect(guard.allow(tap("b", MOVE_TIMEOUT_MS + 100))).toBe(false); // the moment after
+    expect(guard.allow(tap("b", MOVE_TIMEOUT_MS + SAME_SPOT_MS + 200))).toBe(true);
+  });
+
+  it("times out a void or reject too, says so and leaves the form to try again", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, said, poller } = deps(server.fetch);
+    const done = sendVoid(item(), "Dropped it", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    expect(await done).toBe(false);
+    expect(said.at(-1)).toMatch(/too long/);
+    expect(poller.refreshes).toBe(1);
   });
 });
 
