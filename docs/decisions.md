@@ -235,6 +235,13 @@ Spec 04's abuse controls (ticket #33), with the calls the spec left open. Detail
 - **Per-phone limit:** a trigger with an advisory lock, because counting then inserting is a race.
 - **Bot check:** fails closed in production and preview deployments with no secret; fails open in every environment only when the guest has a token and siteverify can't answer. A full Cloudflare outage still stops online bookings: the widget loads from the same host, so there is no token and the guest gets a 403.
 
+### Dependency advisories (#120) — **proposed, not yet confirmed by Kudzai**
+`npm audit --omit=dev` on 2026-11-26 listed advisories for next 16.0.0–16.4.4, esbuild (through drizzle-kit) and minimatch (through shadcn).
+- **next:** upgraded to 16.4.6, the smallest release outside the range (16.4.5 and 16.4.6 are the only later stable releases), with `eslint-config-next` kept equal and both pinned exactly, as before. No longer listed.
+- **esbuild <=0.24.2 (GHSA-67mh-4wv8-2f99), through drizzle-kit:** left. It is the copy of esbuild 0.18.20 that drizzle-kit 0.31.11 loads through `@esbuild-kit/esm-loader`; drizzle-kit's own esbuild is 0.25.12, outside the range. The advisory concerns esbuild's `serve` dev server answering any website's requests. Nothing here calls `serve`: drizzle-kit uses the loader only to read the schema file when `npm run db:generate` runs, on a developer's machine. It is a dev dependency, never in the deployed app, and migrations in CI and production run through `tsx scripts/migrate.mts`. Reachable in production: no. In dev: no, since no esbuild server runs. The only fix npm offers is drizzle-kit 0.18.1, a downgrade of 13 minor versions, so it is not taken. Revisit when drizzle-kit drops `@esbuild-kit` (the 1.0 beta line).
+- **minimatch 7.0.0–11.0.0 (GHSA-g3hv-75wg-m249), through shadcn:** left. It is minimatch 10.2.6 under ts-morph 26, which the shadcn CLI uses to read and edit project files when `npx shadcn add` runs. The advisory is a denial of service from a crafted glob pattern; the patterns come from the CLI and the project's own files, not from users. `shadcn` sits in `dependencies`, but the app imports only its CSS (`globals.css`), so the CLI's code never runs in the deployed app. shadcn 4.23.0 is the latest release and still depends on it, and the only fix npm offers is shadcn 1.0.0, a downgrade. Revisit when shadcn updates ts-morph.
+- **No `npm audit fix --force`:** both forced fixes are downgrades. Re-run the audit when either upstream releases a fix.
+
 ## Open
 
 ### D-01: Fake remote QR orders — **resolved 2026-11-11, see S-36**
