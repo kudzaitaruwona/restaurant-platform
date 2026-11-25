@@ -36,7 +36,8 @@ afterAll(() => vi.unstubAllEnvs());
 /** One restaurant's card, from its way in to the next restaurant's. */
 const cardIn = (html: string, restaurantId: string) => {
   const start = html.indexOf(`${restaurantId}/enter`);
-  const next = html.indexOf("/enter\"", start + restaurantId.length + 7);
+  // The next card's own way in, not one of this card's checklist links.
+  const next = html.indexOf("/enter\" method=\"post\"><button", start + restaurantId.length + 7);
   return html.slice(start, next < 0 ? undefined : next);
 };
 
@@ -58,7 +59,43 @@ describe("the admin screen", () => {
     const html = await render();
     expect(html).toContain('name="slug"');
     expect(html).toContain('value="Africa/Harare"');
-    expect(html).toContain('value="zig_primary"');
+    expect(html).toContain('value="usd_primary"');
+  });
+
+  it("offers the same defaults as the CSV: USD first with ZiG too, and a timezone to pick from a list", async () => {
+    const html = await render();
+    expect(html).toMatch(/<option value="usd_primary" selected="">/);
+    expect(html).toMatch(/<select[^>]*name="timezone"/);
+    expect(html).toMatch(/<option value="Africa\/Harare" selected="">/);
+    expect(html).toContain('<option value="Europe/London">');
+    expect(html).not.toMatch(/<input[^>]*name="timezone"/);
+    expect(html).toContain("Public address");
+    expect(html).toContain("blank is usd_primary");
+  });
+
+  it("can be searched and collapsed: closed to start, with every card's details still in the page", async () => {
+    const html = await render();
+    expect(html).toContain("Search restaurants");
+    expect(html).toContain('type="search"');
+    expect(html).toContain("Expand all");
+    expect(html.match(/aria-expanded="false"/g)!.length).toBeGreaterThanOrEqual(devRestaurants.length);
+    const card = cardIn(html, devRestaurants[0].id);
+    expect(card).toMatch(/<div hidden="" id="restaurant-/);
+    expect(html).toContain("of 7 set up");
+  });
+
+  it("links each checklist item to its page, entering the restaurant on the way", async () => {
+    const card = cardIn(await render(), devRestaurants[0].id);
+    for (const [href, label] of [
+      ["/dashboard/menu", "Open Menu"],
+      ["/dashboard/tables", "Open Tables"],
+      ["/dashboard/bookings/settings", "Open Booking settings"],
+    ]) {
+      expect(card).toContain(`<input type="hidden" name="next" value="${href}"/>`);
+      expect(card).toContain(label);
+    }
+    // Seven items, seven links.
+    expect(card.match(/name="next"/g)).toHaveLength(7);
   });
 
   it("offers to enter every restaurant, as a plain post that can redirect", async () => {
@@ -228,6 +265,28 @@ describe("the admin screen", () => {
       expect(card).toContain(`<input type="hidden" name="staffId" value="${staffId}"/>`);
     });
 
+    it("says Send invite, not again, for an owner who was never invited, and says why", async () => {
+      const { restaurantId } = await withOwner({});
+
+      const card = cardIn(await render(), restaurantId);
+
+      expect(card).toContain("Not invited yet");
+      expect(card).toContain(">Send invite<");
+      expect(card).not.toContain("Send invite again");
+      expect(card).toContain("They haven&#x27;t been invited yet");
+      expect(card).not.toContain("They get an invite by email");
+    });
+
+    it("says an invite went by email once it has, and that it didn't once it failed", async () => {
+      const sent = await withOwner({ invite: { sentAt: new Date(), delivered: true } });
+      expect(cardIn(await render(), sent.restaurantId)).toContain("They get an invite by email");
+
+      const failed = await withOwner({ invite: { sentAt: new Date(), delivered: false } });
+      const card = cardIn(await render(), failed.restaurantId);
+      expect(card).toContain("Send invite again");
+      expect(card).toContain("The invite email didn&#x27;t go. Send it again above");
+    });
+
     it("says when the invite didn't go", async () => {
       const { restaurantId } = await withOwner({
         invite: { sentAt: new Date(), delivered: false },
@@ -242,6 +301,7 @@ describe("the admin screen", () => {
 
       expect(card).toContain("Joined 12 Nov");
       expect(card).not.toContain("Send invite");
+      expect(card).not.toContain("WhatsApp");
       expect(card).not.toContain(`${restaurantId}/invite`);
     });
 

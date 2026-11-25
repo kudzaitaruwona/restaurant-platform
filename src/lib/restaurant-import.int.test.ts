@@ -68,9 +68,9 @@ describe("previewRestaurantsImport", () => {
 
     expect(preview.rows.map((row) => row.problems)).toEqual([
       [],
-      ["Add a slug: one can't be made from this name."],
-      [`The slug ${existing.slug} is already in use.`],
-      [`The slug kitchen-${id} is already in this file, on line 2.`],
+      ["Add a public address (slug): one can't be made from this name."],
+      [`The public address ${existing.slug} is already in use.`],
+      [`The public address kitchen-${id} is already in this file, on line 2.`],
       ["Enter a timezone like Africa/Harare."],
       ["Choose a currency mode."],
       ["Enter an email address."],
@@ -88,7 +88,7 @@ describe("previewRestaurantsImport", () => {
     expect(preview.rows[0]).toMatchObject({
       problems: [],
       notes: [
-        `The slug will be mama-s-cafe-${id}.`,
+        `The public address will be mamas-cafe-${id}.`,
         "No timezone given, so Africa/Harare.",
         "No currency mode given, so usd_primary.",
       ],
@@ -200,6 +200,6 @@ describe("importRestaurants", () => {
     );
 
     expect(result.imported).toBe(1);
-    expect(result.rows[0].problems).toEqual([`The slug race-${id} is already in use.`]);
+    expect(result.rows[0].problems).toEqual([`The public address race-${id} is already in use.`]);
   });
 });

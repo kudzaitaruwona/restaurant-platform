@@ -4,6 +4,7 @@ import { devAuthBypassEnabled } from "@/lib/env";
 import { DevSwitcher } from "../dashboard/dev-switcher";
 import { SignOutButton } from "../dashboard/sign-out-button";
 import { AdminConsole } from "./admin-console";
+import { AdminEntryBanner } from "./admin-entry-banner";
 
 /**
  * The account controls are built for the staff rail; here they sit at the top
@@ -15,6 +16,9 @@ const accountSlot =
 export default function AdminPage() {
   return (
     <div className="flex w-full flex-1 flex-col bg-page">
+      <Suspense>
+        <AdminEntryBanner />
+      </Suspense>
       <header className="border-b border-line bg-surface">
         <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-4 md:px-8">
           <div className="flex min-w-0 items-center gap-3">

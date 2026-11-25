@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { newRestaurant, unknownTimezone } from "@/lib/new-restaurant";
+import { addressTaken, newRestaurant, unknownTimezone } from "@/lib/new-restaurant";
 import {
   createRestaurant,
   getPlatformAdminContext,
@@ -13,17 +13,16 @@ export async function POST(request: NextRequest) {
     Object.fromEntries(await request.formData()),
   );
   if (!input.success) {
-    return Response.json(
-      { error: input.error.issues[0].message },
-      { status: 400 },
-    );
+    const [issue] = input.error.issues;
+    // `field` lets the form put the message under the field that caused it.
+    return Response.json({ error: issue.message, field: issue.path[0] }, { status: 400 });
   }
 
   const result = await createRestaurant(admin, input.data);
   if ("problem" in result) {
     return result.problem === "slug_taken"
-      ? Response.json({ error: "That slug is already in use." }, { status: 409 })
-      : Response.json({ error: unknownTimezone }, { status: 400 });
+      ? Response.json({ error: addressTaken(), field: "slug" }, { status: 409 })
+      : Response.json({ error: unknownTimezone, field: "timezone" }, { status: 400 });
   }
 
   return Response.json({ id: result.id }, { status: 201 });

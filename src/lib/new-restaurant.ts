@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { currencyMode } from "@/db/schema";
 import { isTimeZone } from "@/lib/restaurant-settings";
-import { DEFAULT_TIMEZONE } from "@/lib/tenant/platform-admin";
+import { type CurrencyMode, DEFAULT_TIMEZONE } from "@/lib/tenant/platform-admin";
 
 /**
  * The rules for a new restaurant and its first owner (spec 01), shared by
@@ -10,19 +10,31 @@ import { DEFAULT_TIMEZONE } from "@/lib/tenant/platform-admin";
  * can't take different input.
  */
 
+/** A new restaurant with no currency chosen: USD with ZiG beneath it, spec 02's example. */
+export const DEFAULT_CURRENCY_MODE: CurrencyMode = "usd_primary";
+
+/**
+ * The timezones the New restaurant sheet offers, as a list instead of free
+ * text: every one the runtime knows, with the default among them.
+ */
+export function timezoneChoices() {
+  const known = Intl.supportedValuesOf("timeZone").filter(isTimeZone);
+  return [...new Set([DEFAULT_TIMEZONE, ...known])].sort();
+}
+
 export const unknownTimezone = "Enter a timezone like Africa/Harare.";
 
 export const newRestaurant = z.object({
   name: z.string("Enter a name.").trim().min(1, "Enter a name.").max(200, "That name is too long."),
-  // A public URL segment: /r/{slug}.
+  // A public URL segment, /r/{slug}, called the public address on screen.
   slug: z
-    .string("Enter a slug.")
+    .string("Enter a public address.")
     .trim()
     .toLowerCase()
-    .max(63, "That slug is too long.")
+    .max(63, "That public address is too long.")
     .regex(
       /^[a-z0-9]+(-[a-z0-9]+)*$/,
-      "A slug is lowercase letters and numbers, separated by single hyphens.",
+      "A public address is lowercase letters and numbers, separated by single hyphens.",
     ),
   timezone: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -34,6 +46,10 @@ export const newRestaurant = z.object({
   ),
   currencyMode: z.enum(currencyMode.enumValues, "Choose a currency mode."),
 });
+
+/** The wording for a public address already taken, for the form and the import alike. */
+export const addressTaken = (slug?: string) =>
+  slug ? `The public address ${slug} is already in use.` : "That public address is already in use.";
 
 export const newOwner = z.object({
   // Lowercased because sign-in matches on it and the unique index is exact.

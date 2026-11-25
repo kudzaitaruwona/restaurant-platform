@@ -16,6 +16,8 @@ import {
 } from "../../../test/integration/database";
 import { installFakeServices } from "../../../test/integration/fake-services";
 import { statusOf } from "../../../test/integration/http";
+import { AdminEntryBanner } from "../admin/admin-entry-banner";
+import AdminPage from "../admin/page";
 import { ActingAsAdminBanner } from "./acting-as-admin-banner";
 import { Dashboard } from "./dashboard";
 import DashboardLayout from "./layout";
@@ -121,6 +123,40 @@ describe("the banner", () => {
     expect(await statusOf(() => ActingAsAdminBanner())).toBe(401);
   });
 });
+
+describe("the banner on /admin", () => {
+  const adminBanner = async () => {
+    const element = await AdminEntryBanner();
+    return element ? renderToStaticMarkup(element) : "";
+  };
+
+  it("says which restaurant the admin is inside, with Leave", async () => {
+    browser.cookie = adminCookie;
+    const html = await adminBanner();
+    expect(html).toContain(renderToStaticMarkup(<>Acting as admin in {restaurantName}</>));
+    expect(html).toContain('action="/api/admin/leave"');
+    expect(html).toContain("Leave restaurant");
+    expect(html).toContain('href="/dashboard"');
+  });
+
+  it("is mounted on the admin page, above the header", () => {
+    const elements = elementsOf(AdminPage());
+    const types = elements.map(({ type }) => type);
+    expect(types).toContain(AdminEntryBanner);
+    expect(types.indexOf(AdminEntryBanner)).toBeLessThan(types.indexOf("header"));
+  });
+
+  it("is a refusal for restaurant staff, who have no business on /admin", async () => {
+    browser.cookie = staffCookie;
+    expect(await statusOf(() => AdminEntryBanner())).toBe(403);
+  });
+});
+
+/** Every element under `node`, so a wrapper added later doesn't fail a test. */
+const elementsOf = (node: ReactNode): ReactElement<{ children?: ReactNode }>[] =>
+  Children.toArray(node)
+    .filter((child) => isValidElement<{ children?: ReactNode }>(child))
+    .flatMap((child) => [child, ...elementsOf(child.props.children)]);
 
 describe("the dashboard layout", () => {
   /** Every element under `node`, so a wrapper added later doesn't fail this. */

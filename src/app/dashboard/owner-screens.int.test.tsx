@@ -1857,6 +1857,31 @@ describe("/dashboard/staff", () => {
     expect(html).toContain(`/api/staff/${tenant.staffId}/role`);
   });
 
+  it("offers Staff as the role by default, once the restaurant has an owner", async () => {
+    const html = await screen(StaffScreen);
+
+    expect(html).toContain('<option value="staff" selected="">Staff</option>');
+    expect(html).not.toContain("no owner yet");
+  });
+
+  it("offers Owner as the role by default to a restaurant with no owner, which refuses staff first", async () => {
+    // An admin inside an ownerless restaurant: no one on the team, only the shadow row.
+    const restaurantId = crypto.randomUUID();
+    await owner.db.insert(restaurants).values({
+      id: restaurantId,
+      name: "Ownerless",
+      slug: `ownerless-${restaurantId}`,
+      menuToken: restaurantId,
+      currencyMode: "usd_only",
+    });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "owner" };
+
+    const html = await screen(StaffScreen);
+
+    expect(html).toContain('<option value="owner" selected="">Owner</option>');
+    expect(html).toContain("no owner yet, so the first person added is its owner");
+  });
+
   it("asks before changing anyone's role, and warns you when it's your own", async () => {
     await addStaff(post("/api/staff", newPerson("staff")));
 

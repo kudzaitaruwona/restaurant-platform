@@ -28,11 +28,17 @@ const curve = "cubic-bezier(0.23, 1, 0.32, 1)";
  */
 export function NewRestaurantSheet({
   timezone,
+  timezones,
   currencyModes,
+  currencyMode,
   appUrl,
 }: {
   timezone: string;
+  /** Every timezone to choose from, `timezone` among them. */
+  timezones: string[];
   currencyModes: { value: string; label: string }[];
+  /** The one preselected, the same default the CSV import uses. */
+  currencyMode: string;
   appUrl: string;
 }) {
   const router = useRouter();
@@ -51,6 +57,8 @@ export function NewRestaurantSheet({
   // Kept after it's dismissed, so the closing Reveal still has words in it.
   const [error, setError] = useState<string>();
   const [showError, setShowError] = useState(false);
+  // Which field the refusal belongs to, so it's shown under that field and not away at the foot.
+  const [errorField, setErrorField] = useState<string>();
 
   // Focus moves with the step: its first field, or the heading of the last one.
   useEffect(() => {
@@ -70,6 +78,7 @@ export function NewRestaurantSheet({
     setRestaurant(undefined);
     setOwner(undefined);
     setShowError(false);
+    setErrorField(undefined);
     dialog.current?.showModal();
     nameField.current?.focus();
   }
@@ -79,17 +88,24 @@ export function NewRestaurantSheet({
   async function post(action: string, form: HTMLFormElement) {
     setPending(true);
     setShowError(false);
+    setErrorField(undefined);
+    let field: string | undefined;
     try {
       const response = await fetch(action, { method: "POST", body: new FormData(form) });
       const body = await response.json().catch(() => undefined);
       if (response.ok) return body as { id: string; invited?: boolean };
       setError(body?.error ?? "That didn't work. Try again.");
+      field = typeof body?.field === "string" ? body.field : undefined;
     } catch {
       setError("That didn't work. Try again.");
     } finally {
       setPending(false);
     }
+    setErrorField(field);
     setShowError(true);
+    // The field that was refused takes focus, ready to fix.
+    const refused = field ? form.elements.namedItem(field) : null;
+    if (refused instanceof HTMLElement) refused.focus();
     return undefined;
   }
 
@@ -136,6 +152,10 @@ export function NewRestaurantSheet({
         : `opacity 150ms ${curve}, translate 150ms ${curve}, filter 150ms ${curve}, visibility 0s linear 150ms`,
     },
   });
+
+  // The refusal sits under its field when the route says which; otherwise at the foot.
+  const fieldError = (name: string) => (showError && errorField === name ? error : undefined);
+  const footError = showError && errorField === undefined;
 
   const submitButton = (form: string, label: string) => (
     <Button
@@ -202,10 +222,11 @@ export function NewRestaurantSheet({
               onSubmit={createRestaurant}
               {...stepProps(step === "restaurant")}
             >
-              <Field label="Name">
+              <Field label="Name" error={fieldError("name")}>
                 <input
                   ref={nameField}
                   className={inputClassName}
+                  aria-invalid={fieldError("name") ? true : undefined}
                   name="name"
                   required
                   maxLength={200}
@@ -218,6 +239,7 @@ export function NewRestaurantSheet({
               <Field
                 label="Public address"
                 hint="Guests book at this address. Filled from the name; change it if you like."
+                error={fieldError("slug")}
               >
                 <span
                   className={cn(
@@ -232,6 +254,7 @@ export function NewRestaurantSheet({
                     maxLength={63}
                     autoComplete="off"
                     spellCheck={false}
+                    aria-invalid={fieldError("slug") ? true : undefined}
                     value={slug}
                     onChange={(event) => {
                       setSlugEdited(true);
@@ -241,11 +264,17 @@ export function NewRestaurantSheet({
                   />
                 </span>
               </Field>
-              <Field label="Timezone">
-                <Input name="timezone" required defaultValue={timezone} />
+              <Field label="Timezone" error={fieldError("timezone")}>
+                <Select name="timezone" required defaultValue={timezone}>
+                  {timezones.map((zone) => (
+                    <option key={zone} value={zone}>
+                      {zone}
+                    </option>
+                  ))}
+                </Select>
               </Field>
-              <Field label="Currency">
-                <Select name="currencyMode" required>
+              <Field label="Currency" error={fieldError("currencyMode")}>
+                <Select name="currencyMode" required defaultValue={currencyMode}>
                   {currencyModes.map(({ value, label }) => (
                     <option key={value} value={value}>
                       {label}
@@ -265,20 +294,28 @@ export function NewRestaurantSheet({
                 <b className="font-semibold">{restaurant?.name || "The restaurant"}</b> is created. Its
                 first person is its owner.
               </Notice>
-              <Field label="Owner's name">
+              <Field label="Owner's name" error={fieldError("displayName")}>
                 <input
                   ref={ownerNameField}
                   name="displayName"
                   required
                   maxLength={200}
+                  aria-invalid={fieldError("displayName") ? true : undefined}
                   className={inputClassName}
                 />
               </Field>
               <Field
                 label="Owner's email"
                 hint="We email them an invite. They sign in with this address."
+                error={fieldError("email")}
               >
-                <Input name="email" type="email" required autoComplete="off" />
+                <Input
+                  name="email"
+                  type="email"
+                  required
+                  autoComplete="off"
+                  aria-invalid={fieldError("email") ? true : undefined}
+                />
               </Field>
             </form>
 
@@ -316,10 +353,10 @@ export function NewRestaurantSheet({
             </section>
           </div>
 
-          <Reveal open={showError}>
+          <Reveal open={footError}>
             <div className="pt-5">
               {error && (
-                <Notice role={showError ? "alert" : undefined} tone="danger">
+                <Notice role={footError ? "alert" : undefined} tone="danger">
                   {error}
                 </Notice>
               )}

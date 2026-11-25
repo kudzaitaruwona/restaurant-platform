@@ -8,7 +8,13 @@ import {
   reportRow,
 } from "@/lib/csv-import";
 import { deadlineIn, IMPORT_TIME_BUDGET_MS, type ImportTiming, notImportedInTime } from "@/lib/import-deadline";
-import { newOwner, newRestaurant, unknownTimezone } from "@/lib/new-restaurant";
+import {
+  addressTaken,
+  DEFAULT_CURRENCY_MODE,
+  newOwner,
+  newRestaurant,
+  unknownTimezone,
+} from "@/lib/new-restaurant";
 import { slugFrom } from "@/lib/slug";
 import {
   type CurrencyMode,
@@ -32,9 +38,6 @@ import {
 type Admin = Pick<PlatformAdminContext, "platformAdminId">;
 type Row = ImportValues<"restaurants">;
 
-/** A row with no currency_mode: USD with ZiG beneath it, spec 02's example. */
-export const DEFAULT_CURRENCY_MODE: CurrencyMode = "usd_primary";
-
 type Ready = {
   restaurant: { name: string; slug: string; timezone: string; currencyMode: CurrencyMode };
   owner: { email: string; displayName: string };
@@ -42,8 +45,8 @@ type Ready = {
 type Planned = { row: Row; problems: string[]; notes: string[]; ready?: Ready };
 
 const messages = {
-  noSlug: "Add a slug: one can't be made from this name.",
-  slugTaken: (slug: string) => `The slug ${slug} is already in use.`,
+  noSlug: "Add a public address (slug): one can't be made from this name.",
+  slugTaken: addressTaken,
   ownerTaken:
     "The restaurant was created, but not its owner: that email is already in use. Add the owner from the restaurant's card.",
   ownerNotMade: "The restaurant was created, but not its owner. Add the owner from the restaurant's card.",
@@ -62,7 +65,7 @@ async function plan(admin: Admin, rows: Row[]) {
 
     const slug = values.slug || slugFrom(values.name);
     if (!values.slug && values.name) {
-      if (slug) notes.push(`The slug will be ${slug}.`);
+      if (slug) notes.push(`The public address will be ${slug}.`);
       else problems.push(messages.noSlug);
     }
     if (!values.timezone) notes.push(`No timezone given, so ${DEFAULT_TIMEZONE}.`);
@@ -85,7 +88,7 @@ async function plan(admin: Admin, rows: Row[]) {
     if (restaurant.success) {
       const { slug } = restaurant.data;
       if (slugsInUse.has(slug)) problems.push(messages.slugTaken(slug));
-      else if (slugsInFile.has(slug)) problems.push(`The slug ${slug} is already in this file, on line ${slugsInFile.get(slug)}.`);
+      else if (slugsInFile.has(slug)) problems.push(`The public address ${slug} is already in this file, on line ${slugsInFile.get(slug)}.`);
     }
     if (owner.success && emailsInFile.has(owner.data.email)) {
       problems.push(`${owner.data.email} is already in this file, on line ${emailsInFile.get(owner.data.email)}.`);
