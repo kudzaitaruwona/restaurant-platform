@@ -1,20 +1,34 @@
 import { Notice } from "@/components/ui/notice";
+import type { currencyMode } from "@/db/schema";
 import { rateAge, rateAgeLabel } from "@/lib/pricing";
+
+type CurrencyMode = (typeof currencyMode.enumValues)[number];
 
 /**
  * The current rate and how old it is, with the warning spec 02 proposes once it
  * is more than 7 days old: every calculated ZiG price follows it. With none set
  * there are no calculated prices at all, which is worse. Either warning is
- * amber (S-41): a person needs to act.
+ * amber (S-41): a person needs to act. A USD-only restaurant with no rate has
+ * nothing to act on, so it gets a plain note instead of the warning.
  */
 export function ExchangeRateStatus({
   rate,
   setAt,
+  currencyMode,
 }: {
   rate: string | null;
   setAt: Date | null;
+  currencyMode: CurrencyMode;
 }) {
   if (rate === null || setAt === null) {
+    // Nothing is calculated in ZiG, so there is nothing to warn about.
+    if (currencyMode === "usd_only") {
+      return (
+        <p className="text-body text-ink-2">
+          Your menu shows USD only, so no exchange rate is needed. Set one if you start showing ZiG.
+        </p>
+      );
+    }
     return (
       <Notice tone="attention" role="alert">
         No exchange rate is set. ZiG prices can&apos;t be calculated until you set one.

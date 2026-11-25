@@ -158,7 +158,7 @@ describe("the dashboard, for an admin inside a restaurant", () => {
     const html = renderToStaticMarkup(await Dashboard());
 
     expect(html).toContain("The real owner");
-    expect(html).toContain("Signed in as platform admin (owner)");
+    expect(html).toContain("Signed in as platform admin");
     expect(html.match(/Platform admin/g)).toBeNull();
   });
 

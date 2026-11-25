@@ -44,6 +44,10 @@ export type RailRate = {
   stale: boolean;
 };
 
+/** A USD-only restaurant with no rate needs none: the rail has nothing to say. */
+export const showsRate = (rate: RailRate, currencyMode: string) =>
+  rate.value !== null || currencyMode !== "usd_only";
+
 export type StaffNavigationProps = {
   restaurantName: string;
   role: "owner" | "staff";

@@ -76,6 +76,7 @@ Each restaurant is a fully isolated tenant. Staff log in to manage their restaur
 
 ### Restaurant settings and staff management (owner only)
 - Restaurant settings: name, `contact_phone`, Wi-Fi details, `currency_mode`, timezone.
+  - *(proposed, #118)* A local contact number such as 0771234567 is saved as E.164 with the default country code +263. A Wi-Fi password needs a Wi-Fi name and is refused without one. A refusal shows by the field it is about, a save is confirmed beside Save, and the confirmation mentions online booking only when that save switched it off. Leaving the page with unsaved edits asks first.
 - Staff management: list staff, add a staff member or owner, deactivate, change role. Show the soft-limit notice when adding a second owner; don't block.
 - *(proposed, S-42)* Adding someone emails them an invite. The list shows each active person as Invited (with when) or Joined, and offers "Send invite again" until they sign in.
 - *(Proposed, S-43)* Staff can also be added from a CSV (`email`, `name`, `role`, blank role is staff), with the same preview and confirm as the menu import (spec 02). Each person goes through the single add, one at a time, so is audited and invited as per S-42. An email already on the staff or earlier in the file is skipped and reported, never duplicated; one another restaurant has shows on import. With no owner yet, an owner row must come before any staff row.

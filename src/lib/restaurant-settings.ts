@@ -1,7 +1,8 @@
 import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { currencyMode, restaurants } from "@/db/schema";
+import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
+import { toE164 } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
@@ -45,13 +46,30 @@ export function isTimeZone(value: string) {
 
 const E164 = /^\+[1-9][0-9]{1,14}$/;
 
+/** Zimbabwe, as the guest booking form assumes. A local number gets this. */
+const DEFAULT_COUNTRY_CODE = "+263";
+
+/**
+ * What the owner typed as the E.164 number it means. A local number, with its
+ * leading 0, gets the country code; one typed with its code but no + does too.
+ * Anything else is left as typed, for the pattern to refuse.
+ */
+function contactPhoneOf(typed: string) {
+  const digits = typed.replace(/[\s().-]/g, "");
+  if (digits === "") return "";
+  if (/^263[0-9]{9}$/.test(digits)) return `+${digits}`;
+  return toE164(DEFAULT_COUNTRY_CODE, digits);
+}
+
 export const invalidTimezoneMessage = "Choose a timezone from the list.";
 
 const messages = {
   name: "Enter the restaurant's name, up to 200 characters.",
-  contactPhone: "Enter the phone number in international format, like +263771234567.",
+  contactPhone: "Enter a phone number, like 0771234567 or +263771234567.",
   wifiName: "Enter a Wi-Fi name of up to 200 characters.",
   wifiPassword: "Enter a Wi-Fi password of up to 200 characters.",
+  wifiPasswordWithoutName:
+    "Enter the Wi-Fi name that goes with this password, or clear the password.",
   currencyMode: "Choose a currency mode.",
   timezone: invalidTimezoneMessage,
 };
@@ -59,11 +77,12 @@ const messages = {
 const blankToNull = (value: string) => value || null;
 
 // Messages are fixed strings, so a refused value is never echoed back.
-const settingsForm = z.object({
+const settingsForm = z
+  .object({
   name: z.string(messages.name).trim().min(1, messages.name).max(200, messages.name),
   contactPhone: z
     .string(messages.contactPhone)
-    .transform((value) => value.replace(/[\s-]/g, ""))
+    .transform(contactPhoneOf)
     .refine((value) => value === "" || E164.test(value), messages.contactPhone)
     .transform(blankToNull),
   wifiName: z
@@ -80,7 +99,12 @@ const settingsForm = z.object({
   // Only its shape here. Whether it is a real zone depends on what is stored, so
   // updateRestaurantSettings decides.
   timezone: z.string(messages.timezone).min(1, messages.timezone).max(100, messages.timezone),
-});
+})
+  // A password printed on the cards with no network to join is a mistake.
+  .refine(({ wifiName, wifiPassword }) => wifiPassword === null || wifiName !== null, {
+    message: messages.wifiPasswordWithoutName,
+    path: ["wifiName"],
+  });
 
 export type RestaurantSettings = z.output<typeof settingsForm>;
 
@@ -88,7 +112,12 @@ export function parseRestaurantSettings(form: FormData) {
   const parsed = settingsForm.safeParse(Object.fromEntries(form));
   return parsed.success
     ? ({ success: true, data: parsed.data } as const)
-    : ({ success: false, message: parsed.error.issues[0].message } as const);
+    : ({
+        success: false,
+        message: parsed.error.issues[0].message,
+        /** The form control the message belongs by. */
+        field: String(parsed.error.issues[0].path[0] ?? ""),
+      } as const);
 }
 
 export async function getRestaurantSettings(
@@ -120,7 +149,7 @@ export async function getRestaurantSettings(
 export async function updateRestaurantSettings(
   ctx: Tenant & Pick<TenantContext, "platformAdminId">,
   settings: RestaurantSettings,
-): Promise<"saved" | "invalid_timezone"> {
+): Promise<"saved" | "saved_booking_off" | "invalid_timezone"> {
   const outcome = await withTenant(ctx, async (tx) => {
     const [stored] = await tx
       .select({ timezone: restaurants.timezone })
@@ -133,6 +162,14 @@ export async function updateRestaurantSettings(
       );
       if (rows.length === 0) return "invalid_timezone" as const;
     }
+    const bookingOn = async () =>
+      (
+        await tx
+          .select({ enabled: bookingSettings.enabled })
+          .from(bookingSettings)
+          .where(eq(bookingSettings.restaurantId, ctx.restaurantId))
+      )[0]?.enabled === true;
+    const wasOn = await bookingOn();
     await tx
       .update(restaurants)
       .set(settings)
@@ -142,9 +179,10 @@ export async function updateRestaurantSettings(
       entityType: "restaurant",
       entityId: ctx.restaurantId,
     });
-    return "saved" as const;
+    // Clearing the contact phone switches online booking off in Postgres.
+    return wasOn && !(await bookingOn()) ? ("saved_booking_off" as const) : ("saved" as const);
   });
   // The public menu page shows the restaurant's name.
-  if (outcome === "saved") revalidateMenu(ctx);
+  if (outcome !== "invalid_timezone") revalidateMenu(ctx);
   return outcome;
 }

@@ -45,8 +45,12 @@ export function BookingMetricsPanel({ metrics }: { metrics: BookingMetrics }) {
       />
       <Metric
         label="Booked while staff weren't answering"
-        value={String(metrics.outsideHours)}
-        detail="Online bookings made outside service hours"
+        value={metrics.online === 0 ? NOT_YET : String(metrics.outsideHours)}
+        detail={
+          metrics.online === 0
+            ? "No online bookings yet"
+            : "Online bookings made outside service hours"
+        }
       />
       <Metric
         label="No-show rate"
