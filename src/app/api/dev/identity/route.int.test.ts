@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testDatabaseSettings } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
+import { STAFF_PAGE_HEADER } from "@/lib/staff-page-header";
 import {
   DEV_IDENTITY_COOKIE,
   devIdentities,
@@ -107,7 +108,7 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
     // Back after Leave reloads /dashboard as a page: send the admin to the list, not a 403.
     it.each([
       ["a browser page load", { "sec-fetch-mode": "navigate" }],
-      ["an app router page fetch", { rsc: "1" }],
+      ["an app router page fetch", { "sec-fetch-mode": "cors", [STAFF_PAGE_HEADER]: "1" }],
     ])("sends %s to /admin until the admin enters one", async (_label, headers) => {
       await pick(devPlatformAdmin.key);
       requestHeaders.current = headers;

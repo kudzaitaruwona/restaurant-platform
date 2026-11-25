@@ -2,6 +2,7 @@ import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FORM_FETCH_HEADER } from "./lib/form-response";
+import { STAFF_PAGE_HEADER } from "./lib/staff-page-header";
 import { config, proxy } from "./proxy";
 
 const request = (
@@ -266,6 +267,28 @@ describe("Meta's webhook (spec 05, #48)", () => {
       request(path, { method: "POST", headers: { origin: "https://evil.example.test" } }),
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("the staff page mark (#117)", () => {
+  // How Next.js carries the request's headers on from the proxy.
+  const mark = (response: Response) =>
+    response.headers.get(`x-middleware-request-${STAFF_PAGE_HEADER}`);
+
+  it.each(["/dashboard", "/dashboard/floor", "/dashboard/nope"])("is set on %s", (path) => {
+    expect(mark(proxy(request(path, {})))).toBe("1");
+  });
+
+  it("is not set on a data call, another page or a post, whatever the browser sends", () => {
+    const headers = { [STAFF_PAGE_HEADER]: "1" };
+    for (const path of ["/api/staff", "/admin", "/dashboardish"]) {
+      const response = proxy(request(path, { headers }));
+      expect(mark(response)).toBeNull();
+      expect(response.headers.get("x-middleware-override-headers") ?? "dropped").not.toContain(
+        STAFF_PAGE_HEADER,
+      );
+    }
+    expect(mark(proxy(request("/dashboard", { method: "POST", headers })))).toBeNull();
   });
 });
 

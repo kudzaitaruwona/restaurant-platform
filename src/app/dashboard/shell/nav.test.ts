@@ -6,6 +6,7 @@ describe("the staff navigation", () => {
     expect(navFor("owner").map(({ group }) => group)).toEqual(["Service", "Setup"]);
     const labels = navFor("owner").flatMap(({ items }) => items.map(({ label }) => label));
     expect(labels).toEqual([
+      "Home",
       "Kitchen",
       "Floor",
       "Bookings",
@@ -20,6 +21,7 @@ describe("the staff navigation", () => {
   it("keeps the owner-only screens (S-26) from staff, as the dashboard's links did", () => {
     const hrefs = navFor("staff").flatMap(({ items }) => items.map(({ href }) => href));
     expect(hrefs).toEqual([
+      "/dashboard",
       "/dashboard/kitchen",
       "/dashboard/floor",
       "/dashboard/bookings",
@@ -38,8 +40,12 @@ describe("the staff navigation", () => {
     expect(activeItem(path)?.key).toBe(key);
   });
 
-  it("marks nothing on the dashboard home, or a path that only looks like one", () => {
-    expect(activeItem("/dashboard")).toBeUndefined();
+  it("marks Home on the dashboard home, and only there", () => {
+    expect(activeItem("/dashboard")?.key).toBe("home");
+    expect(activeItem("/dashboard/no-such-page")).toBeUndefined();
+  });
+
+  it("marks nothing on a path that only looks like one", () => {
     expect(activeItem("/dashboard/bookingsx")).toBeUndefined();
   });
 

@@ -4,6 +4,7 @@
  */
 
 export type NavKey =
+  | "home"
   | "kitchen"
   | "floor"
   | "bookings"
@@ -12,6 +13,8 @@ export type NavKey =
   | "bookingSettings"
   | "settings"
   | "staff";
+
+const HOME = "/dashboard";
 
 export type NavItem = {
   key: NavKey;
@@ -22,6 +25,7 @@ export type NavItem = {
 };
 
 export const navItems: readonly NavItem[] = [
+  { key: "home", href: HOME, label: "Home", group: "Service", ownerOnly: false },
   { key: "kitchen", href: "/dashboard/kitchen", label: "Kitchen", group: "Service", ownerOnly: false },
   { key: "floor", href: "/dashboard/floor", label: "Floor", group: "Service", ownerOnly: false },
   { key: "bookings", href: "/dashboard/bookings", label: "Bookings", group: "Service", ownerOnly: false },
@@ -43,13 +47,30 @@ export function navFor(role: "owner" | "staff") {
 /**
  * The item a path belongs to: the longest href that is the path or a parent of
  * it, so /dashboard/bookings/new is Bookings and /dashboard/bookings/settings is
- * Booking settings. The dashboard home belongs to none.
+ * Booking settings. Home is a parent of every path, so it is only its own.
  */
 export function activeItem(pathname: string, items: readonly NavItem[] = navItems) {
   return items
-    .filter(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
+    .filter(({ href }) => pathname === href || (href !== HOME && pathname.startsWith(`${href}/`)))
     .sort((a, b) => b.href.length - a.href.length)[0];
 }
+
+/** The owner's exchange rate (S-26), as the dashboard showed it. */
+export type RailRate = {
+  /** "26.8", or null with none set. */
+  value: string | null;
+  /** "2 days ago", or null with none set. */
+  age: string | null;
+  /** More than 7 days old (spec 02). */
+  stale: boolean;
+};
+
+/**
+ * A USD-only restaurant with no rate needs none: the rail has nothing to say.
+ * Here, not in staff-rail.tsx: the server calls it, and can't call a client module.
+ */
+export const showsRate = (rate: RailRate, currencyMode: string) =>
+  rate.value !== null || currencyMode !== "usd_only";
 
 /** Up to two initials for the restaurant mark and the avatar: "Msasa Grill" is "MG". */
 export function initialsOf(name: string) {

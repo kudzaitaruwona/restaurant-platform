@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { showsRate } from "./staff-rail";
+import { showsRate } from "./nav";
 
 const none = { value: null, age: null, stale: false };
 const set = { value: "26.8", age: "today", stale: false };

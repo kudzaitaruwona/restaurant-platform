@@ -36,6 +36,7 @@ import {
   type Email,
 } from "./email";
 import { findPlatformAdminId, findStaffIdentity, recordFirstSignIn } from "./identity";
+import { isSignInPage, returnPath, signInPages } from "./return-to";
 
 /**
  * Sign-in (S-27, S-30). Two separate Better Auth instances, one per session type
@@ -62,17 +63,33 @@ const schemas = {
   },
 };
 
-const signInPages: Record<Audience, string> = {
-  staff: "/login",
-  admin: "/login/admin",
-};
-
 const SIGN_IN_EXPIRY_MINUTES = 10;
 const signInExpirySeconds = SIGN_IN_EXPIRY_MINUTES * 60;
 
 const SEND_CODE_PATH = "/email-otp/send-verification-otp";
 const USE_CODE_PATH = "/sign-in/email-otp";
 const SIGN_OUT_PATH = "/sign-out";
+/** The paths that take somewhere to go back to, from the body or the link. */
+const RETURNING_PATHS = new Set(["/sign-in/magic-link", "/sign-in/social", "/magic-link/verify"]);
+
+/**
+ * Better Auth takes any address on this origin. Sign-in only goes back to the
+ * audience's own pages, whoever made the request (S-30 in detail).
+ */
+function refuseOtherReturns(audience: Audience, values: Record<string, unknown> | undefined) {
+  const { callbackURL, newUserCallbackURL, errorCallbackURL } = values ?? {};
+  const bad =
+    [callbackURL, newUserCallbackURL].some(
+      (value) => value !== undefined && returnPath(value, audience) === undefined,
+    ) ||
+    (errorCallbackURL !== undefined && !isSignInPage(errorCallbackURL, audience));
+  if (bad) {
+    throw new APIError("FORBIDDEN", {
+      code: "INVALID_CALLBACK_URL",
+      message: "Invalid callbackURL",
+    });
+  }
+}
 
 /**
  * The hook runs before Better Auth checks the address, so it sees whatever was
@@ -156,6 +173,11 @@ function createAuth(audience: Audience) {
           // Here rather than at the top of the file: the seam imports this one.
           const { leaveOnSignOut } = await import("@/lib/tenant/platform-admin");
           await leaveOnSignOut(new Headers(ctx.headers));
+          return;
+        }
+        if (RETURNING_PATHS.has(ctx.path)) {
+          refuseOtherReturns(audience, ctx.body);
+          refuseOtherReturns(audience, ctx.query);
           return;
         }
         if (ctx.path !== SEND_CODE_PATH && ctx.path !== USE_CODE_PATH) return;

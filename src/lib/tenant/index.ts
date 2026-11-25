@@ -4,9 +4,10 @@ import { and, eq } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
 import { forbidden, redirect, unauthorized } from "next/navigation";
 import { staff } from "@/db/schema";
-import { sessionOf } from "@/lib/auth";
+import { type Audience, sessionOf } from "@/lib/auth";
 import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
 import { devAuthBypassEnabled } from "@/lib/env";
+import { STAFF_PAGE_HEADER } from "@/lib/staff-page-header";
 import { enteredRestaurant } from "./admin-entry";
 import {
   defaultDevIdentity,
@@ -52,14 +53,14 @@ async function enteredContext(admin: {
  * A platform admin outside any restaurant has no tenant, so a data request gets
  * a 403. A page someone navigated to (Back after Leave, an old bookmark) goes
  * to /admin instead, where they can pick a restaurant: a browser load sends
- * `Sec-Fetch-Mode: navigate` and the app router's page fetches send `RSC`,
- * neither of which a data call does.
+ * `Sec-Fetch-Mode: navigate`, and the proxy marks the app router's own fetches of
+ * a staff page (Next.js hides their `RSC` header from us). A data call is neither.
  */
 async function noTenantForAdmin(): Promise<never> {
   const page = await (async () => {
     const requestHeaders = await headers();
     return (
-      (requestHeaders.get("sec-fetch-mode") === "navigate" || requestHeaders.get("rsc") === "1") &&
+      (requestHeaders.get("sec-fetch-mode") === "navigate" || requestHeaders.get(STAFF_PAGE_HEADER) === "1") &&
       !requestHeaders.get("next-action")
     );
     // No request to read (a script or a test): the plain 403.
@@ -74,7 +75,7 @@ async function noTenantForAdmin(): Promise<never> {
  * Entering a restaurant is a deliberate act, so it wins over a staff session in
  * the same browser. A platform admin who hasn't entered one has no tenant, so
  * gets the 403 the dev bypass gives them rather than being told they're signed
- * out.
+ * out. On a page they go to /admin (noTenantForAdmin).
  */
 async function sessionIdentity(): Promise<TenantContext | undefined> {
   // First, because reading headers is what keeps pages that call this out of
@@ -105,7 +106,7 @@ export async function currentIdentity() {
  * The only source of tenant identity: the restaurant ID always comes from here,
  * never from request input. Ends the request with a 401 for anyone without an
  * active staff record, and a 403 for a platform admin, who has no tenant until
- * entering a restaurant. Once inside, they get its shadow staff row, as an owner.
+ * entering a restaurant (on a page, /admin instead). Once inside, they get its shadow staff row, as an owner.
  */
 export const getTenantContext = cache(async (): Promise<TenantContext> => {
   if (!devAuthBypassEnabled()) {
@@ -139,6 +140,39 @@ export const getTenantContext = cache(async (): Promise<TenantContext> => {
 
   return { restaurantId, staffId, role: member.role };
 });
+
+/**
+ * Whose live session of this type the browser has, for the sign-in pages: the
+ * same checks as a request, so a deactivated person gets the form. The dev
+ * bypass isn't a session, and under it the form still shows.
+ */
+export async function signedInEmail(audience: Audience): Promise<string | undefined> {
+  if (devAuthBypassEnabled()) return undefined;
+  const session = await sessionOf(audience, await headers());
+  if (!session) return undefined;
+  const known =
+    audience === "staff"
+      ? await findStaffIdentity(session.email)
+      : await findPlatformAdminId(session.email);
+  return known ? session.email : undefined;
+}
+
+/**
+ * Where whoever is asking belongs, or undefined when signed out. Only for
+ * offering a link: it guards nothing, and the page it names checks for itself.
+ */
+export async function signedInHome(): Promise<"/dashboard" | "/admin" | undefined> {
+  if (devAuthBypassEnabled()) {
+    const identity = await currentIdentity();
+    if (!identity) return undefined;
+    if (!("platformAdminId" in identity)) return "/dashboard";
+    return (await enteredContext(identity)) ? "/dashboard" : "/admin";
+  }
+  if (await signedInEmail("staff")) return "/dashboard";
+  const admin = await sessionPlatformAdmin(await headers());
+  if (!admin) return undefined;
+  return (await enteredContext(admin)) ? "/dashboard" : "/admin";
+}
 
 /** Guards owner-only actions (S-26). RLS is tenant-only, so roles live here. */
 export function requireOwner(ctx: TenantContext) {

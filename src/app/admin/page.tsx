@@ -1,10 +1,13 @@
 import { ShieldCheck } from "lucide-react";
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { devAuthBypassEnabled } from "@/lib/env";
 import { DevSwitcher } from "../dashboard/dev-switcher";
 import { SignOutButton } from "../dashboard/sign-out-button";
 import { AdminConsole } from "./admin-console";
 import { AdminEntryBanner } from "./admin-entry-banner";
+
+export const metadata: Metadata = { title: "Platform admin" };
 
 /**
  * The account controls are built for the staff rail; here they sit at the top
