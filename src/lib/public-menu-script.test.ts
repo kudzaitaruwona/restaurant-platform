@@ -58,8 +58,14 @@ class FakeElement {
     this.scrolledTo += 1;
   }
   focusCount = 0;
+  /** The element that has focus, as document.activeElement says. */
+  static active: FakeElement | null = null;
   focus() {
     this.focusCount += 1;
+    FakeElement.active = this;
+  }
+  contains(other: FakeElement | null) {
+    return other !== null && this.find((element) => element === other).length > 0;
   }
   closest(selector: string) {
     if (selector === "li") return this.row ?? null;
@@ -117,6 +123,7 @@ async function loadPage(
     /** The timeouts the script asked AbortSignal for, in milliseconds. */
     timeouts: [] as number[],
   };
+  FakeElement.active = null;
   const names = ["name", "place"] as const;
   const fields = Object.fromEntries(names.map((name) => [name, new FakeElement()])) as Record<
     (typeof names)[number],
@@ -141,12 +148,25 @@ async function loadPage(
     "call-waiter": Object.assign(new FakeElement(), { hidden: true }),
     "waiter-status": new FakeElement(),
   };
+  // What a Tab can reach in the sheet, in page order.
+  const reachable = () => [
+    ...elements.cart.find((el) => el.tagName === "button" || el.tagName === "textarea"),
+    fields.name,
+    elements["order-cancel"],
+    fields.place,
+  ];
+  Object.assign(form, {
+    querySelectorAll: () => reachable(),
+    contains: (other: FakeElement | null) => other === form || (other !== null && reachable().includes(other)),
+  });
   const document = Object.assign(new FakeElement(), {
     hidden: false,
+
     getElementById: (id: string) => elements[id],
     querySelectorAll: (selector: string) => (selector === "button[data-item]" ? addButtons : []),
     createElement: (tag: string) => Object.assign(new FakeElement(), { tagName: tag }),
   });
+  Object.defineProperty(document, "activeElement", { get: () => FakeElement.active });
   const addButtons: FakeElement[] = [];
   const addButton = (id: string, name: string, price = "$8.00") => {
     const left = Object.assign(new FakeElement(), { tagName: "div", className: "left" });
@@ -291,6 +311,15 @@ async function loadPage(
     trackerList: elements["tracker-list"],
     cartText,
     buttonLabelled,
+    focused: () => FakeElement.active,
+    /** A key pressed on the page; says whether the script took the default away. */
+    key(key: string, shiftKey = false) {
+      let prevented = false;
+      document.dispatch("keydown", { key, shiftKey, preventDefault: () => void (prevented = true) });
+      return prevented;
+    },
+    cancel: elements["order-cancel"],
+    place: fields.place,
     /** How many times anything on the page has been given focus. */
     focusTotal: () =>
       [...Object.values(elements), ...Object.values(fields)]
@@ -708,6 +737,88 @@ describe("the cart", () => {
     page.document.getElementById("order-cancel").dispatch("click");
     expect(page.open.focusCount).toBe(1);
   });
+
+  it("starts on the sheet itself, not on a control that would remove a line (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+
+    page.open.dispatch("click");
+
+    expect(page.focused()).toBe(page.form);
+  });
+
+  it("names every control in a row after its item (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+
+    expect(page.buttonLabelled("Remove")!.attributes["aria-label"]).toBe("Remove Beef stew");
+    expect(page.buttonLabelled("+")!.attributes["aria-label"]).toBe("One more Beef stew");
+  });
+
+  it("keeps focus on the stepper button just pressed, though the rows are drawn again (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.open.dispatch("click");
+
+    page.buttonLabelled("+")!.focus();
+    page.buttonLabelled("+")!.dispatch("click");
+    expect(page.focused()).toBe(page.buttonLabelled("+"));
+    expect(page.quantities()).toEqual({ "Beef stew": 2 });
+
+    page.buttonLabelled("\u2212")!.focus();
+    page.buttonLabelled("\u2212")!.dispatch("click");
+    expect(page.focused()).toBe(page.buttonLabelled("\u2212"));
+  });
+
+  it("puts focus on the sheet when the line it was in goes (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    await page.add(page.rice);
+    page.open.dispatch("click");
+
+    page.buttonLabelled("Remove")!.focus();
+    page.buttonLabelled("Remove")!.dispatch("click");
+    expect(page.focused()).toBe(page.form);
+
+    // Nor does it stay on a Remove that is gone when the line is taken out by its minus.
+    await page.add(page.stew);
+    page.buttonLabelled("\u2212")!.focus();
+    page.buttonLabelled("\u2212")!.dispatch("click");
+    expect(page.focused()).toBe(page.form);
+  });
+
+  it("keeps Tab inside the open sheet, from either end and from outside it (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.open.dispatch("click");
+    const first = page.buttonLabelled("\u2212")!;
+
+    // Past the last control: back to the first.
+    page.place.focus();
+    expect(page.key("Tab")).toBe(true);
+    expect(page.focused()).toBe(first);
+    // Before the first (or the sheet itself): on to the last.
+    expect(page.key("Tab", true)).toBe(true);
+    expect(page.focused()).toBe(page.place);
+    page.form.focus();
+    expect(page.key("Tab", true)).toBe(true);
+    expect(page.focused()).toBe(page.place);
+    // In the middle the browser's own order stands.
+    page.cancel.focus();
+    expect(page.key("Tab")).toBe(false);
+    // Focus that fell out to the page comes back in.
+    page.stew.focus();
+    expect(page.key("Tab")).toBe(true);
+    expect(page.focused()).toBe(first);
+  });
+
+  it("doesn't trap Tab while the sheet is closed (#119)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+
+    page.stew.focus();
+    expect(page.key("Tab")).toBe(false);
+  });
 });
 
 describe("placing the order", () => {
@@ -834,7 +945,8 @@ describe("placing the order", () => {
 
     expect(page.rice.disabled).toBe(true);
     // The server can't say sold out from archived or outside a bundle's window, so the button doesn't claim it (#142).
-    expect(page.rice.textContent).toBe("Not available");
+    // Still named after its item, as its Add was (#119).
+    expect(page.rice.textContent).toBe("Not available Rice");
     expect(page.stew.disabled).toBe(false);
     await page.add(page.rice);
     expect(page.cartText()).not.toContain("Rice");
@@ -1774,6 +1886,20 @@ describe("a reload after a lost order response keeps the cart and its request id
     expect(reloaded.confirmation.textContent).toContain("1 × Dish 1");
     expect(reloaded.cart.children).toHaveLength(0);
     expect(tab.has(key)).toBe(false);
+  });
+
+  it("opens the sheet with focus on it, and its rows keep focus like any others (#119)", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+
+    expect(reloaded.form.hidden).toBe(false);
+    expect(reloaded.focused()).toBe(reloaded.form);
+    expect(reloaded.buttonLabelled("Remove")!.attributes["aria-label"]).toBe("Remove Beef stew");
+
+    reloaded.buttonLabelled("+")!.focus();
+    reloaded.buttonLabelled("+")!.dispatch("click");
+    expect(reloaded.focused()).toBe(reloaded.buttonLabelled("+"));
+    expect(reloaded.quantities()).toEqual({ "Beef stew": 2 });
   });
 
   it("is gone for the next reload once the order is known to be placed", async () => {

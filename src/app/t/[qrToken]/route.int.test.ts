@@ -121,7 +121,7 @@ afterAll(async () => {
  * end: all ordering adds.
  */
 const plus = '<svg class="icon"><use href="#i-plus"/></svg>';
-const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<\/button>/g;
+const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<span class="sr"> [^<]*<\/span><\/button>/g;
 const waiterButton = /<button type="button" id="call-waiter"[^>]* hidden>[\s\S]*?<\/button>/;
 const tableName = '<p id="table-name" class="table" hidden></p>';
 const trackerBlock = /<p id="waiter-status"[^>]*><\/p>\n<section id="tracker"[^>]* hidden>[\s\S]*?<\/section>\n/;
@@ -162,7 +162,7 @@ describe("/t/{qr_token}", () => {
     const body = await (await scan(qrToken)).text();
 
     expect(body).toContain(
-      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>${plus}Add</button>`,
+      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>${plus}Add<span class="sr"> Beef stew</span></button>`,
     );
     expect(body).not.toContain(soldOut.id);
     expect(body.match(addButton)).toHaveLength(1);
@@ -214,6 +214,15 @@ describe("/t/{qr_token}", () => {
     expect(body).toMatch(
       /<div class="sheet-foot">[^]*?id="order-cancel"[^]*?Keep browsing[^]*?name="place"[^]*?Place order<\/button><\/div><\/div>\n<\/form>/,
     );
+  });
+
+  it("makes the sheet something focus can start on, with no ring drawn round the whole sheet (#119)", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toMatch(/<form id="order"[^>]* role="dialog" aria-modal="true"[^>]* tabindex="-1" hidden>/);
+    expect(body).toContain(".order:focus{outline:none}");
   });
 
   it("has a Call a waiter button, hidden until the script has joined the session", async () => {

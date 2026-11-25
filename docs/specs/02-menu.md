@@ -94,6 +94,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 
 ### Performance budget (decided principle, proposed numbers)
 - Server-rendered HTML that works without JavaScript
+- Readable to a screen reader and tidy on a 390px phone *(proposed, #119)*: a badge is a separate word from the item's name, a struck price has hidden "was" and "now" text, each row's buttons name their item, and the jump bar wraps on a screen 640px or wider. All of it is markup and CSS, with no script on `/m/{menu_token}`
 - **Under 100KB before images.** Images load lazily with fixed dimensions, so the layout doesn't jump.
 - Cached at the edge, revalidated when the menu changes (on-demand revalidation triggered by the editor's save) and every 5 minutes, so a special starts or ends within 5 minutes of its window (issue 24). The page decides which specials are on at the moment it is rendered, so a cached page is at most 5 minutes behind a window opening or closing. Turning a special on or off, or adding one, is a save and refreshes at once.
 - Usable on throttled "Slow 3G" in Chrome DevTools within 3 seconds
