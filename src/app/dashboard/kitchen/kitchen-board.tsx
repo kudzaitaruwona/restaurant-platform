@@ -4,12 +4,10 @@ import {
   Ban,
   CircleX,
   Clock,
-  LogOut,
   MessageSquareText,
   Undo2,
   Volume2,
   VolumeX,
-  WifiOff,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,16 +15,15 @@ import { Input } from "@/components/ui/input";
 import { RowMenu, RowMenuItem, RowMenuLabel, RowMenuSeparator } from "@/components/ui/row-menu";
 import {
   ageOf,
-  applyChanges,
   arrivals,
   type BoardGroup,
   type BoardItem,
   boardColumns,
   cardMenuActions,
-  freshAnswers,
   type BoardStatus,
   type ItemStatus,
   itemsOfOrder,
+  liveBoard,
   nextStatus,
   previousStatus,
   sameSpotGuard,
@@ -40,6 +37,7 @@ import {
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
 import { tableName } from "@/lib/table-name";
 import { cn } from "@/lib/utils";
+import { ConnectionBar } from "./connection-bar";
 
 const columnNames: Record<BoardStatus, string> = {
   placed: "Placed",
@@ -93,12 +91,10 @@ type Asking = { itemId: string; kind: Override };
  * system says (data-page-theme), for a screen under bright lights all service.
  */
 export function KitchenBoard({ initial }: { initial: Changes }) {
-  const [board, setBoard] = useState<ReadonlyMap<string, BoardItem>>(
-    () => new Map(initial.items.map((item) => [item.id, item])),
-  );
   // What the board holds, for the callbacks that change it: applying a change
-  // has to know what was there to tell what arrived.
-  const current = useRef(board);
+  // has to know what was there to tell what arrived, and what has left (#135).
+  const [held] = useState(() => liveBoard(initial.items));
+  const [board, setBoard] = useState(held.board);
   // The server's clock, as this tablet estimates it: renders the same on both sides.
   const [clock, setClock] = useState(() => Date.parse(initial.now));
   const skew = useRef(0);
@@ -112,27 +108,22 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     arrivals({ makeAudio: () => new AudioContext(), onFlash: setFlashing }),
   );
   const poller = useRef<ReturnType<typeof startPolling> | null>(null);
+  // Set once the board has been hidden (Activity keeps it mounted): the cursor of
+  // what it holds. Shown again it goes on from there, at once, not from a newer
+  // `initial`, which would leave out what changed while it was away (#135).
+  const resumeFrom = useRef<string>(undefined);
   // One per board: a ticket that slides under a double tap isn't advanced (#100).
   const spot = useRef(sameSpotGuard());
 
-  /** Applies changed items, and flashes and sounds for the ones new to the board. */
-  function update(items: BoardItem[]) {
-    const { board: next, arrived } = applyChanges(current.current, items);
-    current.current = next;
-    setBoard(next);
-    alert.arrive(arrived);
-  }
-  const updateRef = useRef(update);
-  useEffect(() => {
-    updateRef.current = update;
-  });
+  /** A move's answer, applied only if it is still true of the board (#101). */
+  const applyAnswer = (items: BoardItem[]) => setBoard(held.answered(items).board);
 
   useEffect(() => {
     skew.current = Date.parse(initial.now) - Date.now();
     const tick = setInterval(() => setClock(Date.now() + skew.current), TICK_MS);
     let askedAt = 0; // One poll at a time, so it is the answering poll's.
-    poller.current = startPolling({
-      cursor: initial.cursor,
+    const polling = startPolling({
+      cursor: resumeFrom.current ?? initial.cursor,
       fetch: (url, signal) => {
         askedAt = performance.now();
         return fetch(url, { signal, cache: "no-store" });
@@ -140,16 +131,21 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
       onChanges: (changes) => {
         skew.current = Date.parse(changes.now) - Date.now();
         setClock(Date.parse(changes.now));
-        updateRef.current(changes.items);
-        spot.current.polled(askedAt, performance.now());
+        // Flashes and sounds for the items new to the board. An answer brings none.
+        const { board: next, arrived } = held.polled(changes.items);
+        setBoard(next);
+        alert.arrive(arrived);
+        spot.current.polled(askedAt, performance.now(), changes.items.map((item) => item.id));
       },
       onConnection: setConnection,
     });
+    poller.current = polling;
+    if (resumeFrom.current !== undefined) polling.refresh();
     return () => {
       clearInterval(tick);
-      poller.current?.stop();
+      resumeFrom.current = polling.stop();
     };
-  }, [initial.cursor, initial.now]);
+  }, [initial.cursor, initial.now, held, alert]);
 
   // A refused move says so briefly, then gets out of the way.
   useEffect(() => {
@@ -157,9 +153,6 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     const timer = setTimeout(() => setMessage(undefined), MESSAGE_MS);
     return () => clearTimeout(timer);
   }, [message]);
-
-  /** A move's answer, applied only if it is still true of the board (#101). */
-  const applyAnswer = (items: BoardItem[]) => update(freshAnswers(current.current, items));
 
   function enableSound() {
     alert.enableSound();
@@ -172,14 +165,17 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     try {
       await sendMove(item, to, {
         fetch: (url, init) => fetch(url, init),
-        apply: applyAnswer,
+        apply: (items) => {
+          applyAnswer(items);
+          spot.current.shown(item.id, performance.now());
+        },
         say: setMessage,
         poller: poller.current,
-        timedOut: () => spot.current.unanswered(item.id, performance.now()),
+        lost: () => spot.current.unanswered(item.id, performance.now()),
       });
     } finally {
-      // The ticket moves about now, so the spot is guarded from here (#100). A
-      // timed-out move's is kept for the poll that shows where the item is.
+      // The ticket moves about now, so the spot is guarded from here (#100). A lost
+      // move's is kept until the board shows where the item is (#135).
       spot.current.settled(item.id, performance.now());
       setPending((was) => {
         const next = new Set(was);
@@ -191,7 +187,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
 
   /** Void an item, or reject its whole order: every one of its items leaves the board. */
   async function override(item: BoardItem, kind: Override, reason: string) {
-    const order = itemsOfOrder(current.current, item.orderId);
+    const order = itemsOfOrder(held.board(), item.orderId);
     const busy = kind === "void" ? [item] : order;
     setPending((was) => new Set([...was, ...busy.map((it) => it.id)]));
     const deps = {
@@ -222,6 +218,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
   return (
     // 16px, or 19px on a wall screen: the board's type is in em, so it grows with it.
     <div data-page-theme="dark" className="flex flex-col gap-4 text-[16px] min-[1600px]:text-[19px]">
+      <ConnectionBar connection={connection} />
       <header className="flex min-h-12 flex-wrap items-center gap-4">
         <h1 className="text-[1.5em] font-semibold tracking-tight max-md:sr-only">Kitchen</h1>
         <span className="flex-1" />
@@ -237,22 +234,6 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
           </Button>
         )}
       </header>
-
-      {!live && (
-        <div
-          role="alert"
-          className="sticky top-0 z-10 flex items-center gap-3 rounded-control bg-attention px-5 py-3 text-[1.25em] font-semibold text-on-attention"
-        >
-          {connection === "offline" ? (
-            <WifiOff aria-hidden className="size-[1.2em] shrink-0" />
-          ) : (
-            <LogOut aria-hidden className="size-[1.2em] shrink-0" />
-          )}
-          {connection === "offline"
-            ? "Offline, reconnecting. The board may be out of date."
-            : "Signed out. Sign in again to keep the board live."}
-        </div>
-      )}
 
       <div
         data-stale={live ? undefined : "true"}
