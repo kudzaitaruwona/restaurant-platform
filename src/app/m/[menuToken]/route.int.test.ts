@@ -464,6 +464,17 @@ describe("a sold-out item", () => {
     expect(body).toContain('class="sold-out"');
   });
 
+  it("is separated from the item's name, so a screen reader doesn't run them together (#119)", async () => {
+    const { id, menuToken } = await newRestaurant("Sold out words");
+    await addItem(id, await addCategory(id, "Sides"), {
+      name: "Chips",
+      priceUsd: "3",
+      available: false,
+    });
+
+    expect(await page(menuToken)).toContain('Chips <em class="tag">Sold out</em>');
+  });
+
   it("is greyed out and sorted after the items still on", async () => {
     const { id, menuToken } = await newRestaurant("Sorted last");
     const mains = await addCategory(id, "Mains");
@@ -585,7 +596,7 @@ describe("specials", () => {
 
     // 6 * 26.2 = 157.2 -> 160. The normal price is 8 * 26.2 = 209.6 -> 210.
     expect(specialsSection(body)).toContain(
-      '<span class="price"><s>$8.00</s> $6.00<span class="sub"><s>ZiG 210</s> ZiG 160</span></span>',
+      '<span class="price"><span class="sr">was </span><s>$8.00</s> <span class="sr">now </span>$6.00<span class="sub"><span class="sr">was </span><s>ZiG 210</s> <span class="sr">now </span>ZiG 160</span></span>',
     );
   });
 
@@ -596,13 +607,21 @@ describe("specials", () => {
       { priceUsd: "8", priceZig: "250" },
     );
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>ZiG 250</s> <span class="sr">now </span>ZiG 160');
+  });
+
+  it("says was and now to a screen reader, which doesn't read strike-through (#119)", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "usd_only");
+
+    expect(specialsSection(await page(menuToken))).toContain(
+      '<span class="sr">was </span><s>$8.00</s> <span class="sr">now </span>$6.00',
+    );
   });
 
   it("puts a one-line struck price under both", async () => {
     const { menuToken } = await stewWith({ endsAt: ahead(1) }, "both");
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>$8.00 · ZiG 210</s> $6.00 · ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>$8.00 · ZiG 210</s> <span class="sr">now </span>$6.00 · ZiG 160');
   });
 
   it("shows a badge-only special with the normal price and nothing struck", async () => {
@@ -707,7 +726,7 @@ describe("specials", () => {
   it("for a ZiG-only item with a rate, shows the dollar special as ZiG, calculated", async () => {
     const { menuToken } = await stewWith({ endsAt: ahead(1) }, "zig_only", { priceZig: "250" });
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>ZiG 250</s> <span class="sr">now </span>ZiG 160');
   });
 
   it("escapes a badge an owner typed", async () => {
@@ -873,7 +892,7 @@ describe("bundles", () => {
 
   it("a bundle's special price strikes the bundle's price, as for any item", async () => {
     const { menuToken } = await withBundle({ startsAt: ago(1), specialPriceUsd: "8" });
-    expect(specialsSection(await page(menuToken))).toContain("<s>$9.50</s> $8.00");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>$9.50</s> <span class="sr">now </span>$8.00');
   });
 
   it("keeps its own restaurant's bundles: another's never show", async () => {
@@ -972,6 +991,13 @@ describe("layout (issue 26)", () => {
     // Sticky, and anchors land clear of it.
     expect(body).toMatch(/nav\{[^}]*position:sticky/);
     expect(body).toMatch(/scroll-margin-top/);
+  });
+
+  it("wraps the jump bar on a wide screen, where a mouse can't scroll it, and keeps the sections clear of it (#119)", async () => {
+    const { menuToken } = await menuWith(null, ["Starters", "Mains"]);
+    const body = await page(menuToken);
+    expect(body).toMatch(/@media \(min-width:640px\)\{nav\{flex-wrap:wrap;overflow:visible\}/);
+    expect(body).toMatch(/\{[^{}]*\}\.sections section\{scroll-margin-top:1\d\dpx/);
   });
 
   it("puts Specials first in the jump bar when there are some", async () => {

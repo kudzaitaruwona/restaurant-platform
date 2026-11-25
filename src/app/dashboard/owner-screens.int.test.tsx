@@ -572,6 +572,17 @@ describe("/dashboard/menu", () => {
     expect(html).toContain("Mark sold out");
   });
 
+  it("names each row's controls after its item, so a list of them can be told apart (#119)", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain('<span class="sr-only">Edit Beef stew</span>');
+    expect(html).toMatch(/Mark sold out<span class="sr-only"> Beef stew<\/span>/);
+    expect(html).toMatch(/Archive item<span class="sr-only"> Beef stew<\/span>/);
+  });
+
   it("lets staff see the list and mark items sold out, but not add to it", async () => {
     const categoryId = await newCategory("Mains");
     await addItem(post("/api/menu/items", item(categoryId)));
