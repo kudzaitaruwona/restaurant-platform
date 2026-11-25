@@ -7,8 +7,8 @@ import {
   createSpecial,
   overlapMessage,
   parseNewSpecial,
-  specialPriceProblem,
 } from "@/lib/specials";
+import { newSpecialMessage } from "@/lib/special-price-refusal";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /**
@@ -25,8 +25,6 @@ export async function POST(request: NextRequest) {
   if (!special.success) {
     return Response.json({ error: special.message }, { status: 400 });
   }
-  const tooHigh = await specialPriceProblem(tenant, special.data);
-  if (tooHigh) return Response.json({ error: tooHigh }, { status: 400 });
   const ask = confirmationNeeded(
     zeroPriceWarnings({ usd: special.data.priceUsd, zig: special.data.priceZig }, "special"),
     form,
@@ -40,6 +38,9 @@ export async function POST(request: NextRequest) {
   }
   if (result === "already_over") {
     return Response.json({ error: alreadyOverMessage }, { status: 400 });
+  }
+  if (result !== "saved") {
+    return Response.json({ error: newSpecialMessage(result.above) }, { status: 400 });
   }
   return formSaved(request, "/dashboard/menu");
 }

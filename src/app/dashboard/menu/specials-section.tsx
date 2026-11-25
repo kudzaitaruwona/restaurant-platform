@@ -112,7 +112,7 @@ export function SpecialsSection({
                 <Input name="title" maxLength={80} />
               </Field>
               <p className="text-caption text-ink-2">
-                Leave both prices blank for a badge alone. A price in one currency discounts both, and has to be below the normal price.
+                Leave both prices blank for a badge alone. A price in one currency discounts both, and can’t be above the normal price.
               </p>
               <div className="grid gap-4 @md:grid-cols-2">
                 <Field label="Special price (USD)" hint="Optional.">

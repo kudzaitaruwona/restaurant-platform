@@ -3,10 +3,9 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizz
 import { z } from "zod";
 import { menuItems, restaurants, specials } from "@/db/schema";
 import { optionalPrice } from "@/lib/menu";
-import { latestRate } from "@/lib/exchange-rate";
 import { revalidateMenu } from "@/lib/menu-cache";
-import { effectiveUsd, effectiveZig, formatUsd, formatZig, specialUsd, specialZig } from "@/lib/pricing";
 import { usdShape, zigShape } from "@/lib/price-input";
+import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -17,7 +16,9 @@ import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/te
  * "@/lib/pricing". Every write calls revalidateMenu, so a route can't forget to.
  *
  * Postgres holds D-05 (`specials_no_overlap`): two active specials on one item
- * can't overlap, and this file only turns that refusal into an answer.
+ * can't overlap. It also holds S-45 (`specials_not_above_normal`): a special is
+ * never above its item's normal price. This file only turns those refusals into
+ * answers.
  */
 
 type Writer = Pick<TenantContext, "restaurantId" | "platformAdminId">;
@@ -177,85 +178,18 @@ export function specialRefusal(error: unknown): "overlap" | "already_over" | nul
   return null;
 }
 
-const calculatedAbove = (currency: string, price: string, normal: string, typed: string) =>
-  `At the current rate this special's ${currency} price is calculated as ${price}, above the normal price (${normal}). Enter a special ${currency} price too, or lower the special ${typed} price.`;
-
-/**
- * Why a special price can't be saved, or null: a special above the item's
- * normal price isn't a special, and the page would strike through a price lower
- * than the one shown (issue #112). What the special charges is compared with what
- * the item normally charges in both currencies, because a price typed in one
- * replaces the other too (specialUsd, specialZig).
- *
- * A currency whose special price is calculated is compared only when the item
- * fixes both its prices. When it fixes one, both normal prices come from that one
- * at the same rate, so a special at or below the typed currency's normal price
- * can end up above the other one only by rounding up (ZiG 210 is $8.02, and $8.02
- * back is ZiG 220), and an equal or lower special must not be refused for that.
- *
- * With no rate nothing is calculated, so nothing is refused on that account. An
- * item that isn't live is createSpecial's 404.
- */
-export async function specialPriceProblem(
-  ctx: Pick<TenantContext, "restaurantId">,
-  { menuItemId, priceUsd, priceZig }: Pick<NewSpecial, "menuItemId" | "priceUsd" | "priceZig">,
-): Promise<string | null> {
-  if (!isId(menuItemId) || (priceUsd === null && priceZig === null)) return null;
-  const { restaurantId } = ctx;
-  return withTenant(ctx, async (tx) => {
-    const [item] = await tx
-      .select({ priceUsd: menuItems.priceUsd, priceZig: menuItems.priceZig })
-      .from(menuItems)
-      .where(
-        and(
-          eq(menuItems.restaurantId, restaurantId),
-          eq(menuItems.id, menuItemId),
-          isNull(menuItems.archivedAt),
-        ),
-      );
-    if (!item) return null;
-    const [restaurant] = await tx
-      .select({ zigStep: restaurants.zigRoundingStep, usdStep: restaurants.usdRoundingStep })
-      .from(restaurants)
-      .where(eq(restaurants.id, restaurantId));
-    const rate = await latestRate(tx, restaurantId);
-    const pricing = { rate: rate?.usdToZig ?? null, ...restaurant };
-
-    const normalUsd = effectiveUsd(item, pricing);
-    if (priceUsd !== null && normalUsd !== null && Number(priceUsd) > Number(normalUsd)) {
-      return `The special USD price (${formatUsd(priceUsd)}) is above the normal price (${formatUsd(normalUsd)}). A special has to be lower, or leave the price blank for a badge alone.`;
-    }
-    const normalZig = effectiveZig(item, pricing);
-    if (priceZig !== null && normalZig !== null && Number(priceZig) > Number(normalZig.amount)) {
-      return `The special ZiG price (${formatZig(priceZig)}) is above the normal price (${formatZig(normalZig.amount)}). A special has to be lower, or leave the price blank for a badge alone.`;
-    }
-    if (item.priceUsd === null || item.priceZig === null) return null;
-
-    const special = { priceUsd, priceZig };
-    const usd = specialUsd(item, special, pricing);
-    if (priceUsd === null && usd !== null && normalUsd !== null && Number(usd) > Number(normalUsd)) {
-      return calculatedAbove("USD", formatUsd(usd), formatUsd(normalUsd), "ZiG");
-    }
-    const zig = specialZig(item, special, pricing);
-    if (priceZig === null && zig && normalZig && Number(zig.amount) > Number(normalZig.amount)) {
-      return calculatedAbove("ZiG", formatZig(zig.amount), formatZig(normalZig.amount), "USD");
-    }
-    return null;
-  });
-}
-
 /**
  * Adds a promotion for a live item. A blank start is the moment of saving, as
  * spec 02 says, not an open lower end: an open one would overlap every special
  * that is over, since those stay active. "overlap" is D-05: the item already has
  * an active special in some of those dates. "already_over" is a blank start with
  * an end date in the past, which leaves no window. An archived item or another
- * restaurant's is "no_such_item".
+ * restaurant's is "no_such_item". `above` is S-45: the price is over the item's.
  */
 export async function createSpecial(
   ctx: Writer,
   { menuItemId, title, priceUsd, priceZig, startDate, endDate }: NewSpecial,
-): Promise<"saved" | "no_such_item" | "overlap" | "already_over"> {
+): Promise<"saved" | "no_such_item" | "overlap" | "already_over" | { above: SpecialAbove[] }> {
   if (!isId(menuItemId)) return "no_such_item";
 
   const { restaurantId } = ctx;
@@ -279,6 +213,8 @@ export async function createSpecial(
   } catch (error) {
     const refusal = specialRefusal(error);
     if (refusal) return refusal;
+    const above = specialsAbove(error);
+    if (above) return { above };
     // The form checks these first; this is the backstop.
     if (errorCode(error) === CHECK_VIOLATION) return "no_such_item";
     throw error;
@@ -289,14 +225,15 @@ export async function createSpecial(
 
 /**
  * Turns a special on or off. Turning it on again can meet D-05 (another active
- * special took its dates meanwhile), which is "overlap". The special of an
- * archived item, or of another restaurant, is "not_found".
+ * special took its dates meanwhile), which is "overlap", or S-45 (the item's price
+ * or the rate moved meanwhile), which is `above`. The special of an archived item,
+ * or of another restaurant, is "not_found".
  */
 export async function setSpecialActive(
   ctx: Writer,
   specialId: string,
   active: boolean,
-): Promise<"saved" | "not_found" | "overlap"> {
+): Promise<"saved" | "not_found" | "overlap" | { above: SpecialAbove[] }> {
   if (!isId(specialId)) return "not_found";
 
   const { restaurantId } = ctx;
@@ -353,6 +290,8 @@ export async function setSpecialActive(
     if (!saved) return "not_found";
   } catch (error) {
     if (errorCode(error) === EXCLUSION_VIOLATION) return "overlap";
+    const above = specialsAbove(error);
+    if (above) return { above };
     throw error;
   }
   revalidateMenu(ctx);

@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { getCurrentRate, parseNewExchangeRate, rateChangeWarning, setExchangeRate } from "@/lib/exchange-rate";
 import { confirmationNeeded } from "@/lib/confirmation";
 import { formSaved } from "@/lib/form-response";
+import { liftedMessage } from "@/lib/special-price-refusal";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Sets "1 USD = ___ ZiG", from /dashboard/menu. Owner only (S-26). */
@@ -19,6 +20,9 @@ export async function POST(request: NextRequest) {
   const ask = confirmationNeeded(jump ? [jump] : [], form);
   if (ask) return ask;
 
-  await setExchangeRate(tenant, rate.data);
+  const result = await setExchangeRate(tenant, rate.data);
+  if (result !== "saved") {
+    return Response.json({ error: liftedMessage(result.above) }, { status: 400 });
+  }
   return formSaved(request, "/dashboard/menu");
 }

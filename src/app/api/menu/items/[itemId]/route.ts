@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { confirmationNeeded } from "@/lib/confirmation";
 import { formSaved } from "@/lib/form-response";
 import { bundleDescriptionMessage, itemWarnings, parseItemEdit, updateMenuItem } from "@/lib/menu";
+import { liftedMessage } from "@/lib/special-price-refusal";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Edits an item, from /dashboard/menu. Owner only (S-26). */
@@ -32,6 +33,9 @@ export async function POST(
       { error: "Enter a USD price, or give the item a ZiG price." },
       { status: 400 },
     );
+  }
+  if (result !== "saved") {
+    return Response.json({ error: liftedMessage(result.above) }, { status: 400 });
   }
   return formSaved(request, "/dashboard/menu");
 }

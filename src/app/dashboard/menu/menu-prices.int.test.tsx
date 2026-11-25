@@ -112,7 +112,7 @@ describe("a special above the normal price", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       error:
-        "The special USD price ($25.00) is above the normal price ($19.50). A special has to be lower, or leave the price blank for a badge alone.",
+        "The special USD price ($25.00) is above the normal price ($19.50). A special can't be above it. Change the price, or leave it blank for a badge alone.",
     });
     expect(await specialsOf()).toEqual([]);
   });
