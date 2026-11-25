@@ -209,11 +209,12 @@ body:has(.order:not([hidden])){overflow:hidden}
  * so a retry is the same submission and the server places it once. While the last
  * answer was lost, a retry goes to the session it was first sent to, even one that
  * has ended, where the server can say whether it was placed.
- * A reload doesn't lose that submission (#136): while an id is held, the cart as
- * it stands, the id, the session it went to and the voids counted at the start are
- * kept in sessionStorage (this tab only, so a new tab starts clean), under a key of
- * the table's token. They are read back once the first join has answered, and only
- * if they name this table and the very session just joined, in a shape the page
+ * A reload doesn't lose that submission (#136): while its answer is unknown, the
+ * cart as it stands, the id, the session it went to and the voids counted at the
+ * start are kept in sessionStorage (this tab only, so a new tab starts clean), under
+ * a key of the table's token. Any answer ends that, a refusal included: a refused
+ * cart is the page's only. They are read back once the first join has answered, and
+ * only if they name this table and the very session just joined, in a shape the page
  * would have made; anything else is deleted unread. A page that can't use storage
  * works as before.
  */
@@ -292,16 +293,18 @@ export const ORDER_SCRIPT = `(() => {
   let keep = false;
   // Not crypto.randomUUID: older phones, and plain http, don't have it.
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
-  // The submission kept across a reload (#136), while its id is held. Storage can be
-  // refused or full: then there is only memory, as before.
+  // The submission kept across a reload (#136), while its answer is unknown: the whole
+  // cart goes back to the session it was sent to. An answered one isn't kept, so its
+  // lines can't come back as another session's. Storage can be refused or full: then
+  // there is only memory, as before.
   const token = decodeURIComponent(location.pathname.split("/")[2] || "");
   const slot = "order-pending:" + token;
   const persist = () => {
     try {
-      if (!request || cart.length === 0) return sessionStorage.removeItem(slot);
+      if (!asked || cart.length === 0) return sessionStorage.removeItem(slot);
       sessionStorage.setItem(slot, JSON.stringify({
         token,
-        session: asked || session,
+        session: asked,
         request,
         name: fields.name.value.trim(),
         voids: voidsBefore,
@@ -603,7 +606,7 @@ export const ORDER_SCRIPT = `(() => {
       body.set("request", request);
       const response = await fetch(api("/orders"), { method: "POST", body });
       const answer = await response.json().catch(() => ({}));
-      if (answer.placed || (answer.error && response.status < 500)) asked = null;
+      if (answer.placed || (answer.error && response.status < 500)) { asked = null; persist(); }
       if (response.status === 201 && answer.placed) {
         request = null;
         keep = !!retrying;
@@ -619,7 +622,7 @@ export const ORDER_SCRIPT = `(() => {
         poll(true);
         return;
       }
-      if (answer.code === "session_changed" || answer.code === "already_placed") { request = null; persist(); }
+      if (answer.code === "session_changed" || answer.code === "already_placed") request = null;
       if (answer.code === "session_changed") {
         await join().catch(() => {});
         keepCart();

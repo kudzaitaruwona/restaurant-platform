@@ -234,6 +234,7 @@ async function loadPage(
   const stew = addButton("item-stew", "Beef stew", stewPrice);
   if (!stewListed) addButtons.splice(addButtons.indexOf(stew), 1);
   const rice = addButton("item-rice", "Rice", "$3.00");
+  const soup = addButton("item-soup", "Soup", "$4.00");
 
   runInNewContext(ORDER_SCRIPT, {
     document,
@@ -270,6 +271,7 @@ async function loadPage(
     state,
     stew,
     rice,
+    soup,
     name: fields.name,
     form,
     /** Where a problem with the order shows: inside the sheet, above its buttons. */
@@ -1873,34 +1875,179 @@ describe("a reload after a lost order response keeps the cart and its request id
     expect(moved.has(key)).toBe(false);
   });
 
+  /** A stored value the page would have written, and what each row below breaks in it. */
+  const line = { id: "item-stew", name: "Beef stew", price: "$8.00", quantity: 1, note: "no onions" };
+  const valid = {
+    token: "some-token",
+    session: "session-1",
+    request: "6f1f0f3e-5d0a-4d8b-9c55-0c4c1f6c8a11",
+    name: "Tariro",
+    voids: { "Dish 1": 1 },
+    lines: [line, { ...line, id: "item-rice", name: "Rice", price: "$3.00", quantity: 20, note: "" }],
+  };
+  const manyLines = (count: number) => Array.from({ length: count }, (_, index) => ({ ...line, id: `item-${index}` }));
+  const load = async (value: unknown) => {
+    const tab = new Map([[key, typeof value === "string" ? value : JSON.stringify(value)]]);
+    return { tab, page: await loadPage(new Map(), "session-1", { tab }) };
+  };
+
   it.each([
-    ["not JSON", "{oops"],
-    ["not an object", "5"],
-    ["no lines", JSON.stringify({ token: "some-token", session: "session-1", request: "r", lines: [] })],
-    [
-      "a quantity out of range",
-      JSON.stringify({
-        token: "some-token",
-        session: "session-1",
-        request: "r",
-        lines: [{ id: "item-stew", name: "x", price: "", quantity: 99, note: "" }],
-      }),
-    ],
-    [
-      "a request that isn't an id",
-      JSON.stringify({
-        token: "some-token",
-        session: "session-1",
-        request: { a: 1 },
-        lines: [{ id: "item-stew", name: "x", price: "", quantity: 1, note: "" }],
-      }),
-    ],
+    ["as the page writes it", valid],
+    ["with as many lines as an order can have", { ...valid, lines: manyLines(20) }],
+    ["with a note as long as one can be", { ...valid, lines: [{ ...line, note: "x".repeat(200) }] }],
+    ["with nothing voided", { ...valid, voids: {} }],
+  ])("restores a stored value %s", async (_what, value) => {
+    const { tab, page } = await load(value);
+
+    expect(page.cart.children).toHaveLength(value.lines.length);
+    expect(page.noteInputs()[0].value).toBe(value.lines[0].note);
+    expect(tab.has(key)).toBe(true);
+    await page.placeAs("Tariro");
+    expect(bodies(page)[0].get("request")).toBe(value.request);
+  });
+
+  it.each<[string, unknown]>([
+    ["not JSON", `${JSON.stringify(valid)}}`],
+    ["not an object", 5],
+    ["null", null],
+    ["without a request", { ...valid, request: undefined }],
+    ["a request that isn't text", { ...valid, request: { a: 1 } }],
+    ["an empty request", { ...valid, request: "" }],
+    ["an over-long request", { ...valid, request: "r".repeat(65) }],
+    ["without a name", { ...valid, name: undefined }],
+    ["an over-long name", { ...valid, name: "n".repeat(101) }],
+    ["without lines", { ...valid, lines: undefined }],
+    ["lines that aren't a list", { ...valid, lines: "x" }],
+    ["no lines", { ...valid, lines: [] }],
+    ["21 lines", { ...valid, lines: manyLines(21) }],
+    ["an empty line", { ...valid, lines: [line, null] }],
+    ["a duplicate id", { ...valid, lines: [line, { ...line }] }],
+    ["an id that isn't text", { ...valid, lines: [{ ...line, id: 7 }] }],
+    ["an over-long id", { ...valid, lines: [{ ...line, id: "i".repeat(65) }] }],
+    ["a dish name that isn't text", { ...valid, lines: [{ ...line, name: 7 }] }],
+    ["an over-long dish name", { ...valid, lines: [{ ...line, name: "n".repeat(201) }] }],
+    ["a price that isn't text", { ...valid, lines: [{ ...line, price: 7 }] }],
+    ["an over-long price", { ...valid, lines: [{ ...line, price: "9".repeat(41) }] }],
+    ["a note that isn't text", { ...valid, lines: [{ ...line, note: null }] }],
+    ["an over-long note", { ...valid, lines: [{ ...line, note: "x".repeat(201) }] }],
+    ["a quantity of none", { ...valid, lines: [{ ...line, quantity: 0 }] }],
+    ["a quantity over 20", { ...valid, lines: [{ ...line, quantity: 21 }] }],
+    ["a quantity that isn't whole", { ...valid, lines: [{ ...line, quantity: 1.5 }] }],
+    ["without voids", { ...valid, voids: undefined }],
+    ["null voids", { ...valid, voids: null }],
+    ["voids that aren't counts by dish", { ...valid, voids: 5 }],
+    ["a negative void count", { ...valid, voids: { "Dish 1": -1 } }],
+    ["a void count that isn't a number", { ...valid, voids: { "Dish 1": "1" } }],
   ])("ignores a stored value that is %s", async (_what, value) => {
-    const tab = new Map([[key, value]]);
-    const page = await loadPage(new Map(), "session-1", { tab });
+    const { tab, page } = await load(value);
 
     expect(page.cart.children).toHaveLength(0);
+    expect(page.error.textContent).toBe("");
     expect(tab.has(key)).toBe(false);
+    // Nothing of it is left in the page either: the next order is one of its own.
+    await page.orderOne("Tariro");
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-stew"]);
+    expect(bodies(page)[0].get("request")).not.toBe(valid.request);
+  });
+
+  describe("only while its answer is unknown: a refused cart is the page's only", () => {
+    const refusals: [string, Reply][] = [
+      ["unavailable", { status: 409, json: { error: "Sold out.", code: "unavailable", item: "item-rice" } }],
+      ["rate limited", { status: 429, json: { error: "Wait." } }],
+      ["not valid", { status: 400, json: { error: "Not valid." } }],
+    ];
+    const reload = (tab: Map<string, string>, session: string) => loadPage(new Map(), session, { tab });
+    const expectNothingBack = async (page: Awaited<ReturnType<typeof loadPage>>) => {
+      expect(page.cart.children).toHaveLength(0);
+      expect(page.open.hidden).toBe(true);
+      expect(page.error.textContent).toBe("");
+      expect(page.waiterStatus.textContent).not.toMatch(/may not have gone through/i);
+      await page.placeAs("Rudo");
+      expect(bodies(page)).toHaveLength(0);
+    };
+
+    /** Stew and rice, refused in session 1: a rice that sold out, say, leaves the stew. */
+    async function refused(reply: Reply) {
+      const tab = new Map<string, string>();
+      const page = await loadPage(new Map(), "session-1", { tab });
+      await page.add(page.stew);
+      await page.add(page.rice);
+      page.state.orderReply = reply;
+      await page.placeAs("Tariro");
+      page.state.orderReply = undefined;
+      return { tab, page };
+    }
+
+    it.each(refusals)("doesn't keep a cart that was %s", async (_what, reply) => {
+      const { tab, page } = await refused(reply);
+      await page.buttonLabelled("+").dispatch("click");
+
+      expect(tab.has(key)).toBe(false);
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it.each(refusals)(
+      "never brings a cart that was %s in a session that has ended into the next party's",
+      async (_what, reply) => {
+        const { tab, page } = await refused(reply);
+        page.state.feed = { session: null, items: [] };
+        await page.tick();
+        page.state.sessionId = "session-2";
+        await page.add(page.soup);
+        await page.buttonLabelled("+").dispatch("click");
+        const [note] = page.noteInputs();
+        note.value = "no onions";
+        note.dispatch("input");
+
+        await expectNothingBack(await reload(tab, "session-2"));
+      },
+    );
+
+    it("doesn't call a dish added after a refusal emptied the cart an order that may not have gone through", async () => {
+      const tab = new Map<string, string>();
+      const page = await loadPage(new Map(), "session-1", { tab });
+      await page.add(page.rice);
+      page.state.orderReply = refusals[0][1];
+      await page.placeAs("Tariro");
+      expect(page.cart.children).toHaveLength(0);
+      await page.add(page.stew);
+
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it("lets go of a restored cart once its retry is refused", async () => {
+      const { tab } = await lostThenStored();
+      const page = await reload(tab, "session-1");
+      page.state.orderReply = refusals[1][1];
+      await page.placeAs("Tariro");
+
+      expect(page.quantities()).toEqual({ "Beef stew": 1 });
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it.each(refusals)("keeps the id in the page after one that was %s, and the next lost answer is kept", async (_what, reply) => {
+      const { tab, page } = await refused(reply);
+      page.state.loseOrderReply = true;
+      await page.placeAs("Tariro");
+      const reloaded = await reload(tab, "session-1");
+
+      expect(reloaded.error.textContent).toMatch(/may not have gone through/i);
+      await reloaded.placeAs("Tariro");
+      expect(bodies(page)[1].get("request")).toBe(bodies(page)[0].get("request"));
+      expect(bodies(reloaded)[0].toString()).toBe(bodies(page)[1].toString());
+    });
+
+    it("keeps a lost answer's session, not the one an Add has joined since", async () => {
+      const { tab, first } = await lostThenStored();
+      first.state.feed = { session: null, items: [] };
+      await first.tick();
+      first.state.sessionId = "session-2";
+      await first.add(first.soup);
+      await first.buttonLabelled("+").dispatch("click");
+
+      expect(JSON.parse(tab.get(key)!).session).toBe("session-1");
+      await expectNothingBack(await reload(tab, "session-2"));
+    });
   });
 
   it("shows today's price for a repriced dish, and still sends what was sent", async () => {
