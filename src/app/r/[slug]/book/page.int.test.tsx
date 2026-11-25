@@ -10,7 +10,7 @@ import {
 } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
 import Page from "./page";
-import { Confirmed } from "./details-form";
+import { AlreadyBooked } from "./details-form";
 
 // Only a real request has a connection to wait for.
 vi.mock("next/server", async (original) => ({
@@ -233,34 +233,22 @@ describe("the booking page", () => {
   });
 });
 
-describe("the confirmation", () => {
-  const confirmation = {
-    restaurantName: "Mbira Kitchen",
-    dateLabel: "Fri 6 Nov",
-    time: "19:00",
-    party: 4,
-    manageToken: "AbCdEfGhIjKlMnOpQrStUv",
-    contactPhone: "+263771234567",
-  };
+describe("in the form's place after booking (#89)", () => {
+  it("has no form to send again, and no token in the page", () => {
+    const html = renderToStaticMarkup(<AlreadyBooked again={() => {}} />);
 
-  it("shows restaurant, date, time and party, the cancel link and the contact number", () => {
-    const html = renderToStaticMarkup(<Confirmed confirmation={confirmation} />);
-
-    expect(html).toContain("Mbira Kitchen, Fri 6 Nov at 19:00, party of 4");
-    // The sentence is for screen readers; the ticket drawn from it is hidden from them.
-    expect(html).toMatch(/<div aria-hidden="true"[^>]*>.*Fri 6 Nov/);
-    expect(html).toContain("+263 77 123 4567");
-    expect(html).toMatch(/<a[^>]*href="\/b\/AbCdEfGhIjKlMnOpQrStUv"[^>]*>Cancel booking<\/a>/);
-    expect(html).toContain('href="tel:+263771234567"');
+    expect(html).toContain("You&#x27;re booked");
+    expect(html).toContain("Make another booking");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("/b/");
   });
 
-  it("leaves the phone line out when the restaurant has none, and never shows a table", () => {
-    const html = renderToStaticMarkup(
-      <Confirmed confirmation={{ ...confirmation, contactPhone: null }} />,
-    );
+  it("offers the booking while its page opens, and no second booking", () => {
+    const html = renderToStaticMarkup(<AlreadyBooked open={() => {}} />);
 
-    expect(html).not.toContain("tel:");
-    expect(html).toContain("Cancel booking");
-    expect(html.toLowerCase()).not.toContain("table");
+    expect(html).toContain("Open your booking");
+    expect(html).not.toContain("Make another booking");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("/b/");
   });
 });

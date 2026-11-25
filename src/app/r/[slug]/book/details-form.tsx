@@ -1,7 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { Calendar, Check, MessageCircle, Phone } from "lucide-react";
+import { Calendar, MessageCircle, Phone } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 import { inputClassName } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import type { Confirmation, TimeChoice } from "@/lib/bookings";
 import { displayPhone } from "@/lib/display-phone";
 import { postForm } from "@/lib/form-response";
 import { cn } from "@/lib/utils";
+import { bookedPath, forgetBooked, rememberBooked, useCanGoForward, useLeftOver } from "./just-booked";
 
 /** The part of Cloudflare's script this form uses. */
 type TurnstileApi = {
@@ -120,7 +121,10 @@ export function DetailsForm({
   const [time, setTime] = useState(firstChoice);
   const [refusal, setRefusal] = useState<Refusal>();
   const { container: turnstileContainer, token: turnstileToken } = useTurnstile(turnstileSiteKey);
-  const [confirmation, setConfirmation] = useState<Confirmation>();
+  // Where the new booking is, until the browser gets there. Never in a URL or markup
+  // of this page (just-booked.ts).
+  const [booked, setBooked] = useState<string>();
+  const leftOver = useLeftOver(action);
   const [pending, setPending] = useState(false);
   // Until the script is running, a submit would be a native post and the guest
   // would see raw JSON. The post is safe (method and action below: nothing goes in
@@ -142,8 +146,13 @@ export function DetailsForm({
       if (token) body.set(TURNSTILE_FIELD, token);
       const response = await postForm(action, body);
       const answer = await response.json();
-      if (response.ok) setConfirmation(answer.confirmation);
-      else setRefusal(answer);
+      if (response.ok) {
+        // Replaced, so Back can't return to this form (#89).
+        const path = bookedPath((answer.confirmation as Confirmation).manageToken);
+        rememberBooked(action);
+        setBooked(path);
+        window.location.replace(path);
+      } else setRefusal(answer);
     } catch {
       setRefusal({ error: "That didn't reach the restaurant. Try again." });
     } finally {
@@ -151,7 +160,20 @@ export function DetailsForm({
     }
   }
 
-  if (confirmation) return <Confirmed confirmation={confirmation} />;
+  // A new page, not just the form shown again: the bot check's widget went with it.
+  function startAgain() {
+    forgetBooked(action);
+    window.location.reload();
+  }
+
+  if (booked || leftOver) {
+    return (
+      <AlreadyBooked
+        open={booked ? () => window.location.replace(booked) : undefined}
+        again={booked ? undefined : startAgain}
+      />
+    );
+  }
 
   return (
     <form
@@ -283,55 +305,42 @@ export function DetailsForm({
   );
 }
 
-export function Confirmed({ confirmation }: { confirmation: Confirmation }) {
-  const { restaurantName, dateLabel, time, party, manageToken, contactPhone } = confirmation;
-  const section = useRef<HTMLElement>(null);
-  // On a phone the choices sit above: bring the guest to the answer.
-  useEffect(() => section.current?.scrollIntoView({ block: "start" }), []);
+/**
+ * In the form's place once it has booked (#89): for the moment before the booking's
+ * own page opens, and for a guest who comes Back to a form from before it.
+ */
+export function AlreadyBooked({ open, again }: { open?: () => void; again?: () => void }) {
+  const canGoForward = useCanGoForward();
   return (
-    <section ref={section} role="status" className="flex scroll-mt-4 flex-col gap-5 pt-2">
-      <span className="grid size-14 place-items-center rounded-full bg-accent-soft text-accent">
-        <Check aria-hidden className="size-7" />
-      </span>
-      <h2 className="text-heading font-semibold tracking-[-0.015em] text-ink">You&apos;re booked</h2>
-      <p className="sr-only">
-        {restaurantName}, {dateLabel} at {time}, party of {party}.
+    <section
+      id="details"
+      role="status"
+      className="flex scroll-mt-4 flex-col gap-3 rounded-card border border-line bg-surface px-4 py-5"
+    >
+      <h2 className="text-lead font-semibold text-ink">You&apos;re booked</h2>
+      <p className="text-body text-ink-2">
+        {again
+          ? "You just made a booking here. Its page has the cancel link, and so does your WhatsApp confirmation."
+          : "Opening your booking."}
       </p>
-      <div aria-hidden className="overflow-hidden rounded-card border border-line bg-surface">
-        <div className="border-b border-dashed border-line p-4 text-lead font-semibold">{restaurantName}</div>
-        <dl className="m-0 grid grid-cols-[1.3fr_1fr_1fr]">
-          <div className="px-4 py-3">
-            <dt className="text-caption text-ink-2">Date</dt>
-            <dd className="m-0 mt-0.5 pt-[3px] text-lead font-semibold whitespace-nowrap">{dateLabel}</dd>
-          </div>
-          <div className="border-l border-line px-4 py-3">
-            <dt className="text-caption text-ink-2">Time</dt>
-            <dd className="m-0 mt-0.5 text-title font-semibold whitespace-nowrap tabular-nums">{time}</dd>
-          </div>
-          <div className="border-l border-line px-4 py-3">
-            <dt className="text-caption text-ink-2">Party</dt>
-            <dd className="m-0 mt-0.5 text-title font-semibold tabular-nums">{party}</dd>
-          </div>
-        </dl>
-      </div>
-      {contactPhone && (
-        <div className="flex flex-col gap-2">
-          <p className="text-body text-ink-2">Need anything? Call the restaurant.</p>
-          <a
-            className={cn(buttonVariants({ variant: "secondary" }), "h-12 w-full tabular-nums")}
-            href={`tel:${contactPhone}`}
-          >
-            <Phone aria-hidden className="size-[18px]" />
-            {displayPhone(contactPhone)}
-          </a>
-        </div>
+      {(open || canGoForward) && (
+        <button
+          type="button"
+          onClick={open ?? (() => window.history.forward())}
+          className={cn(buttonVariants({ variant: "primary" }), "h-12 w-full")}
+        >
+          {open ? "Open your booking" : "Forward to your booking"}
+        </button>
       )}
-      <a
-        className="inline-flex min-h-11 items-center self-start text-body text-ink-2 underline underline-offset-[3px]"
-        href={`/b/${manageToken}`}
-      >
-        Cancel booking
-      </a>
+      {again && (
+        <button
+          type="button"
+          onClick={again}
+          className={cn(buttonVariants({ variant: "secondary" }), "h-12 w-full")}
+        >
+          Make another booking
+        </button>
+      )}
     </section>
   );
 }

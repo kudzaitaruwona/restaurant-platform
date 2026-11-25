@@ -20,7 +20,7 @@ The pitch the owner should feel: **"Nobody has to answer the phone for bookings 
 2. **Date**: today up to `max_days_ahead`, comparing *local* dates. A date is disabled if it has no service period, or if closures leave it with no candidate times. Partly closed dates stay enabled and just show fewer times.
 3. **Available times**, grouped by service period ("Lunch", "Dinner"). Only times that can actually be seated are shown.
 4. **Details:** name (required), WhatsApp number (required, with the country code defaulting to +263), an optional note (200 characters), and a required consent checkbox: *"Send my confirmation and reminder on WhatsApp."*
-5. **Confirm**, then an instant confirmation screen showing restaurant, date, time and party size, a **"Cancel booking" link**, and the restaurant's contact number.
+5. **Confirm**, then an instant confirmation screen (the manage page, see below) showing restaurant, date, time and party size, a **"Cancel booking" link**, and the restaurant's contact number.
 
 The guest never sees which table they've been given.
 
@@ -32,6 +32,8 @@ The guest never sees which table they've been given.
 - The race-lost response offers up to 4 times, on the same date, closest first.
 - The final party size option is labelled one above the maximum ("9+" when `max_online_party_size` is 8) *(proposed)*, because "8" is already bookable. The contact message's `{n}` is the smallest party that can't book online: one more than the smaller of `max_online_party_size` and the biggest bookable, unarchived table. A size between the two limits shows the same message, not an empty list. If the number can't make a WhatsApp link (wa.me needs the full international number), the page shows the number alone.
 - A date outside today to `max_days_ahead` is refused on confirm with "That date can't be booked online. Choose another date." The date is bounded before any date arithmetic, so a date like 9999-12-31 is a refusal, not an error. A time that was never on the grid is still the race-lost answer. "1 upcoming bookings" is written "1 upcoming booking".
+- *(Proposed, #89)* Confirming replaces the form in the tab's history with `/b/{manage_token}?booked=1`, the manage page saying "You're booked.", so a reload, or Back to it, shows the booking and its cancel link, never a form. The token is never in the booking page's URL, markup, storage or history state, because that page runs Turnstile's script. A booking form reached afterwards by Back or reload (one for another time, say) shows "You're booked", a button forward to the booking and "Make another booking" in the form's place. It knows from the time of the booking alone, kept in `sessionStorage`; a form reached by a link is live.
+- *(Proposed, #89)* The per-phone limit refusal shows the restaurant's number and WhatsApp link, and points at the link in the WhatsApp confirmation. It never links to the bookings it counts: whoever is asking has only typed a number, and the link would let them read and cancel them.
 - Confirming needs JavaScript, so that a refusal keeps what was typed without putting a phone number in a URL. The earlier steps are plain links and a GET form.
 
 **Party too large** (the "{max}+" option, or a size bigger than every bookable table): the page says "For groups of {n}+, contact the restaurant" and shows the phone and WhatsApp click-to-chat link (`restaurants.contact_phone`). This covers D-02.
@@ -43,7 +45,7 @@ Confirm re-checks everything, so it can refuse a time the list just showed. Ever
 |--------|---------|
 | Race lost (every candidate table was taken in between) | "That time was just booked. Here are the nearest available times." |
 | Lead time passed while the page was open | "That time is now too soon to book online. Here are the next available times." |
-| Phone already has `max_active_bookings_per_phone` future bookings | "You already have {n} upcoming bookings here. Cancel one or contact the restaurant." |
+| Phone already has `max_active_bookings_per_phone` future bookings | "You already have {n} upcoming bookings here. Cancel one with the link in its WhatsApp confirmation, or contact the restaurant." |
 | Bot check failed | "We couldn't verify the request. Please try again." |
 
 ### Manage page `/b/{manage_token}`
@@ -52,7 +54,7 @@ Confirm re-checks everything, so it can refuse a time the list just showed. Ever
 
 *(Proposed)* How the page behaves where the lines above leave it open (ticket #34):
 - It is a Route Handler that writes its own HTML, like the menu (S-32), so an unknown token is a real 404 and the response headers are the page's own. It ships no script.
-- The token is a bearer secret in the URL, so every response, found or not, carries `Cache-Control: private, no-store`, `Referrer-Policy: same-origin` and `X-Robots-Tag: noindex`. It never reaches another site. The policy can't be `no-referrer`: under it Chrome posts the cancel form with `Origin: null`, which the proxy refuses on every path. The page links nowhere off the site except the restaurant's `tel:` number, and its one link off `/b/` ("Book again") is `rel="noreferrer"` *(proposed, #104)*, because the booking page runs Turnstile's script.
+- The token is a bearer secret in the URL, so every response, found or not, carries `Cache-Control: private, no-store`, `Referrer-Policy: origin` and `X-Robots-Tag: noindex`. It never reaches another site. *(Proposed, #89)* Not `same-origin`: that leaves the URL readable in the Navigation API of the booking page, a history entry away. The policy can't be `no-referrer`: under it Chrome posts the cancel form with `Origin: null`, which the proxy refuses on every path. The page links nowhere off the site except the restaurant's `tel:` number, and its one link off `/b/` ("Book again") is `rel="noreferrer"` *(proposed, #104)*, because the booking page runs Turnstile's script.
 - **GET only reads. Cancel is a POST** to the same URL, so a link preview or a prefetch can't cancel. *(Proposed, #104)* The page's Cancel is a link to `/b/{token}?cancel=1`, a plain page (no script) that asks "Cancel this booking?", shows the booking, and holds the POST form ("Yes, cancel booking") beside a "Keep booking" link back. Past the cutoff `?cancel=1` shows the usual page. A cancelled booking's page, and the page right after a cancel, carry a "Book again" link to `/r/{slug}/book`. The proxy refuses a cross-site POST. The request carries nothing but the token: the instant is Postgres's `now()`, never the client's.
 - Cancel is one status-guarded `UPDATE` (`status = 'confirmed'` and `now() <= starts_at - guest_cancel_cutoff_minutes`), so a guest cancel can't overwrite a staff Seat or No-show that lands first. The cutoff is inclusive: exactly `guest_cancel_cutoff_minutes` before the start still cancels. It sets `cancelled_by = guest` and `cancelled_at`, which frees the table.
 - Cancelling twice is safe and says "This booking was already cancelled." A `seated`, `completed` or `no_show` booking shows that state and has no cancel, and so does one staff cancelled. A confirmed booking past the cutoff shows "Too late to cancel online. Please call." and the restaurant's number.

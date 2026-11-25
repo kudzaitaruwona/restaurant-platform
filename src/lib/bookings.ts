@@ -499,7 +499,7 @@ export const closedMessage = "This restaurant isn't taking online bookings right
 /** *(Proposed)* Spec 04 has no row for a date outside today to max_days_ahead. */
 export const dateMessage = "That date can't be booked online. Choose another date.";
 export const phoneLimitMessage = (held: number) =>
-  `You already have ${held} upcoming ${held === 1 ? "booking" : "bookings"} here. Cancel one or contact the restaurant.`;
+  `You already have ${held} upcoming ${held === 1 ? "booking" : "bookings"} here. Cancel one with the link in its WhatsApp confirmation, or contact the restaurant.`;
 export const largePartyMessage = (threshold: number) =>
   `For groups of ${threshold}+, contact the restaurant`;
 
@@ -516,7 +516,7 @@ export type ConfirmOutcome =
   | { outcome: "confirmed"; confirmation: Confirmation }
   | { outcome: "race_lost"; times: TimeChoice[] }
   | { outcome: "lead_time"; times: TimeChoice[] }
-  | { outcome: "phone_limit"; held: number }
+  | { outcome: "phone_limit"; held: number; contactPhone: string | null; whatsappLink: string | null }
   | { outcome: "date_unavailable" }
   | {
       outcome: "party_too_large";
@@ -603,7 +603,9 @@ export async function confirmBooking(
       }
 
       const held = await upcomingFor(tx, tenant, guest.phone, now);
-      if (held >= rules.maxActiveBookingsPerPhone) return { outcome: "phone_limit", held };
+      if (held >= rules.maxActiveBookingsPerPhone) {
+        return { outcome: "phone_limit", held, ...contactOf(restaurant.contactPhone) };
+      }
 
       const chosen = (await timesOn(tx, tenant, read, day)).find((slot) => slot.time === time);
       const manageToken = mintQrToken();
@@ -639,7 +641,11 @@ export async function confirmBooking(
           // rolled back, so the transaction is whole, and a new statement now sees
           // whoever won.
           const heldNow = await upcomingFor(tx, tenant, guest.phone, now);
-          return { outcome: "phone_limit", held: Math.max(heldNow, rules.maxActiveBookingsPerPhone) };
+          return {
+            outcome: "phone_limit",
+            held: Math.max(heldNow, rules.maxActiveBookingsPerPhone),
+            ...contactOf(restaurant.contactPhone),
+          };
         } else throw error;
       }
 

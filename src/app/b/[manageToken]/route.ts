@@ -1,5 +1,5 @@
 import { cancelBooking, getManagedBooking } from "@/lib/bookings";
-import { bookingResponse, confirmCancelResponse, notFoundResponse } from "@/lib/manage-page";
+import { bookingResponse, confirmCancelResponse, justBookedResponse, notFoundResponse } from "@/lib/manage-page";
 import { resolvePublicToken } from "@/lib/tenant/public";
 
 /**
@@ -22,9 +22,12 @@ export async function GET(request: Request, { params }: RouteContext<"/b/[manage
 
   const booking = await getManagedBooking(tenant, manageToken);
   if (!booking) return notFoundResponse();
+  const query = new URL(request.url).searchParams;
   // ?cancel=1 is the confirm step before the POST; it too only reads (#104).
-  return new URL(request.url).searchParams.has("cancel")
-    ? confirmCancelResponse(manageToken, booking)
+  if (query.has("cancel")) return confirmCancelResponse(manageToken, booking);
+  // ?booked=1 is where the booking form sends the guest (#89).
+  return query.has("booked")
+    ? justBookedResponse(manageToken, booking)
     : bookingResponse(manageToken, booking);
 }
 
