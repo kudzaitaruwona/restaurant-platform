@@ -61,6 +61,14 @@ export function AdminForm({
       }
       const body = await response.json().catch(() => undefined);
       setError(body?.error ?? "That didn't work. Try again.");
+      // The route says which field it refused: it takes focus, marked invalid
+      // until it's changed, so the message isn't the only sign of where.
+      const refused = typeof body?.field === "string" ? form.elements.namedItem(body.field) : null;
+      if (refused instanceof HTMLInputElement) {
+        refused.setAttribute("aria-invalid", "true");
+        refused.addEventListener("input", () => refused.removeAttribute("aria-invalid"), { once: true });
+        refused.focus();
+      }
     } catch {
       setError("That didn't work. Try again.");
     } finally {

@@ -45,6 +45,18 @@ describe("the booking metrics panel", () => {
     expect(shown).toContain("No-show rate Not yet No finished bookings yet");
   });
 
+  it("doesn't report 0 bookings made while staff weren't answering when there are none", () => {
+    const shown = text(none);
+
+    expect(shown).toContain("Booked while staff weren't answering Not yet No online bookings yet");
+  });
+
+  it("shows a real 0 once there are online bookings and none came outside hours", () => {
+    expect(text({ ...none, online: 2, onlineShare: 1 })).toContain(
+      "Booked while staff weren't answering 0 Online bookings made outside service hours",
+    );
+  });
+
   it("shows a real 0% no-show rate as 0%", () => {
     expect(text({ ...none, attended: 5, noShowRate: 0 })).toContain("No-show rate 0% 0 of 5");
   });

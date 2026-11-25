@@ -1,23 +1,28 @@
 import { ShieldX } from "lucide-react";
-import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { pressable } from "./motion";
+import { Suspense } from "react";
 import { StatusPage } from "./status-page";
+import { NoAccessLink, NoAccessReason } from "./way-out";
 
-/** What forbidden() shows: signed in, but not as someone who may see this page. */
+/**
+ * What forbidden() shows outside the staff shell: restaurant staff on /admin, or
+ * a platform admin on /dashboard who hasn't entered a restaurant, if they weren't
+ * sent on to /admin (noTenantForAdmin). An owner-only refusal of a staff page is
+ * dashboard/forbidden.tsx, which keeps the shell.
+ */
 export default function Forbidden() {
   return (
     <StatusPage
       icon={<ShieldX strokeWidth={1.75} />}
       title="You can't open this page"
       actions={
-        <Link href="/" className={cn(buttonVariants({ variant: "secondary", size: "staff", className: "w-full" }), pressable)}>
-          Go to the start
-        </Link>
+        <Suspense>
+          <NoAccessLink />
+        </Suspense>
       }
     >
-      Your account doesn&apos;t have access to it.
+      <Suspense>
+        <NoAccessReason />
+      </Suspense>
     </StatusPage>
   );
 }

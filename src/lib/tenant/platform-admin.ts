@@ -2,6 +2,7 @@ import "server-only";
 import { sql, type SQL } from "drizzle-orm";
 import { headers } from "next/headers";
 import { forbidden, unauthorized } from "next/navigation";
+import { cache } from "react";
 import { getAdminDb } from "@/db/admin";
 import type { currencyMode } from "@/db/schema";
 import { sessionOf } from "@/lib/auth";
@@ -34,9 +35,9 @@ export type CurrencyMode = (typeof currencyMode.enumValues)[number];
  * The only source of platform-admin identity, as getTenantContext() is for
  * tenants. Ends the request with a 401 for anyone without an identity, and a 403
  * for restaurant staff. A separate session from staff (D-07), and the admin row
- * is checked every time, so removing it ends the session on the next request.
+ * is checked on every request, so removing it ends the session on the next one.
  */
-export async function getPlatformAdminContext(): Promise<PlatformAdminContext> {
+export const getPlatformAdminContext = cache(async (): Promise<PlatformAdminContext> => {
   if (devAuthBypassEnabled()) {
     const identity = await currentIdentity();
     if (!identity) unauthorized();
@@ -54,7 +55,7 @@ export async function getPlatformAdminContext(): Promise<PlatformAdminContext> {
   const session = await sessionOf("staff", requestHeaders);
   if (session && (await findStaffIdentity(session.email))) forbidden();
   unauthorized();
-}
+});
 
 export const DEFAULT_TIMEZONE = "Africa/Harare";
 
@@ -248,7 +249,8 @@ export async function leaveOnSignOut(requestHeaders: Headers) {
   if (admin) await leaveRestaurant(admin);
 }
 
-export async function listRestaurants(admin: Admin) {
+/** Once per render of /admin: the list and the banner both read it. */
+export const listRestaurants = cache(async (admin: Admin) => {
   const { rows } = await getAdminDb().execute<{
     id: string;
     name: string;
@@ -262,7 +264,7 @@ export async function listRestaurants(admin: Admin) {
     currencyMode: currency_mode,
     hasOwner: has_owner,
   }));
-}
+});
 
 /**
  * Every restaurant's booking success metrics, by restaurant id, in one statement.

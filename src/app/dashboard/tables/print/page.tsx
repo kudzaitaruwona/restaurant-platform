@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { PrintSheet } from "./print-sheet";
+
+export const metadata: Metadata = { title: "Print table codes" };
 
 export default function Page({
   searchParams,

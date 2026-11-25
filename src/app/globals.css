@@ -263,6 +263,13 @@
   .staff-rail[data-open="true"] .rail-collapsed-only {
     opacity: 0;
   }
+  /* Expanded, the small name under an icon is gone: centre the icon on its row. */
+  .staff-rail .rail-icon {
+    transition: translate 120ms ease-out;
+  }
+  .staff-rail:is(:has(:focus-visible), :has([role="alert"]), [data-open="true"]) .rail-icon {
+    translate: 0 var(--rail-drop);
+  }
   @media (hover: hover) {
     .staff-rail:hover {
       width: 240px;
@@ -275,6 +282,9 @@
     }
     .staff-rail:hover .rail-collapsed-only {
       opacity: 0;
+    }
+    .staff-rail:hover .rail-icon {
+      translate: 0 var(--rail-drop);
     }
   }
 
@@ -303,6 +313,7 @@
     .staff-rail,
     .staff-rail .rail-fade,
     .staff-rail .rail-collapsed-only,
+    .staff-rail .rail-icon,
     .staff-drawer {
       transition: none !important;
     }

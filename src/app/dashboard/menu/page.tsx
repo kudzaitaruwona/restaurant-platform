@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { MenuScreen } from "./menu-screen";
+
+export const metadata: Metadata = { title: "Menu" };
 
 export default function Page() {
   return (

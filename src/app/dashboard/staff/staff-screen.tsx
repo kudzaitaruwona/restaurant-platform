@@ -18,6 +18,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { ActionForm } from "../action-form";
 import { initialsOf } from "../shell/nav";
+import { deactivateConfirmation, roleConfirmation } from "./confirmations";
 import { InviteStatusLabel } from "./invite-status";
 
 /** The hidden forms take no room until one has a refusal (or a "sent") to show. */
@@ -32,6 +33,8 @@ export async function StaffScreen() {
     getRestaurantSettings(tenant),
   ]);
   const ownerLogins = countOwnerLogins(team);
+  // The first person added is the owner (S-26): a restaurant can't start with staff.
+  const noOwnerYet = ownerLogins === 0;
   const active = team.filter((member) => member.active).length;
 
   return (
@@ -158,6 +161,11 @@ export async function StaffScreen() {
                         id={`role-${member.id}`}
                         action={`/api/staff/${member.id}/role`}
                         className={refusalSpace}
+                        confirmation={roleConfirmation({
+                          displayName: member.displayName,
+                          role: member.role,
+                          you,
+                        })}
                       >
                         <input type="hidden" name="role" value={makeOwner ? "owner" : "staff"} />
                       </ActionForm>
@@ -165,12 +173,7 @@ export async function StaffScreen() {
                         id={`deactivate-${member.id}`}
                         action={`/api/staff/${member.id}/deactivate`}
                         className={refusalSpace}
-                        confirmation={{
-                          title: `Deactivate ${member.displayName}?`,
-                          description: "They won't be able to sign in.",
-                          confirmLabel: "Deactivate",
-                          cancelLabel: "Keep",
-                        }}
+                        confirmation={deactivateConfirmation({ displayName: member.displayName, you })}
                       >
                         {null}
                       </ActionForm>
@@ -199,11 +202,18 @@ export async function StaffScreen() {
             <Field
               label="Role"
               hint={
-                ownerLogins >= OWNER_LOGIN_SOFT_LIMIT &&
-                "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked. Staff logins are unlimited."
+                noOwnerYet
+                  ? "This restaurant has no owner yet, so the first person added is its owner."
+                  : ownerLogins >= OWNER_LOGIN_SOFT_LIMIT &&
+                    "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked. Staff logins are unlimited."
               }
             >
-              <Select name="role" defaultValue="staff">
+              {/* React doesn't move a mounted select to a new defaultValue, so a new key. */}
+              <Select
+                key={noOwnerYet ? "first" : "later"}
+                name="role"
+                defaultValue={noOwnerYet ? "owner" : "staff"}
+              >
                 <option value="staff">Staff</option>
                 <option value="owner">Owner</option>
               </Select>

@@ -11,6 +11,8 @@ import { Dashboard } from "./dashboard";
  * restaurants of their own. Who's asking is faked, as in owner-screens: the real
  * seam is covered by access.int.test.ts.
  */
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) })); // ActionForm, outside an app router
+
 const session = vi.hoisted(() => ({ tenant: undefined as unknown }));
 
 vi.mock("@/lib/tenant", async (original) => ({
