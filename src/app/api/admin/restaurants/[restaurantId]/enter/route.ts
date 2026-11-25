@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
+import { navItems } from "@/app/dashboard/shell/nav";
 import {
   enterRestaurant,
   getPlatformAdminContext,
@@ -9,13 +10,19 @@ import {
 const restaurantIdParam = z.uuid();
 
 /**
+ * Where an onboarding checklist item lands the admin once they're in: only a
+ * page the staff rail itself lists, never a path the browser made up.
+ */
+const landingPages = new Set(navItems.map((item) => item.href));
+
+/**
  * "Enter restaurant" on /admin (spec 01). The id comes from the URL because the
  * admin is choosing a tenant, and it stops here: it goes to the function that
  * holds the choice against the session, and every later request gets the tenant
  * from getTenantContext() (S-28).
  */
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   context: RouteContext<"/api/admin/restaurants/[restaurantId]/enter">,
 ) {
   const admin = await getPlatformAdminContext();
@@ -27,5 +34,8 @@ export async function POST(
   const result = await enterRestaurant(admin, id.data);
   if ("problem" in result) notFound();
 
-  return new Response(null, { status: 303, headers: { Location: "/dashboard" } });
+  const form = await request.formData().catch(() => new FormData());
+  const next = form.get("next");
+  const location = typeof next === "string" && landingPages.has(next) ? next : "/dashboard";
+  return new Response(null, { status: 303, headers: { Location: location } });
 }

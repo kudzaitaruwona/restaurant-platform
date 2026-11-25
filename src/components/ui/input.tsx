@@ -43,15 +43,18 @@ export function Select({
   );
 }
 
-/** A label above its control, with an optional hint below. */
+/** A label above its control, with an optional hint and, when it's refused, why, below. */
 export function Field({
   label,
   hint,
+  error,
   className,
   children,
 }: {
   label: ReactNode;
   hint?: ReactNode;
+  /** Why this field was refused; the control should carry aria-invalid. */
+  error?: ReactNode;
   className?: string;
   children: ReactNode;
 }) {
@@ -60,6 +63,11 @@ export function Field({
       {label}
       {children}
       {hint && <span className="font-normal text-ink-2">{hint}</span>}
+      {error && (
+        <span role="alert" className="font-normal text-danger">
+          {error}
+        </span>
+      )}
     </label>
   );
 }

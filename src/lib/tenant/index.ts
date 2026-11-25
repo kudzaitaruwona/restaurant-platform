@@ -2,7 +2,7 @@ import "server-only";
 import { cache } from "react";
 import { and, eq } from "drizzle-orm";
 import { cookies, headers } from "next/headers";
-import { forbidden, unauthorized } from "next/navigation";
+import { forbidden, redirect, unauthorized } from "next/navigation";
 import { staff } from "@/db/schema";
 import { sessionOf } from "@/lib/auth";
 import { findPlatformAdminId, findStaffIdentity } from "@/lib/auth/identity";
@@ -49,6 +49,26 @@ async function enteredContext(admin: {
 }
 
 /**
+ * A platform admin outside any restaurant has no tenant, so a data request gets
+ * a 403. A page someone navigated to (Back after Leave, an old bookmark) goes
+ * to /admin instead, where they can pick a restaurant: a browser load sends
+ * `Sec-Fetch-Mode: navigate` and the app router's page fetches send `RSC`,
+ * neither of which a data call does.
+ */
+async function noTenantForAdmin(): Promise<never> {
+  const page = await (async () => {
+    const requestHeaders = await headers();
+    return (
+      (requestHeaders.get("sec-fetch-mode") === "navigate" || requestHeaders.get("rsc") === "1") &&
+      !requestHeaders.get("next-action")
+    );
+    // No request to read (a script or a test): the plain 403.
+  })().catch(() => false);
+  if (page) redirect("/admin");
+  forbidden();
+}
+
+/**
  * Who the real session says this is. findStaffIdentity runs on every request,
  * not just at sign-in, so deactivating someone logs them out on their next one.
  * Entering a restaurant is a deliberate act, so it wins over a staff session in
@@ -66,7 +86,7 @@ async function sessionIdentity(): Promise<TenantContext | undefined> {
 
   const session = await sessionOf("staff", requestHeaders);
   const member = session ? await findStaffIdentity(session.email) : undefined;
-  if (!member && admin) forbidden();
+  if (!member && admin) return noTenantForAdmin();
   return member;
 }
 
@@ -98,7 +118,7 @@ export const getTenantContext = cache(async (): Promise<TenantContext> => {
   if (!identity) unauthorized();
   if ("platformAdminId" in identity) {
     const entered = await enteredContext(identity);
-    if (!entered) forbidden();
+    if (!entered) return noTenantForAdmin();
     return entered;
   }
 

@@ -33,6 +33,8 @@ export async function StaffScreen() {
     getRestaurantSettings(tenant),
   ]);
   const ownerLogins = countOwnerLogins(team);
+  // The first person added is the owner (S-26): a restaurant can't start with staff.
+  const noOwnerYet = ownerLogins === 0;
   const active = team.filter((member) => member.active).length;
 
   return (
@@ -200,11 +202,13 @@ export async function StaffScreen() {
             <Field
               label="Role"
               hint={
-                ownerLogins >= OWNER_LOGIN_SOFT_LIMIT &&
+                noOwnerYet
+                  ? "This restaurant has no owner yet, so the first person added is its owner."
+                  : ownerLogins >= OWNER_LOGIN_SOFT_LIMIT &&
                 "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked. Staff logins are unlimited."
               }
             >
-              <Select name="role" defaultValue="staff">
+              <Select name="role" defaultValue={noOwnerYet ? "owner" : "staff"}>
                 <option value="staff">Staff</option>
                 <option value="owner">Owner</option>
               </Select>
