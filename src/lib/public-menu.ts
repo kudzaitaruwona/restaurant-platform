@@ -194,6 +194,10 @@ body:has(.order:not([hidden])){overflow:hidden}
  * page keeps nothing of it, since the floor view owns when a call ends. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
  * next Add or Place order joins the table's fresh one.
+ * Each submission has an id of its own (#84), kept until it is answered as placed,
+ * so a retry is the same submission and the server places it once. While the last
+ * answer was lost, a retry goes to the session it was first sent to, even one that
+ * has ended, where the server can say whether it was placed.
  */
 export const ORDER_SCRIPT = `(() => {
   const api = (path) => "/api/t/" + encodeURIComponent(location.pathname.split("/")[2]) + path;
@@ -241,6 +245,13 @@ export const ORDER_SCRIPT = `(() => {
   let session = null;
   let ended = false;
   let cart = [];
+  // The submission's id, and the session it went to while its answer is unknown.
+  let request = null;
+  let asked = null;
+  // A retry's confirmation, kept when the poll after it finds the session ended.
+  let keep = false;
+  // Not crypto.randomUUID: older phones, and plain http, don't have it.
+  const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
   const join = async () => {
     const response = await fetch(api("/session"), { method: "POST" });
     if (!response.ok) throw new Error(String(response.status));
@@ -324,7 +335,8 @@ export const ORDER_SCRIPT = `(() => {
       ended = feed.session !== session;
       const items = ended ? [] : feed.items;
       if (!ended) shown = items.length > 0;
-      if (ended) confirmed.replaceChildren();
+      if (!ended) keep = false;
+      else if (!keep) confirmed.replaceChildren();
       tracker.hidden = !shown && !confirmed.textContent;
       feedState.textContent = ended ? "This table's session has ended. Add an item to start a new one." : "";
       feedList.replaceChildren(...items.map((item) => {
@@ -396,7 +408,11 @@ export const ORDER_SCRIPT = `(() => {
     if (!name) return fail("Enter a name for the waiter.");
     fields.place.disabled = true;
     try {
-      if (ended) await join();
+      if (ended && !asked) await join();
+      const retry = asked;
+      asked = asked || session;
+      const to = asked;
+      request = request || newId();
       const body = new URLSearchParams();
       for (const line of cart) {
         body.append("item", line.id);
@@ -404,11 +420,15 @@ export const ORDER_SCRIPT = `(() => {
         body.append("note", line.note);
       }
       body.set("name", name);
-      body.set("session", session || "");
+      body.set("session", to || "");
+      body.set("request", request);
       const response = await fetch(api("/orders"), { method: "POST", body });
       const answer = await response.json().catch(() => ({}));
-      if (response.status === 201) {
-        try { localStorage.setItem("order-name:" + session, name); } catch {}
+      if (answer.placed || (answer.error && response.status < 500)) asked = null;
+      if (response.status === 201 && answer.placed) {
+        request = null;
+        keep = !!retry;
+        try { localStorage.setItem("order-name:" + to, name); } catch {}
         cart = [];
         error.textContent = "";
         draw();
@@ -422,6 +442,7 @@ export const ORDER_SCRIPT = `(() => {
         poll(true);
         return;
       }
+      if (answer.code === "session_changed" || answer.code === "already_placed") request = null;
       if (answer.code === "session_changed") await join().catch(() => {});
       if (answer.code === "unavailable") {
         cart = cart.filter((line) => line.id !== answer.item);
