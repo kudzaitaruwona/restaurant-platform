@@ -19,7 +19,7 @@ const statusPill: Record<SpecialStatus, { label: string; tone: "positive" | "neu
   off: { label: "Turned off", tone: "muted", icon: <Pause aria-hidden /> },
 };
 
-/** "2026-11-30" as the owner typed it: they read it back the same way. */
+/** "2026-11-30" as the owner typed it: they read it back the same way. Deliberately ISO (S-44). */
 function windowLabel({ startDate, endDate }: { startDate: string | null; endDate: string | null }) {
   if (startDate && endDate) return startDate === endDate ? startDate : `${startDate} to ${endDate}`;
   if (startDate) return `From ${startDate}, until turned off`;

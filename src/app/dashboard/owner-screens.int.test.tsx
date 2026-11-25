@@ -9,6 +9,7 @@ import { POST as renameCategory } from "@/app/api/menu/categories/[categoryId]/r
 import { POST as reorderCategories } from "@/app/api/menu/categories/order/route";
 import { POST as archiveItem } from "@/app/api/menu/items/[itemId]/archive/route";
 import { POST as editItem } from "@/app/api/menu/items/[itemId]/route";
+import { POST as moveItem } from "@/app/api/menu/items/[itemId]/move/route";
 import { POST as setRate } from "@/app/api/menu/exchange-rate/route";
 import { POST as addItem } from "@/app/api/menu/items/route";
 import { POST as removePhoto } from "@/app/api/menu/items/[itemId]/photo/remove/route";
@@ -85,10 +86,16 @@ vi.mock("@/lib/storage", () => ({
 // A client form's props never reach static markup, so what it would say once
 // clicked is surfaced here beside the real form.
 vi.mock("./action-form", async (original) => {
-  const { ActionForm } = await original<typeof import("./action-form")>();
+  const { ActionForm, confirmationOf } = await original<typeof import("./action-form")>();
+  // The dialog's question, its words and the name of its red button, in one string.
+  const said = (confirmation: React.ComponentProps<typeof ActionForm>["confirmation"]) => {
+    if (confirmation === undefined) return undefined;
+    const { title, description, confirmLabel } = confirmationOf(confirmation);
+    return `${title} ${description ?? ""} [${confirmLabel}]`;
+  };
   return {
     ActionForm: (props: React.ComponentProps<typeof ActionForm>) => (
-      <div data-confirmation={props.confirmation} data-saved-message={props.savedMessage}>
+      <div data-confirmation={said(props.confirmation)} data-saved-message={props.savedMessage}>
         <ActionForm {...props} />
       </div>
     ),
@@ -171,6 +178,16 @@ const item = (categoryId: string) => ({
   priceUsd: "8.50",
   categoryId,
 });
+
+/** An item made through the route in the category given, and its id. */
+const newItemIn = async (categoryId: string) => {
+  await addItem(post("/api/menu/items", item(categoryId)));
+  const [{ id }] = await owner.db
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(eq(menuItems.restaurantId, tenant.restaurantId));
+  return id;
+};
 
 /** An item made through the route, and its id. */
 const newItem = async () => {
@@ -393,6 +410,64 @@ describe("/dashboard/menu", () => {
     expect(html).toContain(`href="/m/${tenant.restaurantId}"`);
   });
 
+  it("opens what customers see in a new tab, so the dashboard is still there to go back to", async () => {
+    await newCategory("Mains");
+    const html = await screen(MenuScreen);
+    expect(html).toMatch(/<a[^>]*href="\/m\/[^"]+"[^>]*target="_blank"[^>]*rel="noopener"/);
+    expect(html).toContain("(opens in a new tab)");
+  });
+
+  it("lets a phone find an item: a search box, a link to each category and a fold for each", async () => {
+    const mains = await newCategory("Mains");
+    await newCategory("Drinks");
+    await addItem(post("/api/menu/items", item(mains)));
+
+    const html = await screen(MenuScreen);
+
+    expect(html).toContain('aria-label="Find an item"');
+    expect(html).toContain('aria-label="Jump to a category"');
+    expect(html).toContain(`href="#category-${mains}"`);
+    expect(html).toContain(`id="category-${mains}"`);
+    expect(html).toContain("Collapse all");
+    expect(html).toContain("Hide items");
+  });
+
+  it("gives staff the finder too, since they use it to mark items sold out", async () => {
+    await addItem(post("/api/menu/items", item(await newCategory("Mains"))));
+    session.tenant = { ...tenant, role: "staff" };
+    const html = await screen(MenuScreen);
+    expect(html).toContain('aria-label="Find an item"');
+    expect(html).not.toContain("/move");
+  });
+
+  it("offers Move up and Move down on an owner's item, the first one's up and the last one's down being off", async () => {
+    const mains = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(mains)));
+    await addItem(post("/api/menu/items", { ...item(mains), name: "Fish" }));
+
+    const html = await screen(MenuScreen);
+
+    const buttons = html.match(/<button[^>]*>(?:(?!<\/button>).)*Move (?:up|down)(?:(?!<\/button>).)*<\/button>/g) ?? [];
+    expect(buttons).toHaveLength(4);
+    expect(buttons.filter((button) => button.includes('disabled=""'))).toHaveLength(2);
+    expect(html).not.toContain('name="sortOrder"');
+  });
+
+  it("names what the red button does, and says archiving can't be undone", async () => {
+    const categoryId = await newCategory("Mains");
+    await newCategory("Sides");
+    const itemId = await newItemIn(categoryId);
+
+    const html = await screen(MenuScreen);
+
+    const said = (action: string) =>
+      new RegExp(`data-confirmation="([^"]*)"><form[^>]*action="${action}"`).exec(html)?.[1];
+    expect(said(`/api/menu/items/${itemId}/archive`)).toMatch(/can&#x27;t be undone.*\[Archive item\]$/);
+    expect(said(`/api/menu/categories/${categoryId}/archive`)).toMatch(
+      /can&#x27;t be undone.*\[Archive category\]$/,
+    );
+  });
+
   it("posts to the routes behind it", async () => {
     await newCategory();
     const html = await screen(MenuScreen);
@@ -520,7 +595,8 @@ describe("/dashboard/menu", () => {
       'name="priceUsd"',
       'name="priceZig"',
       "Calculated:",
-      'name="sortOrder"',
+      `/api/menu/items/${itemId}/move`,
+      "Move up",
       "Edit",
       `action="/api/menu/items/${itemId}"`,
       `/api/menu/items/${itemId}/archive`,
@@ -877,6 +953,23 @@ describe("/dashboard/menu editing", () => {
     }
   });
 
+  it("moves an item up through the route, and refuses a direction that isn't one", async () => {
+    const categoryId = await newCategory("Mains");
+    await addItem(post("/api/menu/items", item(categoryId)));
+    await addItem(post("/api/menu/items", { ...item(categoryId), name: "Fish" }));
+    const [{ id: fish }] = await owner.db
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(and(eq(menuItems.restaurantId, tenant.restaurantId), eq(menuItems.name, "Fish")));
+    const params = { params: Promise.resolve({ itemId: fish }) };
+
+    expect((await moveItem(post(`/api/menu/items/${fish}/move`, { direction: "sideways" }), params)).status).toBe(400);
+    expect((await moveItem(post(`/api/menu/items/${fish}/move`, { direction: "up" }), params)).status).toBe(303);
+
+    const html = await screen(MenuScreen);
+    expect(html.indexOf("Fish")).toBeLessThan(html.indexOf("Beef stew"));
+  });
+
   it("saves the order a drag leaves, and refuses a malformed one", async () => {
     const [a, b] = [await newCategory("Alpha"), await newCategory("Beta")];
     const order = (ids: string[]) => {
@@ -1076,6 +1169,7 @@ describe("/dashboard/tables", () => {
     );
     const [, confirmation, savedMessage] = regenerateForm.exec(html) ?? [];
     expect(confirmation).toContain("The printed code on Table 7 will stop working");
+    expect(confirmation).toContain("[Make new code]");
     expect(savedMessage).toBe(
       "New code made for Table 7. The old one has stopped working: reprint it from the print sheet.",
     );
@@ -1442,6 +1536,8 @@ describe("what the owner is told about booking switching itself off", () => {
 
     expect(confirmation).toContain("Its printed QR code will stop working");
     expect(confirmation).toContain("online booking will switch off");
+    expect(confirmation).toContain("can&#x27;t be undone");
+    expect(confirmation).toContain("[Archive table]");
   });
 
   it("counts only bookable tables as the last one", async () => {

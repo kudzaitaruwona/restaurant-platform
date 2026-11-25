@@ -19,6 +19,7 @@ import {
   archiveCategory,
   archiveMenuItem,
   getMenu,
+  moveMenuItem,
   renameCategory,
   reorderCategories,
   setItemAvailability,
@@ -764,6 +765,56 @@ describe("archiving an item", () => {
   });
 });
 
+describe("moving an item", () => {
+  it("moves it up and down one place within its category, without sort numbers", async () => {
+    const tenant = await menuOf({ Mains: ["A", "B", "C"], Sides: ["X"] });
+
+    expect(await moveMenuItem(tenant, await itemIdOf(tenant, "C"), "up")).toBe("saved");
+    expect((await shape(tenant)).Mains).toEqual(["A", "C", "B"]);
+    await moveMenuItem(tenant, await itemIdOf(tenant, "C"), "up");
+    expect((await shape(tenant)).Mains).toEqual(["C", "A", "B"]);
+    await moveMenuItem(tenant, await itemIdOf(tenant, "C"), "down");
+    expect((await shape(tenant)).Mains).toEqual(["A", "C", "B"]);
+    expect((await shape(tenant)).Sides).toEqual(["X"]);
+    expect(touchedCache()).toBe(3);
+  });
+
+  it("leaves the first item first and the last last", async () => {
+    const tenant = await menuOf({ Mains: ["A", "B"] });
+
+    await moveMenuItem(tenant, await itemIdOf(tenant, "A"), "up");
+    await moveMenuItem(tenant, await itemIdOf(tenant, "B"), "down");
+
+    expect((await shape(tenant)).Mains).toEqual(["A", "B"]);
+  });
+
+  it("still moves when the numbers tie or have gaps", async () => {
+    const tenant = await menuOf({ Mains: ["A", "B", "C"] });
+    await owner.db
+      .update(menuItems)
+      .set({ sortOrder: 7 })
+      .where(eq(menuItems.restaurantId, tenant.restaurantId));
+
+    await moveMenuItem(tenant, await itemIdOf(tenant, "C"), "up");
+
+    expect((await shape(tenant)).Mains).toEqual(["A", "C", "B"]);
+  });
+
+  it("is refused for another restaurant's, an unknown or an archived item", async () => {
+    const mine = await menuOf({ Mains: ["A", "B"] });
+    const other = await menuOf({ Mains: ["Z"] });
+    const archived = await itemIdOf(mine, "B");
+    await archiveMenuItem(mine, archived);
+    revalidateTag.mockClear();
+
+    expect(await moveMenuItem(mine, await itemIdOf(other, "Z"), "up")).toBe("not_found");
+    expect(await moveMenuItem(mine, "nope", "up")).toBe("not_found");
+    expect(await moveMenuItem(mine, crypto.randomUUID(), "up")).toBe("not_found");
+    expect(await moveMenuItem(mine, archived, "up")).toBe("not_found");
+    expect(touchedCache()).toBe(0);
+  });
+});
+
 describe("an entered platform admin's edits", () => {
   const platformAdminId = crypto.randomUUID();
 
@@ -781,6 +832,7 @@ describe("an entered platform admin's edits", () => {
     await renameCategory(admin, b, { name: "B2" });
     await reorderCategories(admin, [c, b, a]);
     await updateMenuItem(admin, stew, edit(a));
+    await moveMenuItem(admin, stew, "down");
     await archiveCategory(admin, b);
     await archiveMenuItem(admin, stew);
 
@@ -796,6 +848,7 @@ describe("an entered platform admin's edits", () => {
       "menu_item.archive",
       "menu_item.availability",
       "menu_item.create",
+      "menu_item.reorder",
       "menu_item.update",
     ]);
     expect(entries.every((entry) => entry.actorId === platformAdminId)).toBe(true);

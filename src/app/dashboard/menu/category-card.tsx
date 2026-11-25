@@ -13,16 +13,19 @@ export function CategoryCard({
   head,
   foot,
   dragging = false,
+  id,
   children,
 }: {
   controls?: ReactNode;
   head: ReactNode;
   foot?: ReactNode;
   dragging?: boolean;
+  /** The anchor the editor's jump links point at. */
+  id?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={cn(cardClassName, "overflow-hidden", dragging && "opacity-50")}>
+    <section id={id} className={cn(cardClassName, "scroll-mt-20 overflow-hidden", dragging && "opacity-50")}>
       <div className="flex items-center gap-1 border-b border-line py-2 pr-3 pl-1.5 sm:pr-4">
         {controls}
         <div className={cn("min-w-0 flex-1", !controls && "pl-2.5")}>{head}</div>

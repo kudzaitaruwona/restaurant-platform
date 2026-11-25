@@ -204,6 +204,12 @@ describe("parseItemEdit", () => {
     });
   });
 
+  it("doesn't need a sort order: the editor moves items with Move up and Move down", () => {
+    const result = parseItemEdit(form(valid));
+    expect(result).toMatchObject({ success: true });
+    expect(result.success && result.data.sortOrder).toBeUndefined();
+  });
+
   it.each(["", "-1", "1.5", "10000", "abc", "1e2"])(
     "refuses the sort order %j",
     (sortOrder) => {
