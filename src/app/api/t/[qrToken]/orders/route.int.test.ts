@@ -70,6 +70,222 @@ async function seated(options?: Parameters<typeof orderingRestaurant>[1]) {
   return { ...restaurant, session, order };
 }
 
+/** A submission's id, as the page makes one. */
+const request = () => crypto.randomUUID();
+const ordersOf = (restaurantId: string) =>
+  owner.db.select().from(orders).where(eq(orders.restaurantId, restaurantId));
+const close = (session: string) =>
+  owner.db
+    .update(tableSessions)
+    .set({ status: "closed", closedAt: new Date(), closeReason: "staff_clear" })
+    .where(eq(tableSessions.id, session));
+/** Clears a table, its food delivered first. */
+const deliverAndClose = async (session: string) => {
+  await owner.db.execute(sql`
+    update order_items set status = 'delivered'
+    where order_id in (select id from orders where session_id = ${session})`);
+  await close(session);
+};
+const PLACED = { placed: { lines: [{ name: "Beef stew", quantity: 2 }] } };
+
+describe("a submission sent again (#84)", () => {
+  it("answers a retry after a lost response with the order it placed, and places it once", async () => {
+    const { order, restaurantId } = await seated();
+    const id = request();
+    await order({ request: id }); // committed; its answer never reached the phone
+
+    const retry = await order({ request: id });
+
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toEqual(PLACED);
+    expect(await ordersOf(restaurantId)).toMatchObject([{ requestId: id }]);
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("places one order when the same submission arrives several times at once", async () => {
+    const { order, restaurantId } = await seated();
+    const id = request();
+
+    const answers = await Promise.all(Array.from({ length: 6 }, () => order({ request: id })));
+
+    expect(answers.map((answer) => answer.status)).toEqual(Array(6).fill(201));
+    for (const answer of answers) expect(await answer.json()).toEqual(PLACED);
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("takes the same order again as a submission of its own", async () => {
+    const { order, restaurantId } = await seated();
+
+    expect((await order({ request: request() })).status).toBe(201);
+    expect((await order({ request: request() })).status).toBe(201);
+
+    expect(await ordersOf(restaurantId)).toHaveLength(2);
+  });
+
+  it("still takes an order with no id, from a page loaded before there was one", async () => {
+    const { order, restaurantId } = await seated();
+
+    expect((await order()).status).toBe(201);
+    expect((await order()).status).toBe(201);
+
+    expect(await ordersOf(restaurantId)).toHaveLength(2);
+  });
+
+  it.each([
+    ["sold out", { available: false }],
+    ["archived", { archivedAt: new Date() }],
+    ["renamed and repriced", { name: "Goat stew", priceUsd: "12" }],
+  ])("returns the original when the item has been %s since", async (_what, change) => {
+    const { order, restaurantId, itemId } = await seated();
+    const id = request();
+    await order({ request: id });
+    await owner.db.update(menuItems).set(change).where(eq(menuItems.id, itemId));
+
+    const retry = await order({ request: id });
+
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toEqual(PLACED);
+    const lines = await linesOf(owner.db, restaurantId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line.unitPriceUsd).toBe("8");
+  });
+
+  it("returns the original once its session has ended, leaving a new party's session alone", async () => {
+    const { order, restaurantId, session, qrToken } = await seated();
+    const id = request();
+    await order({ request: id });
+    await deliverAndClose(session);
+
+    const ended = await order({ request: id });
+    expect(ended.status).toBe(201);
+    expect(await ended.json()).toEqual(PLACED);
+
+    const fresh = await join(qrToken);
+    await owner.db
+      .update(tableSessions)
+      .set({ lastActivityAt: sql`now() - interval '30 minutes'` })
+      .where(eq(tableSessions.id, fresh));
+    expect((await order({ request: id })).status).toBe(201);
+
+    expect(await ordersOf(restaurantId)).toMatchObject([{ sessionId: session }]);
+    const [current] = await owner.db.select().from(tableSessions).where(eq(tableSessions.id, fresh));
+    expect(Date.now() - current.lastActivityAt.getTime()).toBeGreaterThan(60_000);
+  });
+
+  it("places nothing in an ended session when the first try never arrived", async () => {
+    const { order, restaurantId, session } = await seated();
+    await close(session);
+
+    const response = await order({ request: request() });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("session_changed");
+    expect(await ordersOf(restaurantId)).toEqual([]);
+  });
+
+  it("returns the original past the order rate limit", async () => {
+    const { order, restaurantId } = await seated();
+    const id = request();
+    await order({ request: id });
+    for (let n = 0; n < 9; n++) await order();
+    expect((await order({ request: request() })).status).toBe(429);
+
+    expect((await order({ request: id })).status).toBe(201);
+    expect(await ordersOf(restaurantId)).toHaveLength(10);
+  });
+
+  it("can be placed after a refusal: a refusal uses nothing up", async () => {
+    const { order, itemId, restaurantId } = await seated();
+    const id = request();
+    await owner.db.update(menuItems).set({ available: false }).where(eq(menuItems.id, itemId));
+    expect((await order({ request: id })).status).toBe(409);
+    await owner.db.update(menuItems).set({ available: true }).where(eq(menuItems.id, itemId));
+
+    expect((await order({ request: id })).status).toBe(201);
+    expect(await ordersOf(restaurantId)).toHaveLength(1);
+  });
+
+  it.each([
+    ["quantity", { quantity: "3" }],
+    ["note", { note: "no onions" }],
+  ])("refuses the id with a different %s, naming the original, and writes nothing", async (_what, change) => {
+    const { order, restaurantId } = await seated();
+    const id = request();
+    await order({ request: id });
+
+    const response = await order({ request: id, ...change });
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.code).toBe("already_placed");
+    expect(body.error).toContain("2 × Beef stew");
+    const lines = await linesOf(owner.db, restaurantId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].line).toMatchObject({ quantity: 2, note: null });
+  });
+
+  it("refuses the id with a line more, or fewer", async () => {
+    const { qrToken, itemId, session, restaurantId } = await seated();
+    const send = (id: string, lines: number) => {
+      const body = new URLSearchParams([["name", "T"], ["session", session], ["request", id]]);
+      for (let n = 0; n < lines; n++) {
+        body.append("item", itemId);
+        body.append("quantity", "1");
+      }
+      return POST(new Request(`http://localhost/api/t/${qrToken}/orders`, { method: "POST", body }), {
+        params: Promise.resolve({ qrToken }),
+      });
+    };
+    const id = request();
+    expect((await send(id, 2)).status).toBe(201);
+    expect((await send(id, 2)).status).toBe(201);
+
+    for (const lines of [1, 3]) {
+      const response = await send(id, lines);
+      expect((await response.json()).code).toBe("already_placed");
+    }
+    expect(await linesOf(owner.db, restaurantId)).toHaveLength(2);
+  });
+
+  it("takes a retry with the name changed as the same order, under its first name", async () => {
+    const { order, restaurantId } = await seated();
+    const id = request();
+    await order({ request: id });
+
+    expect((await order({ request: id, name: "Tari" })).status).toBe(201);
+    expect(await ordersOf(restaurantId)).toMatchObject([{ customerName: "Tariro" }]);
+  });
+
+  it("never finds another table's or restaurant's order by its id and session", async () => {
+    const mine = await seated();
+    const id = request();
+    await mine.order({ request: id });
+    const theirs = await seated();
+    const qrToken = mintQrToken();
+    await owner.db
+      .insert(diningTables)
+      .values({ restaurantId: mine.restaurantId, label: "Table 8", capacity: 2, qrToken });
+    await join(qrToken);
+
+    for (const response of [
+      await theirs.order({ request: id, session: mine.session }),
+      await post(qrToken, { item: mine.itemId, quantity: "2", name: "T", session: mine.session, request: id }),
+    ]) {
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe("session_changed");
+    }
+    // The same id in a session of its own is its own order.
+    expect((await theirs.order({ request: id })).status).toBe(201);
+    expect(await ordersOf(theirs.restaurantId)).toHaveLength(1);
+  });
+
+  it("is a 400 for an id that isn't one", async () => {
+    const { order, restaurantId } = await seated();
+    expect((await order({ request: "again" })).status).toBe(400);
+    expect(await ordersOf(restaurantId)).toEqual([]);
+  });
+});
+
 describe("POST /api/t/[qrToken]/orders", () => {
   it("places one item into the table's session, with its prices worked out on the server", async () => {
     const { order, restaurantId, itemId, session } = await seated();

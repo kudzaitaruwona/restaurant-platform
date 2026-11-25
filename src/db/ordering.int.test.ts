@@ -140,6 +140,52 @@ describe("orders only go into an open session", () => {
   });
 });
 
+describe("a submission is one order (#84)", () => {
+  const submit = (restaurantId: string, sessionId: string, requestId: string | null) =>
+    asTenant(app.db, restaurantId, (tx) =>
+      tx.insert(orders).values({ ...anOrder(restaurantId, sessionId), requestId }),
+    );
+
+  it("refuses a second order of the same submission, even by the owner role", async () => {
+    const { restaurantId, tableId } = await restaurantWithItem();
+    const sessionId = await openSession(restaurantId, tableId);
+    const requestId = crypto.randomUUID();
+    await submit(restaurantId, sessionId, requestId);
+
+    const once = { cause: { code: "23505", constraint: "orders_request_once" } };
+    await expect(submit(restaurantId, sessionId, requestId)).rejects.toMatchObject(once);
+    await expect(
+      owner.db.insert(orders).values({ ...anOrder(restaurantId, sessionId), requestId }),
+    ).rejects.toMatchObject(once);
+  });
+
+  it("keeps the id to its session, and lets orders with none be", async () => {
+    const { restaurantId, tableId } = await restaurantWithItem();
+    const first = await openSession(restaurantId, tableId);
+    const requestId = crypto.randomUUID();
+    await submit(restaurantId, first, requestId);
+    await submit(restaurantId, first, null);
+    await submit(restaurantId, first, null);
+    await closeSession(first);
+
+    const second = await openSession(restaurantId, tableId);
+    await expect(submit(restaurantId, second, requestId)).resolves.toBeDefined();
+  });
+
+  it.each([sql`null`, sql`gen_random_uuid()`])(
+    "refuses a change to an order's request_id, even by the owner role",
+    async (value) => {
+      const { restaurantId, tableId } = await restaurantWithItem();
+      const sessionId = await openSession(restaurantId, tableId);
+      await submit(restaurantId, sessionId, crypto.randomUUID());
+
+      await expect(
+        owner.db.update(orders).set({ requestId: value }).where(eq(orders.sessionId, sessionId)),
+      ).rejects.toMatchObject(check("orders_frozen"));
+    },
+  );
+});
+
 describe("frozen prices", () => {
   async function line() {
     const { restaurantId, tableId, menuItemId } = await restaurantWithItem();

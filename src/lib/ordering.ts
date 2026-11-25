@@ -119,6 +119,7 @@ const messages = {
   item: "Choose an item from the menu.",
   lines: `Add 1 to ${MAX_LINES} items to your order.`,
   session: "Scan the code again, then place your order.",
+  request: "Reload the page, then place your order.",
 };
 
 /** One line of an order (spec 06): which item, how many, and a note for the kitchen. */
@@ -141,13 +142,16 @@ const orderLine = z.object({
 /**
  * Everything an order request may say (spec 06): up to 20 lines, the customer's
  * name, and the session the page joined, which is only compared with the table's
- * open session, never used to find one. Anything else in the request, a price, a
- * rate or a restaurant, is never read.
+ * open session, never used to find one to write to. `request` is the page's id for
+ * this submission (#84), the same on every retry of it; a page loaded before there
+ * was one sends none. Anything else in the request, a price, a rate or a
+ * restaurant, is never read.
  */
 const orderRequest = z.object({
   lines: z.array(orderLine).min(1, messages.lines).max(MAX_LINES, messages.lines),
   name: z.string(messages.name).trim().min(1, messages.name).max(100, messages.name),
   session: z.uuid(messages.session),
+  request: z.uuid(messages.request).optional(),
 });
 
 export type OrderRequest = z.output<typeof orderRequest>;
@@ -175,22 +179,29 @@ export const parseOrderRequest = (form: FormData) => {
     lines: formLines(form),
     name: form.get("name") ?? undefined,
     session: form.get("session") ?? undefined,
+    request: form.get("request") ?? undefined,
   });
   return result.success
     ? ({ success: true, data: result.data } as const)
     : ({ success: false, message: result.error.issues[0].message } as const);
 };
 
+type PlacedLine = { name: string; quantity: number };
+
 export type OrderOutcome =
-  | { outcome: "placed"; placed: { lines: { name: string; quantity: number }[] } }
+  | { outcome: "placed"; placed: { lines: PlacedLine[] } }
+  | { outcome: "already_placed"; placed: { lines: PlacedLine[] } }
   | { outcome: "no_table" }
   | { outcome: "session_changed" }
   | { outcome: "unavailable"; item: string }
   | { outcome: "rate_limited"; retryAfterSeconds: number };
 
-/** Thrown inside the transaction so that a refusal rolls back whatever it had written. */
-class Refused extends Error {
-  constructor(readonly outcome: Exclude<OrderOutcome, { outcome: "placed" }>) {
+/**
+ * Thrown inside the transaction so that an answer that writes nothing, a refusal
+ * or a retry's original order, rolls back whatever it had written.
+ */
+class WroteNothing extends Error {
+  constructor(readonly outcome: OrderOutcome) {
     super(outcome.outcome);
   }
 }
@@ -276,12 +287,73 @@ type PricedItem = {
 };
 
 /**
+ * The order this submission has already placed, if any (#84): found by its id in
+ * the session the page sent it to, on this table only, open or since closed, so
+ * it answers whatever has happened to the session or the menu. The same lines
+ * (item, quantity, note, in any order) are a retry, answered as first placed;
+ * other lines under the same id are not what was ordered. The name isn't compared:
+ * it labels the order, and refusing over it would invite a second one.
+ */
+async function alreadyPlaced(
+  tx: TenantTransaction,
+  restaurantId: string,
+  tableId: string,
+  { session, request, lines }: OrderRequest,
+): Promise<OrderOutcome | undefined> {
+  if (!request) return undefined;
+  const original = await tx
+    .select({
+      item: orderItems.menuItemId,
+      name: orderItems.nameSnapshot,
+      quantity: orderItems.quantity,
+      note: orderItems.note,
+    })
+    .from(orders)
+    .innerJoin(
+      tableSessions,
+      and(eq(tableSessions.restaurantId, orders.restaurantId), eq(tableSessions.id, orders.sessionId)),
+    )
+    .innerJoin(
+      orderItems,
+      and(eq(orderItems.restaurantId, orders.restaurantId), eq(orderItems.orderId, orders.id)),
+    )
+    .where(
+      and(
+        eq(orders.restaurantId, restaurantId),
+        eq(orders.sessionId, session),
+        eq(orders.requestId, request),
+        eq(tableSessions.tableId, tableId),
+      ),
+    );
+  if (original.length === 0) return undefined;
+
+  const content = (of: OrderRequest["lines"]) =>
+    JSON.stringify(of.map((line) => JSON.stringify([line.item.toLowerCase(), line.quantity, line.note])).sort());
+  if (content(original) !== content(lines)) {
+    return {
+      outcome: "already_placed",
+      placed: { lines: original.map(({ name, quantity }) => ({ name, quantity })) },
+    };
+  }
+  // In the order the request lists them: an order has one name for each item.
+  const names = new Map(original.map((line) => [line.item, line.name]));
+  return {
+    outcome: "placed",
+    placed: {
+      lines: lines.map(({ item, quantity }) => ({ name: names.get(item.toLowerCase())!, quantity })),
+    },
+  };
+}
+
+/**
  * Places an order (spec 06), one or more lines, into the open session of the table the token names,
  * in one transaction, so a refusal writes nothing. The session is found by the
  * token: the one the page says it joined must be that session, or the order is
  * refused, so a stale tab can't order into a new party's session. Taking the
  * session's row (to mark it active) also queues orders for one session behind
- * each other, so the rate limit's count can't be raced.
+ * each other, so the rate limit's count can't be raced, and a retry waits for the
+ * first try and then finds its order (#84), before anything that could refuse it.
+ * The unique key orders_request_once holds that whoever writes.
  */
 export async function placeOrder(qrToken: string, request: OrderRequest): Promise<OrderOutcome> {
   const tenant = await resolvePublicToken("table", qrToken);
@@ -290,14 +362,16 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
   try {
     return await withTenant(tenant, async (tx) => {
       const table = await tableOf(tx, qrToken);
-      if (!table) throw new Refused({ outcome: "no_table" });
+      if (!table) throw new WroteNothing({ outcome: "no_table" });
 
       const [session] = await tx
         .update(tableSessions)
         .set({ lastActivityAt: sql`now()` })
         .where(and(eq(tableSessions.tableId, table.id), eq(tableSessions.status, "open")))
         .returning({ id: tableSessions.id });
-      if (session?.id !== request.session) throw new Refused({ outcome: "session_changed" });
+      const before = await alreadyPlaced(tx, restaurantId, table.id, request);
+      if (before) throw new WroteNothing(before);
+      if (session?.id !== request.session) throw new WroteNothing({ outcome: "session_changed" });
 
       const [recent] = await tx
         .select({
@@ -313,7 +387,7 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
           ),
         );
       if (recent.count >= ORDERS_PER_WINDOW) {
-        throw new Refused({
+        throw new WroteNothing({
           outcome: "rate_limited",
           retryAfterSeconds: Math.min(Math.max(recent.retryAfter ?? WINDOW_SECONDS, 1), WINDOW_SECONDS),
         });
@@ -326,7 +400,7 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
         [...new Set(request.lines.map((line) => line.item))],
       );
       const unavailable = request.lines.find((line) => !pricedById.has(line.item));
-      if (unavailable) throw new Refused({ outcome: "unavailable", item: unavailable.item });
+      if (unavailable) throw new WroteNothing({ outcome: "unavailable", item: unavailable.item });
 
       const [order] = await tx
         .insert(orders)
@@ -335,6 +409,7 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
           sessionId: session.id,
           customerName: request.name,
           rateUsed: rate,
+          requestId: request.request,
         })
         .returning({ id: orders.id });
       await tx.insert(orderItems).values(
@@ -365,7 +440,7 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
       };
     });
   } catch (error) {
-    if (error instanceof Refused) return error.outcome;
+    if (error instanceof WroteNothing) return error.outcome;
     throw error;
   }
 }

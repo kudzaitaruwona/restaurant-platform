@@ -83,6 +83,8 @@ async function loadPage(
     feed,
     sessionId,
     orderReply: undefined as Reply | undefined,
+    /** While true, an order is sent and no answer comes back. */
+    loseOrderReply: false,
     waiterReply: undefined as Reply | undefined,
     requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
     /** While true, a tracker poll waits for its answer until `answer()` is called. */
@@ -158,6 +160,7 @@ async function loadPage(
       if (state.holdPolls) await new Promise<void>((resolve) => state.held.push(resolve));
       return { ok: true, status: 200, json: async () => feed };
     }
+    if (state.loseOrderReply) throw new TypeError("Failed to fetch");
     const reply = state.orderReply ?? {
       status: 201,
       json: {
@@ -180,6 +183,7 @@ async function loadPage(
     localStorage,
     fetch,
     URLSearchParams,
+    crypto,
     Element: FakeElement,
     AbortSignal: {
       timeout: (ms: number) => {
@@ -462,7 +466,7 @@ describe("placing the order", () => {
     await page.placeAs("Tariro");
 
     const body = page.state.requests.find((request) => request.path === "/orders")!.body!;
-    expect([...new Set(body.keys())].sort()).toEqual(["item", "name", "note", "quantity", "session"]);
+    expect([...new Set(body.keys())].sort()).toEqual(["item", "name", "note", "quantity", "request", "session"]);
   });
 
   it("empties the cart, closes it, and confirms at the top of the tracker that there is nothing to pay on the page", async () => {
@@ -541,6 +545,130 @@ describe("placing the order", () => {
 
     const orders = page.state.requests.filter((request) => request.path === "/orders");
     expect(orders.map((request) => request.body!.get("session"))).toEqual(["session-1", "session-2"]);
+  });
+});
+
+describe("retrying an order whose answer was lost (#84)", () => {
+  const bodies = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/orders").map((request) => request.body!);
+
+  async function lostOrder() {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    expect(page.error.textContent).toMatch(/didn't go through/);
+    page.state.loseOrderReply = false;
+    return page;
+  }
+
+  it("sends the very same submission, and shows it as placed", async () => {
+    const page = await lostOrder();
+
+    await page.placeAs("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(first.get("request")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(second.toString()).toBe(first.toString());
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+    expect(page.cart.children).toHaveLength(0);
+  });
+
+  it.each([
+    ["a server error", { status: 500, json: { error: "boom" } }],
+    ["an answer cut short", { status: 201, json: {} }],
+  ])("keeps the same submission after %s", async (_what, reply) => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.orderReply = reply;
+    await page.orderOne("Tariro");
+    page.state.orderReply = undefined;
+
+    await page.placeAs("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(second.get("request")).toBe(first.get("request"));
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+  });
+
+  it("is a new submission once the last one was placed: the same dish can be ordered again", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.orderOne("Tariro");
+    await page.orderOne("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(second.get("request")).not.toBe(first.get("request"));
+  });
+
+  it("asks the session it was sent to, even once that has ended, and keeps the confirmation", async () => {
+    const page = await lostOrder();
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+
+    await page.placeAs("Tariro");
+    await page.tick();
+
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+    expect(page.tracker.hidden).toBe(false);
+  });
+
+  it("still asks the first session after an Add has joined the table's fresh one", async () => {
+    const page = await lostOrder();
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+    await page.add(page.rice);
+
+    await page.placeAs("Tariro");
+
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+    expect(bodies(page)[1].get("request")).toBe(bodies(page)[0].get("request"));
+  });
+
+  it("places it in the table's fresh session, as a new submission, when the first never arrived", async () => {
+    const page = await lostOrder();
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "reset", code: "session_changed" } };
+    await page.placeAs("Tariro");
+    page.state.orderReply = undefined;
+    await page.placeAs("Tariro");
+
+    const [first, , third] = bodies(page);
+    expect(third.get("session")).toBe("session-2");
+    expect(third.get("request")).not.toBe(first.get("request"));
+  });
+
+  it("goes back to joining first once a refusal has answered", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.orderReply = { status: 429, json: { error: "Wait." } };
+    await page.orderOne("Tariro");
+    page.state.orderReply = undefined;
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+
+    await page.placeAs("Tariro");
+
+    expect(bodies(page)[1].get("session")).toBe("session-2");
+  });
+
+  it("keeps a cart changed since, saying the first order went through, and can then place it", async () => {
+    const page = await lostOrder();
+    await page.add(page.rice);
+    page.state.orderReply = { status: 409, json: { error: "Your earlier order went through.", code: "already_placed" } };
+    await page.placeAs("Tariro");
+
+    expect(page.cart.children).toHaveLength(2);
+    expect(page.error.textContent).toBe("Your earlier order went through.");
+
+    page.state.orderReply = undefined;
+    await page.placeAs("Tariro");
+    const [first, second, third] = bodies(page);
+    expect(second.get("request")).toBe(first.get("request"));
+    expect(third.get("request")).not.toBe(first.get("request"));
+    expect(page.cart.children).toHaveLength(0);
   });
 });
 

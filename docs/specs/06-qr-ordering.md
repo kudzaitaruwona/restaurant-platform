@@ -33,10 +33,11 @@ Unlike bookings, **QR ordering has no demand evidence yet.** Test it in person w
 - Status is tracked **per item**: placed → cooking → done → delivered, with `voided` for cancellations.
 - Each item can have a note ("no onions"). *(Proposed, S-40: a note is up to 200 characters, and a quantity is 1 to 20, both as CHECKs in Postgres.)*
 - If an item has an active special, the line records `special_id`.
-- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name. *(Proposed, S-40)* A currency that can't be worked out yet (no rate) is stored null, as the menu shows it. (ticket #69)
+- Prices are worked out on the server, from the database, in the order's own transaction, with the same rules the menu shows (spec 00 › Menu and pricing, specials included). The request carries only the item, quantity, note and name (and, *proposed*, the session and the submission's id, below). *(Proposed, S-40)* A currency that can't be worked out yet (no rate) is stored null, as the menu shows it. (ticket #69)
 - Only an item a customer could order now can be ordered: not archived, not sold out, and a bundle only inside its special's window. Anything else is refused and nothing is written. (ticket #69)
 - *(Proposed, S-40)* **Order rate limit:** at most 10 orders per table session in any 5 minutes. Past it the order is refused (429) and nothing is written. A photographed code could otherwise flood a kitchen.
 - *(Proposed, S-40)* **A stale tab can't order into a new party's session.** The page sends back the session it joined; if that is no longer the table's open session, the order is refused (409) and the page joins the table's session again before the customer retries.
+- *(Proposed, S-40, #84)* **A retry is the same order.** Each submission carries an id the page makes (`request`), kept through retries until it is placed. The same id again, with the same items, quantities and notes, answers the original order (201, the names it was placed with) and writes nothing, whatever has happened since: the session ended, an item sold out, a price changed, or the rate limit reached. The same id with other lines is a 409 (`already_placed`) that says what was placed and keeps the cart. Ordering the same thing again after it was placed is a new submission, so it is a new order.
 
 ### Access
 - Customers stay anonymous, and orders attach to the session.
@@ -64,7 +65,7 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 *(Proposed, S-40, ticket #69.)* How that is built:
 - The script is inline in the page, so the page is still one response and the budget test measures all of it. It reads the token from the address; the page carries no session data.
 - On load it scans: `POST /api/t/{qr_token}/session` opens the table's session or joins the open one, and bumps `last_activity_at`. Only then does it show the Add buttons, which are in the page but hidden, so without JavaScript, or with a code that no longer works, the page is the plain menu.
-- An order is `POST /api/t/{qr_token}/orders` with the item, quantity, note and name, plus the session the page joined. The order goes into the session found by the token, never by that id, which is only compared with it.
+- An order is `POST /api/t/{qr_token}/orders` with the item, quantity, note and name, plus the session the page joined and the submission's id (`request`, #84). The order goes into the session found by the token, never by that id, which is only compared with it.
 - The endpoints are uncached (`no-store`), live under `/api` because the proxy refuses every method but GET and HEAD under `/t/`, and don't load sign-in.
 
 *(Proposed, S-40, ticket #70.)* The cart, the order and the tracker:
