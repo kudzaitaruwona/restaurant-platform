@@ -47,7 +47,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 
 | Event | Queued |
 |-------|--------|
-| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). *(Proposed, #110)* The reminder is skipped unless that time is more than 5 minutes (one job run) after the confirmation is queued, so a booking made less than 3h05m ahead gets only the confirmation and the two never go out in one run. |
+| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). *(Proposed, #110)* The reminder is skipped unless that time is more than 5 minutes (one job run) after the confirmation is queued, so a booking made 3h05m ahead or less gets only the confirmation, and in normal running the two don't go out in one run. A held outbox (S-37), a retried confirmation or a missed run can still send both together. |
 | Booking cancelled (by guest or staff) | Pending reminder → `cancelled`. `booking_cancelled` now. |
 | Booking marked no-show or completed | Pending reminder → `cancelled` |
 
