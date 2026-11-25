@@ -120,7 +120,7 @@ describe("the notification task", () => {
         template: "booking_confirmed",
         language: "en",
         // 17:00 UTC on 1 Jan 2030 is 19:00 in Harare.
-        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "4", "Tue 1 Jan", "19:00", "+263771234567"],
+        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "4 people", "Tue 1 Jan", "19:00", "+263771234567"],
         manageToken,
       },
     ]);
@@ -606,7 +606,7 @@ describe("confirming a booking, end to end, against a stand-in for Meta's Graph 
     expect(mine[0].body.template.components[0].parameters.map(({ text }) => text)).toEqual([
       "Tariro",
       `Restaurant ${restaurantId}`,
-      "2",
+      "2 people",
       "Wed 5 Mar",
       "19:30",
       "+263771234567",
@@ -671,7 +671,7 @@ describe("the booking reminder", () => {
         to: GUEST_PHONE,
         template: "booking_reminder",
         language: "en",
-        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "Wed 10 Mar", "19:00", "4"],
+        body: ["Tariro Moyo", `Restaurant ${restaurantId}`, "Wed 10 Mar", "19:00", "4 people"],
         manageToken,
       },
     ]);

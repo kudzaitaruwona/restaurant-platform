@@ -3,19 +3,19 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 import { StatusPage } from "../../status-page";
-import { SignInForm } from "../sign-in-form";
+import { SignIn } from "../sign-in";
 
 export const metadata: Metadata = { title: "Platform admin sign-in" };
 
 /** Not under /admin: nothing here may sit behind the admin guard it leads to. */
-export default function AdminLoginPage() {
+export default function AdminLoginPage({ searchParams }: PageProps<"/login/admin">) {
   return (
     <StatusPage
       icon={<ShieldCheck strokeWidth={1.75} />}
       title="Platform admin sign-in"
       actions={
         <Suspense>
-          <SignInForm audience="admin" destination="/admin" page="/login/admin" />
+          <SignIn audience="admin" searchParams={searchParams} />
         </Suspense>
       }
       footer={

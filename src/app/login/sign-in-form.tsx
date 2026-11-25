@@ -48,6 +48,88 @@ export async function tooManyTriesMessage(response: Response) {
     : "Too many tries. Wait a minute and try again.";
 }
 
+/** Better Auth burns a code after this many wrong tries (`allowedAttempts`). */
+export const WRONG_TRIES_ALLOWED = 3;
+/** Seconds before "send a new one" is offered again. The server's limits still apply. */
+const RESEND_COOLDOWN_SECONDS = 30;
+
+type Way = "link" | "code" | "google";
+
+const couldntSend: Record<Way, string> = {
+  link: "We couldn't send a sign-in link just now. Try again in a moment.",
+  code: "We couldn't send a code just now. Try again in a moment.",
+  google: "We couldn't start Google sign-in. Try again, or use a link or code.",
+};
+
+/**
+ * Catches what plainly isn't an address before a send is spent on it. Stricter
+ * than the browser's email field, which takes a@b; the server has the last word.
+ */
+export const looksLikeEmail = (value: string) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+
+/**
+ * Words for a send or Google start that didn't work. The server answers the same
+ * whether or not an email is known, so nothing here can say who is: a failure
+ * is either a bad address, a limit, or ours.
+ */
+export async function sendFailureMessage(response: Response, way: Way) {
+  if (response.status === 429) return tooManyTriesMessage(response);
+  const body = await response.clone().json().catch(() => undefined);
+  // The link route validates its body, and the address is all a person typed in it.
+  const badBody = response.status === 400 && body?.code === "VALIDATION_ERROR";
+  if (body?.code === "INVALID_EMAIL" || (badBody && way !== "google")) {
+    return INVALID_EMAIL_MESSAGE;
+  }
+  return couldntSend[way];
+}
+
+const INVALID_EMAIL_MESSAGE = "Enter a valid email address.";
+
+/** Only these use up a code. A failure of ours, or a limit, says nothing about it. */
+export async function isWrongTry(response: Response) {
+  const body = await response.clone().json().catch(() => undefined);
+  return body?.code === "INVALID_OTP";
+}
+
+/** Words for a code that didn't sign anyone in. `wrongTries` counts this one if it was wrong. */
+export async function codeFailureMessage(response: Response, wrongTries: number) {
+  if (response.status === 429) return tooManyTriesMessage(response);
+  const body = await response.clone().json().catch(() => undefined);
+  if (body?.code === "sign_in_refused") return refused;
+  if (body?.code === "TOO_MANY_ATTEMPTS" || wrongTries >= WRONG_TRIES_ALLOWED) {
+    return "That code has been used up after too many wrong tries. Request a new one.";
+  }
+  if (body?.code === "OTP_EXPIRED") return "That code has expired. Request a new one.";
+  return "That code didn't work. Check it, or request a new one.";
+}
+
+/** "Send a new code", waiting out a short cooldown so it isn't pressed in a row. */
+export function ResendButton({
+  what,
+  seconds,
+  busy,
+  onClick,
+}: {
+  what: "code" | "link";
+  seconds: number;
+  busy: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="staff"
+      className={cn("w-full", pressable)}
+      disabled={busy || seconds > 0}
+      onClick={onClick}
+    >
+      {seconds > 0 ? `Send a new ${what} in ${seconds}s` : `Send a new ${what}`}
+    </Button>
+  );
+}
+
 /**
  * Plain fetch rather than Better Auth's client: three calls don't need it. The
  * answer is the same whether or not an email is known, so the words are too.
@@ -60,6 +142,10 @@ export function SignInForm({ audience, destination, page }: Props) {
   const [code, setCode] = useState("");
   const [step, setStep] = useState<Step>({ name: "start" });
   const [pending, setPending] = useState<Pending>();
+  const [cooldown, setCooldown] = useState(0);
+  const [wrongTries, setWrongTries] = useState(0);
+  /** Said after a resend, so it's clear another one went. */
+  const [resent, setResent] = useState(false);
   /** Signed in and on the way out: keep saying so until the page changes. */
   const [leaving, setLeaving] = useState<Pending>();
   const busy = pending !== undefined || leaving !== undefined;
@@ -73,6 +159,12 @@ export function SignInForm({ audience, destination, page }: Props) {
     if (next) setMessage(next);
     setShowMessage(Boolean(next));
   };
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => setCooldown((seconds) => seconds - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
   const emailInput = useRef<HTMLInputElement>(null);
   const codeInput = useRef<HTMLInputElement>(null);
@@ -100,9 +192,6 @@ export function SignInForm({ audience, destination, page }: Props) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (response.status === 429) {
-        setError(await tooManyTriesMessage(response));
-      }
       return response;
     } catch {
       setError("We couldn't reach the server. Check your connection.");
@@ -111,23 +200,47 @@ export function SignInForm({ audience, destination, page }: Props) {
     }
   }
 
-  async function sendLink() {
-    const response = await post(
+  /** The address has to look like one on every way in, not just the form's own submit. */
+  function emailIsValid() {
+    if (looksLikeEmail(email)) return true;
+    setError(INVALID_EMAIL_MESSAGE);
+    emailInput.current?.focus();
+    return false;
+  }
+
+  /** True when it went; otherwise says why, whatever the status was. */
+  async function send(path: string, body: unknown, way: Pending & Way) {
+    const response = await post(path, body, way);
+    if (response?.ok) {
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+      return true;
+    }
+    if (response) setError(await sendFailureMessage(response, way));
+    return false;
+  }
+
+  async function sendLink(again = false) {
+    if (!again && !emailIsValid()) return;
+    const sent = await send(
       "/sign-in/magic-link",
       { email, callbackURL: destination, errorCallbackURL: page },
       "link",
     );
-    if (response?.ok) setStep({ name: "link-sent" });
+    setResent(sent && again);
+    if (sent) setStep({ name: "link-sent" });
   }
 
-  async function sendCode() {
-    const response = await post(
+  async function sendCode(again = false) {
+    if (!again && !emailIsValid()) return;
+    const sent = await send(
       "/email-otp/send-verification-otp",
       { email, type: "sign-in" },
       "code",
     );
-    if (response?.ok) {
+    setResent(sent && again);
+    if (sent) {
       setCode("");
+      setWrongTries(0);
       setStep({ name: "enter-code" });
     }
   }
@@ -140,8 +253,10 @@ export function SignInForm({ audience, destination, page }: Props) {
       window.location.assign(destination);
       return;
     }
-    if (response && response.status !== 429) {
-      setError("That code didn't work. Check it, or ask for a new one.");
+    if (response) {
+      const tries = wrongTries + ((await isWrongTry(response)) ? 1 : 0);
+      setWrongTries(tries);
+      setError(await codeFailureMessage(response, tries));
     }
     // Clear it and hand the field back, ready for the next try.
     setCode("");
@@ -154,15 +269,24 @@ export function SignInForm({ audience, destination, page }: Props) {
       { provider: "google", callbackURL: destination, errorCallbackURL: page },
       "google",
     );
-    const url = response?.ok ? (await response.json()).url : undefined;
+    const url = response?.ok
+      ? await response.json().then((body) => body?.url as string | undefined, () => undefined)
+      : undefined;
     if (url) {
       setLeaving("google");
       window.location.assign(url);
+    } else if (response) {
+      setError(
+        response.ok
+          ? couldntSend.google
+          : await sendFailureMessage(response, "google"),
+      );
     }
   }
 
   const goBack = () => {
     setError(undefined);
+    setResent(false);
     setStep({ name: "start" });
   };
 
@@ -215,9 +339,19 @@ export function SignInForm({ audience, destination, page }: Props) {
           <Notice role="status" icon={<MailCheck />}>
             If <span className="font-semibold break-all">{email}</span> can sign in
             here, a link is on its way. It expires in 10 minutes.
+            {resent && " We sent another."}
           </Notice>
         </div>
-        {differentEmail}
+        {notice}
+        <div className="flex flex-col gap-2">
+          <ResendButton
+            what="link"
+            seconds={cooldown}
+            busy={busy}
+            onClick={() => void sendLink(true)}
+          />
+          {differentEmail}
+        </div>
       </StepPanel>
     );
   }
@@ -235,6 +369,7 @@ export function SignInForm({ audience, destination, page }: Props) {
           <Notice role="status" icon={<MailCheck />}>
             If <span className="font-semibold break-all">{email}</span> can sign in
             here, a 6-digit code is on its way. It expires in 10 minutes.
+            {resent && " We sent another."}
           </Notice>
           <div className="flex flex-col">
             <Field label="Code">
@@ -256,6 +391,12 @@ export function SignInForm({ audience, destination, page }: Props) {
             <Button type="submit" size="staff" className={button} disabled={busy}>
               {label("verify", "Sign in", "Signing in")}
             </Button>
+            <ResendButton
+              what="code"
+              seconds={cooldown}
+              busy={busy}
+              onClick={() => void sendCode(true)}
+            />
             {differentEmail}
           </div>
         </form>
@@ -298,7 +439,7 @@ export function SignInForm({ audience, destination, page }: Props) {
             size="staff"
             className={button}
             disabled={busy || !email}
-            onClick={sendCode}
+            onClick={() => void sendCode()}
           >
             {label("code", "Email me a code instead", "Sending a code")}
           </Button>

@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { KitchenScreen } from "./kitchen-screen";
+
+export const metadata: Metadata = { title: "Kitchen" };
 
 export default function Page() {
   return (

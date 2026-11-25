@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bookingCancelled, bookingConfirmed, renderText, TEMPLATE_LANGUAGE } from "./templates";
+import { bookingCancelled, bookingConfirmed, bookingReminder, partyOf, renderText, TEMPLATE_LANGUAGE } from "./templates";
 
 const booking = {
   guestName: "Tariro Moyo",
@@ -19,7 +19,7 @@ describe("booking_confirmed (spec 05)", () => {
       to: "+263779876543",
       template: "booking_confirmed",
       language: "en",
-      body: ["Tariro Moyo", "Kudu Grill", "4", "Fri 6 Nov", "19:30", "+263771234567"],
+      body: ["Tariro Moyo", "Kudu Grill", "4 people", "Fri 6 Nov", "19:30", "+263771234567"],
       manageToken: "AbCdEfGhIjKlMnOpQrStUv",
     });
   });
@@ -44,6 +44,17 @@ describe("booking_confirmed (spec 05)", () => {
         "Need to cancel? Use the button below. This number doesn't receive replies — to reach the restaurant, call +263771234567.\n" +
         "[Manage booking] /b/AbCdEfGhIjKlMnOpQrStUv",
     );
+  });
+});
+
+describe("party size wording (#110)", () => {
+  it("says '1 person' for a party of one and 'N people' otherwise, in both templates", () => {
+    expect(partyOf(1)).toBe("1 person");
+    expect(partyOf(2)).toBe("2 people");
+    expect(renderText(bookingConfirmed({ ...booking, partySize: 1 }))).toContain("confirmed for 1 person on Fri 6 Nov");
+    expect(renderText(bookingReminder({ ...booking, partySize: 1 }))).toContain("at 19:30 for 1 person.");
+    expect(renderText(bookingReminder({ ...booking, partySize: 4 }))).toContain("at 19:30 for 4 people.");
+    expect(bookingReminder(booking).body).toEqual(["Tariro Moyo", "Kudu Grill", "Fri 6 Nov", "19:30", "4 people"]);
   });
 });
 

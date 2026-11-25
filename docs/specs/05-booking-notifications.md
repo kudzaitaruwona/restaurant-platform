@@ -26,12 +26,14 @@ WhatsApp Business messaging requires Meta Business verification, a WhatsApp Busi
 All buttons are **URL buttons** pointing to the manage page, so there is no inbound webhook logic in v1.
 
 **`booking_confirmed`**
-> Hi {{1}}, your table at {{2}} is confirmed for {{3}} people on {{4}} at {{5}}. Need to cancel? Use the button below. This number doesn't receive replies — to reach the restaurant, call {{6}}.
+> Hi {{1}}, your table at {{2}} is confirmed for {{3}} on {{4}} at {{5}}. Need to cancel? Use the button below. This number doesn't receive replies — to reach the restaurant, call {{6}}.
 > [Manage booking] → `/b/{manage_token}`
+> ({{3}} = the party as a phrase: "1 person", "2 people", "4 people". Meta receives it as a text variable; sample "4 people".)
 
 **`booking_reminder`**
-> Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}} people. Can't make it? Please cancel so someone else can have the table.
+> Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}}. Can't make it? Please cancel so someone else can have the table.
 > [Manage booking]
+> ({{5}} = the party as a phrase, as in `booking_confirmed`'s {{3}}; sample "4 people".)
 
 The reminder names the date rather than saying "today", so the same approved template works whatever D-03 settles on.
 
@@ -45,7 +47,7 @@ The wording is draft. Templates need Meta approval, so lock them in before submi
 
 | Event | Queued |
 |-------|--------|
-| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). The reminder is skipped if that time has already passed. |
+| Booking confirmed (with opt-in and a phone number) | `booking_confirmed` now, plus `booking_reminder` at `starts_at − 3h` (D-03, settled). *(Proposed, #110)* The reminder is skipped unless that time is more than 5 minutes (one job run) after the confirmation is queued, so a booking made 3h05m ahead or less gets only the confirmation, and in normal running the two don't go out in one run. A held outbox (S-37), a retried confirmation or a missed run can still send both together. |
 | Booking cancelled (by guest or staff) | Pending reminder → `cancelled`. `booking_cancelled` now. |
 | Booking marked no-show or completed | Pending reminder → `cancelled` |
 

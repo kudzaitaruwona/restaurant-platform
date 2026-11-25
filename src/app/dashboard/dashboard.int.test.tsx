@@ -8,6 +8,11 @@ import {
 } from "../../../test/integration/database";
 import { statusOf } from "../../../test/integration/http";
 
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ refresh() {} }), // ActionForm, rendered outside an app router
+}));
+
 const session = vi.hoisted(() => ({ identity: "" }));
 
 vi.mock("next/headers", () => ({

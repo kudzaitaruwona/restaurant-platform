@@ -4,7 +4,8 @@ import { latestRate } from "@/lib/exchange-rate";
 import { rateAge, rateAgeLabel } from "@/lib/pricing";
 import { getTenantContext, withTenant } from "@/lib/tenant";
 import { SessionControls } from "../session-controls";
-import { type RailRate, StaffNavigation } from "./staff-rail";
+import { type RailRate, showsRate } from "./nav";
+import { StaffNavigation } from "./staff-rail";
 
 /**
  * Loads what the staff navigation shows (S-41): the restaurant, who is signed
@@ -15,7 +16,7 @@ export async function StaffNav() {
   const tenant = await getTenantContext();
   const { restaurant, me, rate } = await withTenant(tenant, async (tx) => {
     const [restaurant] = await tx
-      .select({ name: restaurants.name })
+      .select({ name: restaurants.name, currencyMode: restaurants.currencyMode })
       .from(restaurants)
       .where(eq(restaurants.id, tenant.restaurantId));
     const [me] = tenant.platformAdminId
@@ -40,6 +41,7 @@ export async function StaffNav() {
       age: age ? rateAgeLabel(age.days) : null,
       stale: age?.stale ?? false,
     };
+    if (!showsRate(railRate, restaurant.currencyMode)) railRate = undefined;
   }
 
   return (

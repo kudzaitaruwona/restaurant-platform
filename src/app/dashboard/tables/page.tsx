@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { TablesScreen } from "./tables-screen";
+
+export const metadata: Metadata = { title: "Tables" };
 
 export default function Page() {
   return (

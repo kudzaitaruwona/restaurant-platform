@@ -18,8 +18,8 @@ describe("shadcn/ui Button", () => {
     expect(classes).toContain("border-line");
   });
 
-  it("is rendered on the home page", () => {
+  it("styles the home page's way in", () => {
     const html = renderToStaticMarkup(<Home />);
-    expect(html).toContain(`data-slot="button"`);
+    expect(html).toContain("bg-brand text-brand-ink");
   });
 });

@@ -1,5 +1,8 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { BookingsScreen } from "./bookings-screen";
+
+export const metadata: Metadata = { title: "Bookings" };
 
 export default function Page({ searchParams }: PageProps<"/dashboard/bookings">) {
   return (

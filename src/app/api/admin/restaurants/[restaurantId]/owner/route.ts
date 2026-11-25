@@ -25,22 +25,17 @@ export async function POST(
 
   const input = newOwner.safeParse(Object.fromEntries(await request.formData()));
   if (!input.success) {
-    return Response.json(
-      { error: input.error.issues[0].message },
-      { status: 400 },
-    );
+    const [issue] = input.error.issues;
+    return Response.json({ error: issue.message, field: issue.path[0] }, { status: 400 });
   }
 
   const result = await createFirstOwner(admin, id.data, input.data);
   if ("problem" in result) {
     if (result.problem === "no_restaurant") notFound();
     return Response.json(
-      {
-        error:
-          result.problem === "email_taken"
-            ? "That email is already in use."
-            : "This restaurant already has its first staff record.",
-      },
+      result.problem === "email_taken"
+        ? { error: "That email is already in use.", field: "email" }
+        : { error: "This restaurant already has its first staff record." },
       { status: 409 },
     );
   }

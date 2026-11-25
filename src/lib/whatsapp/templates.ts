@@ -27,10 +27,10 @@ export type TemplateMessage = {
 
 const templateText: Record<TemplateName, string> = {
   booking_confirmed:
-    "Hi {{1}}, your table at {{2}} is confirmed for {{3}} people on {{4}} at {{5}}. " +
+    "Hi {{1}}, your table at {{2}} is confirmed for {{3}} on {{4}} at {{5}}. " +
     "Need to cancel? Use the button below. This number doesn't receive replies — to reach the restaurant, call {{6}}.",
   booking_reminder:
-    "Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}} people. " +
+    "Hi {{1}}, a reminder of your booking at {{2}} on {{3}} at {{4}} for {{5}}. " +
     "Can't make it? Please cancel so someone else can have the table.",
   booking_cancelled: "Hi {{1}}, your booking at {{2}} on {{3}} at {{4}} has been cancelled. {{5}}",
 };
@@ -47,6 +47,11 @@ export type ConfirmedBooking = {
   manageToken: string;
 };
 
+/** The party as a phrase, so a fixed template reads right for one: "1 person", "2 people" (#110). */
+export function partyOf(size: number) {
+  return size === 1 ? "1 person" : `${size} people`;
+}
+
 /** "Fri 6 Nov" and "19:30" on the restaurant's clock, as the guest's confirmation page shows them. */
 function whenOf(startsAt: Date, timezone: string) {
   return [dateLabel(localToday(startsAt, timezone)), localTime(startsAt, timezone)];
@@ -61,7 +66,7 @@ export function bookingConfirmed(booking: ConfirmedBooking): TemplateMessage {
     body: [
       booking.guestName,
       booking.restaurantName,
-      String(booking.partySize),
+      partyOf(booking.partySize),
       ...whenOf(booking.startsAt, booking.timezone),
       booking.restaurantPhone,
     ],
@@ -79,7 +84,7 @@ export function bookingReminder(booking: ConfirmedBooking): TemplateMessage {
       booking.guestName,
       booking.restaurantName,
       ...whenOf(booking.startsAt, booking.timezone),
-      String(booking.partySize),
+      partyOf(booking.partySize),
     ],
     manageToken: booking.manageToken,
   };
