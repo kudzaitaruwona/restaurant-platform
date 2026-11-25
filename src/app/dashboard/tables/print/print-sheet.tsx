@@ -9,7 +9,7 @@ import { parsePrintOptions, type RawSearchParams } from "@/lib/print-options";
 import { menuCodeUrl, qrSvg, tableCodeUrl } from "@/lib/qr-code";
 import { getPrintHeader, listTables } from "@/lib/tables";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
-import { PrintButton, PrintControls, PrintForm, TablePicker } from "./print-controls";
+import { PrintButton, PrintControls, PrintForm, PrintStyles, TablePicker } from "./print-controls";
 
 /**
  * The print sheet (spec 03): one card per table, printed with the browser's own
@@ -120,8 +120,14 @@ export async function PrintSheet({
 
   return (
     <PrintControls>
-      <style>{PAGE_CSS}</style>
-      <style>{PRINT_CSS}</style>
+      <PrintStyles css={[PAGE_CSS, PRINT_CSS]} />
+      <noscript>
+        <p className="rounded-control bg-attention-soft px-4 py-3 text-ink print:hidden">
+          Without JavaScript the sheet can&apos;t tell when you have changed an option. After
+          changing one, press &quot;Update the sheet&quot; before you print, or Ctrl+P prints the
+          sheet as it was last made.
+        </p>
+      </noscript>
       <div className="flex flex-col gap-2 print:hidden">
         <Link
           href="/dashboard/tables"

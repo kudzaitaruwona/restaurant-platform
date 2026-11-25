@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { isValidElement } from "react";
@@ -1690,6 +1691,25 @@ describe("/dashboard/tables/print", () => {
     const html = await screen(PrintSheet);
     expect(html).toContain("size:A4");
     expect(html).toContain("break-inside-avoid");
+  });
+
+  it("keeps its page-level print CSS in a client component that drops it while hidden (#131)", async () => {
+    await newTable("1");
+    const html = await screen(PrintSheet);
+    // Rendered by the server, so a visit without JavaScript prints A4 too.
+    expect(html).toContain("@page{size:A4;margin:6mm}");
+    expect(html).toContain("@media print{:root{color-scheme:light!important}");
+    // Not as plain <style> elements in the server tree: only PrintStyles may own
+    // them, because only it can remove them when Activity hides the sheet.
+    const source = readFileSync(new URL("./tables/print/print-sheet.tsx", import.meta.url), "utf8");
+    expect(source).not.toMatch(/<style[ >]/);
+    expect(source).toContain("<PrintStyles");
+  });
+
+  it("tells a visitor without JavaScript to update the sheet before printing (#131)", async () => {
+    await newTable("1");
+    const html = await screen(PrintSheet);
+    expect(html).toMatch(/<noscript>[\s\S]*press &quot;Update the sheet&quot; before you print/);
   });
 
   it("fits three rows of cards in the A4 page: 3 x card height is within 297mm less margins", async () => {
