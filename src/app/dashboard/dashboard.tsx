@@ -20,6 +20,7 @@ import { getTenantContext, withTenant } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { BookingMetricsPanel } from "./booking-metrics";
 import { ExchangeRateStatus } from "./exchange-rate-status";
+import { ActionForm } from "./action-form";
 import { initialsOf } from "./shell/nav";
 
 /** The three service screens, the ones a shift opens first. */
@@ -175,11 +176,10 @@ export async function Dashboard() {
                       <span className="sr-only sm:not-sr-only">Rename</span>
                       <span className="sr-only"> {member.displayName}</span>
                     </summary>
-                    {/* A plain post (S-26): the route redirects back here. */}
-                    <form
-                      method="post"
+                    {/* Without JavaScript it's a plain post and the route redirects back here (S-26). */}
+                    <ActionForm
                       action={`/api/staff/${member.id}`}
-                      className="mt-3 flex gap-2 pb-1 sm:pl-[52px]"
+                      className="mt-3 flex flex-wrap gap-2 pb-1 sm:pl-[52px]"
                     >
                       <input
                         name="displayName"
@@ -192,7 +192,7 @@ export async function Dashboard() {
                       <Button type="submit" variant="primary" size="staff">
                         Save
                       </Button>
-                    </form>
+                    </ActionForm>
                   </details>
                 )}
               </li>
