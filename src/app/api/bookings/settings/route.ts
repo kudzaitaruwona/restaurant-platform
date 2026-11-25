@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { confirmationNeeded } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
 import { formSaved } from "@/lib/form-response";
 import { parseBookingSettings, ruleWarnings, updateBookingSettings } from "@/lib/booking-settings";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
@@ -15,7 +15,9 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: settings.message }, { status: 400 });
   }
   // A large party's sitting shorter than the normal one: asked about, then saved.
-  const ask = confirmationNeeded(ruleWarnings(settings.data), form);
+  const ask = await confirmationNeeded(request, form, "/dashboard/bookings/settings", () =>
+    ruleWarnings(settings.data),
+  );
   if (ask) return ask;
 
   await updateBookingSettings(tenant, settings.data);

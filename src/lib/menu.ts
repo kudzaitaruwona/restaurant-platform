@@ -6,6 +6,7 @@ import { latestRate } from "@/lib/exchange-rate";
 import { isZero, zeroPriceWarnings } from "@/lib/confirmation";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type PriceShape, priceProblem, usdShape, zigShape } from "@/lib/price-input";
+import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import {
   type TenantContext,
@@ -680,13 +681,16 @@ const liveItem = (restaurantId: string, itemId: string) =>
 
 /**
  * Saves the editor's fields on a live item. A blank ZiG price clears a fixed one,
- * so the item goes back to calculated from the rate (S-10).
+ * so the item goes back to calculated from the rate (S-10). Prices that would leave
+ * a special above them are refused by Postgres (S-45): `above` is which.
  */
 export async function updateMenuItem(
   ctx: Writer,
   itemId: string,
   { categoryId, ...fields }: ItemEdit,
-): Promise<"saved" | "not_found" | "no_such_category" | "no_price" | "no_description"> {
+): Promise<
+  "saved" | "not_found" | "no_such_category" | "no_price" | "no_description" | { above: SpecialAbove[] }
+> {
   if (!isId(itemId)) return "not_found";
   if (!isId(categoryId)) return "no_such_category";
 
@@ -719,6 +723,8 @@ export async function updateMenuItem(
     if (result === "saved") revalidateMenu(ctx);
     return result;
   } catch (error) {
+    const above = specialsAbove(error);
+    if (above) return { above };
     if (errorCode(error) === CHECK_VIOLATION) return "no_price";
     throw error;
   }

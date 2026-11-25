@@ -53,8 +53,8 @@ function optionLabels(items: PickableItem[], pricing: Pricing) {
 /**
  * The special form's item choice. Two items can share a name across categories
  * (or by mistake within one), so each option carries its category and normal
- * price, and the chosen item's normal price is shown under it: the special has to
- * be lower, and the owner can't see that without it.
+ * price, and the chosen item's normal price is shown under it: the special can't
+ * be above it, and the owner can't see that without it.
  */
 export function SpecialItemPicker({ items, pricing }: { items: PickableItem[]; pricing: Pricing }) {
   const [chosen, setChosen] = useState<string | undefined>(items[0]?.id);
