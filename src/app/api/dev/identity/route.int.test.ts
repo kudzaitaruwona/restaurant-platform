@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testDatabaseSettings } from "../../../../../test/integration/database";
 import { statusOf } from "../../../../../test/integration/http";
 import { FORM_FETCH_HEADER } from "@/lib/form-response";
+import { STAFF_PAGE_HEADER } from "@/lib/staff-page-header";
 import {
   DEV_IDENTITY_COOKIE,
   devIdentities,
@@ -11,9 +12,10 @@ import {
 } from "@/lib/tenant/dev-identities";
 
 const jar = vi.hoisted(() => new Map<string, string>());
+const requestHeaders = vi.hoisted(() => ({ current: {} as Record<string, string> }));
 
 vi.mock("next/headers", () => ({
-  headers: async () => new Headers(),
+  headers: async () => new Headers(requestHeaders.current),
   cookies: async () => ({
     get: (name: string) =>
       jar.has(name) ? { name, value: jar.get(name) } : undefined,
@@ -37,6 +39,7 @@ async function pick(identity: string) {
 describe("POST /api/dev/identity (the dev switcher)", () => {
   beforeEach(() => {
     jar.clear();
+    requestHeaders.current = {};
     vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
     vi.stubEnv("DEV_AUTH_BYPASS", "1");
   });
@@ -100,6 +103,55 @@ describe("POST /api/dev/identity (the dev switcher)", () => {
 
       const { getTenantContext } = await import("@/lib/tenant");
       expect(await statusOf(getTenantContext)).toBe(403);
+    });
+
+    // Back after Leave reloads /dashboard as a page: send the admin to the list, not a 403.
+    it.each([
+      ["a browser page load", { "sec-fetch-mode": "navigate", [STAFF_PAGE_HEADER]: "1" }],
+      ["an app router page fetch", { "sec-fetch-mode": "cors", [STAFF_PAGE_HEADER]: "1" }],
+    ])("sends %s to /admin until the admin enters one", async (_label, headers) => {
+      await pick(devPlatformAdmin.key);
+      requestHeaders.current = headers;
+
+      const { getTenantContext } = await import("@/lib/tenant");
+      const error = await getTenantContext().catch((thrown: unknown) => thrown);
+      expect((error as { digest?: string }).digest).toMatch(/^NEXT_REDIRECT;[a-z]+;\/admin;/);
+    });
+
+    it("still refuses a data call or a server action with a 403", async () => {
+      await pick(devPlatformAdmin.key);
+      const { getTenantContext } = await import("@/lib/tenant");
+
+      requestHeaders.current = { "sec-fetch-mode": "cors" };
+      expect(await statusOf(getTenantContext)).toBe(403);
+      // A form posted straight to a route: a navigation, but not a page.
+      requestHeaders.current = { "sec-fetch-mode": "navigate" };
+      expect(await statusOf(getTenantContext)).toBe(403);
+      requestHeaders.current = { [STAFF_PAGE_HEADER]: "1", "next-action": "abc" };
+      expect(await statusOf(getTenantContext)).toBe(403);
+    });
+
+    it("lands on a checklist item's page when the admin came from one", async () => {
+      await pick(devPlatformAdmin.key);
+      const { POST } = await import("@/app/api/admin/restaurants/[restaurantId]/enter/route");
+      const post = async (next: string) => {
+        const body = new FormData();
+        body.set("next", next);
+        const response = await POST(
+          new NextRequest(
+            new URL(`/api/admin/restaurants/${restaurant.id}/enter`, "http://localhost:3000"),
+            { method: "POST", body },
+          ),
+          { params: Promise.resolve({ restaurantId: restaurant.id }) },
+        );
+        return response.headers.get("Location");
+      };
+
+      expect(await post("/dashboard/tables")).toBe("/dashboard/tables");
+      // Only a page the rail lists: nothing else the browser sends is followed.
+      expect(await post("https://evil.example/")).toBe("/dashboard");
+      expect(await post("//evil.example")).toBe("/dashboard");
+      expect(await post("/admin")).toBe("/dashboard");
     });
 
     it("lands on the dashboard, in that restaurant, with the cookie still only a key", async () => {

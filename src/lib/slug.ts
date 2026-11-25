@@ -9,6 +9,8 @@ export function slugFrom(name: string) {
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
+    // An apostrophe is part of a word, not a break in it: Mama's is mamas.
+    .replace(/['\u2018\u2019\u02bc`]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 63)

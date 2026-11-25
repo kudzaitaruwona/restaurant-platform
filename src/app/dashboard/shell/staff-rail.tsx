@@ -7,6 +7,7 @@ import {
   CalendarCog,
   CalendarDays,
   ChefHat,
+  House,
   LayoutGrid,
   type LucideIcon,
   Menu,
@@ -16,11 +17,12 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { type ReactNode, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { activeItem, initialsOf, type NavKey, navFor } from "./nav";
+import { activeItem, initialsOf, type NavKey, navFor, type RailRate } from "./nav";
 
 const icons: Record<NavKey, LucideIcon> = {
+  home: House,
   kitchen: ChefHat,
   floor: LayoutGrid,
   bookings: CalendarDays,
@@ -33,16 +35,6 @@ const icons: Record<NavKey, LucideIcon> = {
 
 /** The page's primary action goes here on a phone; see StaffTopBarAction. */
 export const TOP_BAR_ACTION_ID = "staff-top-bar-action";
-
-/** The owner's exchange rate (S-26), as the dashboard showed it. */
-export type RailRate = {
-  /** "26.8", or null with none set. */
-  value: string | null;
-  /** "2 days ago", or null with none set. */
-  age: string | null;
-  /** More than 7 days old (spec 02). */
-  stale: boolean;
-};
 
 export type StaffNavigationProps = {
   restaurantName: string;
@@ -214,13 +206,30 @@ function NavList({
                 aria-current={active ? "page" : undefined}
                 onClick={onNavigate}
                 className={cn(
-                  "relative mx-2 my-0.5 flex h-12 items-center gap-3.5 rounded-control px-3 text-body font-medium no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "relative mx-2 my-0.5 flex min-h-12 items-center py-1 gap-3.5 rounded-control px-3 text-body font-medium no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   active
                     ? "bg-brand-soft font-semibold text-ink before:absolute before:top-3 before:bottom-3 before:-left-2 before:w-[3px] before:rounded-r-full before:bg-accent"
                     : "text-ink-2 hover:bg-surface-2 hover:text-ink",
                 )}
               >
-                <Icon aria-hidden className="size-[22px] shrink-0" strokeWidth={1.75} />
+                <span className="flex w-[22px] shrink-0 flex-col items-center">
+                  <Icon
+                    aria-hidden
+                    className={cn("size-[22px] shrink-0", variant === "rail" && "rail-icon")}
+                    style={{ "--rail-drop": `${1 + 5.5 * text.split(" ").length}px` } as CSSProperties}
+                    strokeWidth={1.75}
+                  />
+                  {variant === "rail" && (
+                    // Touch has no hover, so the collapsed rail names its icons
+                    // too, over two lines where a name needs them.
+                    <small
+                      aria-hidden
+                      className="rail-collapsed-only mt-0.5 w-[58px] text-center text-[10px] leading-[11px] font-medium"
+                    >
+                      {text}
+                    </small>
+                  )}
+                </span>
                 <span className={label(variant)}>{text}</span>
               </Link>
             );

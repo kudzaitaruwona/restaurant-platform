@@ -1602,6 +1602,8 @@ const outsideTheHarness = [
   // An import's template (S-43): the same fixed text for everyone, no session and
   // no tenant: src/app/api/csv-templates/[kind]/route.test.ts.
   "GET /api/csv-templates/[kind]",
+  // The staff 404 (#116): reads no param, shows nothing: src/lib/auth/auth.int.test.ts.
+  "PAGE /dashboard/[...unknown]",
 ];
 
 const [aOwner, aStaff, bOwner, bStaff] = devIdentities;
@@ -4576,7 +4578,8 @@ describe("harness coverage", () => {
     // slug. The first to take an id needs a way in: add a TenantRoute that calls it (the floor's detail page is one).
     const pagesWithIds = pagesWithParams.filter(
       (file) =>
-        ![...publicRoutes, ...routes].some((route) => route.name === `PAGE ${routePath(file)}`),
+        ![...publicRoutes, ...routes].some((route) => route.name === `PAGE ${routePath(file)}`) &&
+        !outsideTheHarness.includes(`PAGE ${routePath(file)}`),
     );
     const serverFunctions = appFiles.filter(
       (file) =>

@@ -179,7 +179,8 @@ describe("POST /api/admin/restaurants", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: "That slug is already in use.",
+      error: "That public address is already in use.",
+      field: "slug",
     });
   });
 
@@ -201,7 +202,19 @@ describe("POST /api/admin/restaurants", () => {
     const response = await createRestaurant({ ...validRestaurant(), ...change });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: expect.any(String) });
+    expect(await response.json()).toEqual({ error: expect.any(String), field: expect.any(String) });
+  });
+
+  it.each([
+    ["no name", { name: "" }, "name"],
+    ["a slug with spaces", { slug: "mamas kitchen" }, "slug"],
+    ["an unknown timezone", { timezone: "Mars/Olympus" }, "timezone"],
+    ["an unknown currency mode", { currencyMode: "gold" }, "currencyMode"],
+  ])("names the field that was refused, for %s, and says public address, not slug", async (_label, change, field) => {
+    const response = await createRestaurant({ ...validRestaurant(), ...change });
+    const body = await response.json();
+    expect(body.field).toBe(field);
+    expect(body.error).not.toMatch(/slug/i);
   });
 });
 
@@ -294,6 +307,7 @@ describe("POST /api/admin/restaurants/[restaurantId]/owner", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       error: "That email is already in use.",
+      field: "email",
     });
     expect(await staffOf(restaurantId)).toEqual([]);
   });

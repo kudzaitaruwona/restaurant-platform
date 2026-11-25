@@ -55,7 +55,7 @@ describe("the copy box", () => {
 describe("the public address from the name", () => {
   it.each([
     ["Chikurubi Kitchen", "chikurubi-kitchen"],
-    ["  Mama's  Café & Grill ", "mama-s-cafe-grill"],
+    ["  Mama's  Café & Grill ", "mamas-cafe-grill"],
     ["!!!", ""],
     ["a".repeat(70), "a".repeat(63)],
   ])("%s becomes %s", (name, slug) => {

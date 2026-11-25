@@ -4,6 +4,7 @@ import {
   secureCookies,
   sessionCookieName,
 } from "@/lib/auth/cookies";
+import { STAFF_PAGE_HEADER } from "@/lib/staff-page-header";
 
 /**
  * Two things every staff request needs, and one every public page needs. The
@@ -85,6 +86,19 @@ const isManagePage = (request: NextRequest) => request.nextUrl.pathname.startsWi
 const WHATSAPP_WEBHOOK = "/api/webhooks/whatsapp";
 const isWhatsAppWebhook = (request: NextRequest) => request.nextUrl.pathname === WHATSAPP_WEBHOOK;
 
+/** Marks a staff page for the tenant seam. Only ever set here: a browser's own is dropped. */
+function passOn(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const isStaffPage =
+    request.method === "GET" && (pathname === "/dashboard" || pathname.startsWith("/dashboard/"));
+  if (!isStaffPage && !request.headers.has(STAFF_PAGE_HEADER)) return NextResponse.next();
+
+  const headers = new Headers(request.headers);
+  if (isStaffPage) headers.set(STAFF_PAGE_HEADER, "1");
+  else headers.delete(STAFF_PAGE_HEADER);
+  return NextResponse.next({ request: { headers } });
+}
+
 export function proxy(request: NextRequest) {
   if (isWhatsAppWebhook(request)) return NextResponse.next();
 
@@ -102,7 +116,7 @@ export function proxy(request: NextRequest) {
     return new NextResponse(null, { status: 403 });
   }
 
-  const response = NextResponse.next();
+  const response = passOn(request);
   // Better Auth's own routes set and delete these cookies themselves.
   if (!request.nextUrl.pathname.startsWith("/api/auth/")) {
     keepSessionCookiesAlive(request, response);

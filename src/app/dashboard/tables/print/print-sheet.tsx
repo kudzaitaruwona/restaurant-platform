@@ -2,7 +2,6 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ChoiceChip } from "@/components/ui/chip";
 import { PageHeader } from "@/components/ui/page-header";
 import { cn } from "@/lib/utils";
 import { getEnv } from "@/lib/env";
@@ -10,7 +9,7 @@ import { parsePrintOptions, type RawSearchParams } from "@/lib/print-options";
 import { menuCodeUrl, qrSvg, tableCodeUrl } from "@/lib/qr-code";
 import { getPrintHeader, listTables } from "@/lib/tables";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
-import { PrintButton } from "./print-button";
+import { PrintButton, PrintControls, PrintForm, TablePicker } from "./print-controls";
 
 /**
  * The print sheet (spec 03): one card per table, printed with the browser's own
@@ -33,9 +32,20 @@ const PAGE_CSS = "@page{size:A4;margin:6mm}";
 // On paper the sheet is the whole page: the shell's grid steps aside (its rail
 // and top bar are already print:hidden), and everything prints black on white,
 // whatever theme the screen is in.
+// The page margin shows the root's background, so that goes white too: a dark
+// theme with "background graphics" on would otherwise print a black border. A
+// stale sheet (form changed, not yet updated) prints nothing.
 const PRINT_CSS =
-  "@media print{[data-staff-shell]{background:#fff!important;color:#111!important}" +
+  "@media print{:root{color-scheme:light!important}html,body{background:#fff!important}" +
+  "[data-staff-shell]{background:#fff!important;color:#111!important}" +
+  "[data-print-stale] [aria-label=Preview]{display:none!important}" +
   "[data-staff-shell]>div:has(main[data-print-sheet]){display:block!important}}";
+
+// A table's code takes orders as well as showing the menu (spec 06), and there's
+// no per-restaurant ordering switch yet, so every table card says so. The generic
+// menu card is menu-view only and never allows ordering (spec 03), so it doesn't.
+const INSTRUCTION = "Scan to see the menu and order";
+const MENU_ONLY_INSTRUCTION = "Scan to see the menu";
 
 type Card = { key: string; heading: string; svg: string; label: string; instruction: string };
 
@@ -86,7 +96,7 @@ export async function PrintSheet({
       heading: restaurant.name,
       label: table.label,
       svg: await qrSvg(tableCodeUrl(appUrl, table.qrToken)),
-      instruction: "Scan to see the menu",
+      instruction: INSTRUCTION,
     })),
   );
   if (options.menuCard) {
@@ -95,7 +105,7 @@ export async function PrintSheet({
       heading: restaurant.name,
       label: "View our menu",
       svg: await qrSvg(menuCodeUrl(appUrl, restaurant.menuToken)),
-      instruction: "Scan to see the menu",
+      instruction: MENU_ONLY_INSTRUCTION,
     });
   }
 
@@ -109,7 +119,7 @@ export async function PrintSheet({
     : { lines: ["Ask staff for the Wi-Fi details"], size: WIFI_SIZES[0].className };
 
   return (
-    <>
+    <PrintControls>
       <style>{PAGE_CSS}</style>
       <style>{PRINT_CSS}</style>
       <div className="flex flex-col gap-2 print:hidden">
@@ -132,37 +142,12 @@ export async function PrintSheet({
       ) : (
         <>
           <Card className="p-4 sm:p-5 print:hidden">
-            <form method="get" action="/dashboard/tables/print" className="flex flex-col gap-5">
-              <fieldset className="flex flex-col gap-3">
-                <legend className="mb-2 text-lead font-semibold">Tables</legend>
-                <div className="flex flex-wrap gap-2">
-                  <ChoiceChip name="scope" value="all" defaultChecked={options.scope === "all"}>
-                    All tables
-                  </ChoiceChip>
-                  <ChoiceChip
-                    name="scope"
-                    value="selected"
-                    defaultChecked={options.scope === "selected"}
-                  >
-                    Only the tables ticked here
-                  </ChoiceChip>
-                </div>
-                <ul className="flex flex-wrap gap-2" aria-label="Tables to print">
-                  {tables.map((table) => (
-                    <li key={table.id}>
-                      <ChoiceChip
-                        type="checkbox"
-                        name="table"
-                        value={table.id}
-                        defaultChecked={chosen.has(table.id)}
-                        className="[&>span]:h-10 [&>span]:min-w-12 [&>span]:px-3.5"
-                      >
-                        {table.label}
-                      </ChoiceChip>
-                    </li>
-                  ))}
-                </ul>
-              </fieldset>
+            <PrintForm>
+              <TablePicker
+                tables={tables.map(({ id, label }) => ({ id, label }))}
+                scope={options.scope}
+                tableIds={options.tableIds.filter((id) => tables.some((table) => table.id === id))}
+              />
               <div className="flex flex-col gap-1 border-t border-line pt-4">
                 <label className="flex min-h-12 cursor-pointer items-center gap-3">
                   <input
@@ -193,7 +178,7 @@ export async function PrintSheet({
               >
                 Update the sheet
               </button>
-            </form>
+            </PrintForm>
           </Card>
 
           {!wifiFits && (
@@ -247,6 +232,6 @@ export async function PrintSheet({
           )}
         </>
       )}
-    </>
+    </PrintControls>
   );
 }

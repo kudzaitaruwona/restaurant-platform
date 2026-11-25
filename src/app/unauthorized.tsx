@@ -1,9 +1,7 @@
 import { LogIn } from "lucide-react";
-import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { pressable } from "./motion";
+import { Suspense } from "react";
 import { StatusPage } from "./status-page";
+import { OtherSignIn, SignInLink } from "./way-out";
 
 /** What unauthorized() shows: on /dashboard, usually a session that has ended. */
 export default function Unauthorized() {
@@ -12,17 +10,14 @@ export default function Unauthorized() {
       icon={<LogIn strokeWidth={1.75} />}
       title="You're signed out"
       actions={
-        <Link href="/login" className={cn(buttonVariants({ size: "staff", className: "w-full" }), pressable)}>
-          Sign in
-        </Link>
+        <Suspense>
+          <SignInLink />
+        </Suspense>
       }
       footer={
-        <>
-          Run the platform?{" "}
-          <Link href="/login/admin" className="font-medium text-ink underline underline-offset-4">
-            Platform admin sign-in
-          </Link>
-        </>
+        <Suspense>
+          <OtherSignIn />
+        </Suspense>
       }
     >
       Sign in again to carry on.

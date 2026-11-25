@@ -4,10 +4,16 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { staff } from "@/db/schema";
 import { getTenantContext, requireOwner, withTenant } from "@/lib/tenant";
+import { formSaved } from "@/lib/form-response";
+import { messages } from "@/lib/staff-management";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
 const staffIdParam = z.uuid();
-const displayName = z.string().trim().min(1).max(200);
+const displayName = z
+  .string(messages.displayName)
+  .trim()
+  .min(1, messages.displayName)
+  .max(200, messages.displayName);
 
 /** One colleague: a platform_admin shadow row is nobody's colleague. */
 const colleague = (restaurantId: string, staffId: string) =>
@@ -48,8 +54,8 @@ export async function GET(
 }
 
 /**
- * Renames a colleague: the example owner-only action, posted by the form on
- * /dashboard. Staff management is owner only (S-26).
+ * Renames a colleague: the example owner-only action, posted by the
+ * ActionForm on /dashboard. Staff management is owner only (S-26).
  */
 export async function POST(
   request: NextRequest,
@@ -61,7 +67,7 @@ export async function POST(
 
   const name = displayName.safeParse((await request.formData()).get("displayName"));
   if (!name.success) {
-    return Response.json({ error: "Enter a name." }, { status: 400 });
+    return Response.json({ error: name.error.issues[0].message }, { status: 400 });
   }
 
   const updated = await withTenant(tenant, async (tx) => {
@@ -81,7 +87,5 @@ export async function POST(
   });
   if (updated.length === 0) notFound();
 
-  // Not formSaved(): this is a plain form on /dashboard, not an ActionForm, so
-  // it always wants the redirect.
-  return new Response(null, { status: 303, headers: { Location: "/dashboard" } });
+  return formSaved(request, "/dashboard");
 }

@@ -84,6 +84,13 @@ describe("the staff rail", () => {
     for (const link of current) expect(link).toContain('href="/dashboard/bookings"');
   });
 
+  it("has Home, marked on the home page only, and names the collapsed rail's icons", async () => {
+    const home = await render("a-staff");
+    expect(home.match(/<a [^>]*aria-current="page"[^>]*href="\/dashboard"/g)).toHaveLength(2);
+    expect(home).toMatch(/<small [^>]*rail-collapsed-only[^>]*>Kitchen<\/small>/);
+    expect(await render("a-staff", "/dashboard/menu")).not.toMatch(/<a [^>]*aria-current="page"[^>]*href="\/dashboard"/);
+  });
+
   it("shows an owner the exchange rate and where to change it, and staff neither", async () => {
     expect(await render("a-owner")).toMatch(/aria-label="(Exchange rate 1 USD = ZiG|No exchange rate is set)[^"]*Menu page\."/);
     expect(await render("a-staff")).not.toMatch(/ZiG|exchange rate/i);

@@ -6,6 +6,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
+import { announceSend, clearOnOtherSend } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
 export type Confirmation = {
@@ -58,6 +59,10 @@ export function ActionForm({
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [self] = useState(() => Symbol("action-form"));
+  // One refusal on the page at a time: sending another form clears this one's. A
+  // warning isn't a refusal: its dialog is modal, and answering it sends again.
+  useEffect(() => clearOnOtherSend(self, () => setError(undefined)), [self]);
   // What the server wants the person to see before it saves (lib/confirmation.ts).
   // Kept after it closes, so the dialog stays mounted and closes itself.
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -85,6 +90,7 @@ export function ActionForm({
 
   async function send(form: HTMLFormElement, confirmed = false) {
     const body = new FormData(form); // before the fieldset disables its controls
+    announceSend(self);
     if (confirmed) body.set(CONFIRMED_FIELD, "1");
     setPending(true);
     setError(undefined);
