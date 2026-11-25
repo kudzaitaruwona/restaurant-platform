@@ -640,13 +640,15 @@ describe("racing a guest's confirm", () => {
     if (added.outcome !== "added") expect(added).toEqual({ outcome: "taken" });
   });
 
-  it("two walk-ins together: one is seated, the other told the table is taken", async () => {
+  it("two walk-ins together: one is seated, the other told the table is taken or in use", async () => {
     const { restaurantId, tableId, actor: who } = await restaurant();
 
     const results = await Promise.all([seatWalkIn(who, tableId, 2, NOW), seatWalkIn(who, tableId, 3, NOW)]);
 
     expect(results.filter((r) => r.outcome === "seated")).toHaveLength(1);
-    expect(results.find((r) => r.outcome !== "seated")?.outcome).toBe("table_taken");
+    // table_taken if they collide on the insert, table_occupied if the first had committed
+    // when the second looked. A collision on the same constraint is made to happen above ("a booking that lands").
+    expect(["table_taken", "table_occupied"]).toContain(results.find((r) => r.outcome !== "seated")?.outcome);
     expect(await walkInsOf(restaurantId)).toHaveLength(1);
   });
 });

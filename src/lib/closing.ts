@@ -236,7 +236,10 @@ export type ReopenOutcome =
  * opened after it. Found by table_latest_session (migration 0048), the reopen
  * rule's own probe: one entry at the newest end of table_sessions_table_opened,
  * with its plan pinned, so none of the table's past is read on any statistics;
- * then that session by its key. Exported so a test can measure it.
+ * then that session by its key. `(select …)` runs the function once, before the
+ * lookup: compared directly, Postgres on an analyze older than the history read
+ * it as a filter, calling it for every session of the restaurant
+ * (rows-read tested). Exported so a test can measure it.
  */
 export const lastSessionOf = (tx: TenantTransaction, ctx: Tenant, tableId: string) =>
   tx
@@ -248,7 +251,7 @@ export const lastSessionOf = (tx: TenantTransaction, ctx: Tenant, tableId: strin
       inWindow: sql<boolean>`coalesce(${tableSessions.closedAt} > now() - make_interval(mins => ${REOPEN_WINDOW_MINUTES}), false)`,
     })
     .from(tableSessions)
-    .where(sql`${tableSessions.id} = table_latest_session(${ctx.restaurantId}::uuid, ${tableId}::uuid)`);
+    .where(sql`${tableSessions.id} = (select table_latest_session(${ctx.restaurantId}::uuid, ${tableId}::uuid))`);
 
 /**
  * The session the page offered to reopen, locked, so two reopens at once queue
