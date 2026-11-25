@@ -95,15 +95,35 @@ describe("parseNewMenuItem", () => {
     ).toEqual({ success: false, message: "Enter a USD price, a ZiG price, or both." });
   });
 
-  it.each(["-1", "210.555", "2,10", "ZiG 210", "1e3", "NaN", "Infinity", "1000000000"])(
-    "refuses the ZiG price %j",
-    (priceZig) => {
-      expect(parseNewMenuItem(form({ ...valid, priceZig }))).toMatchObject({
-        success: false,
-        message: "Enter the ZiG price as a number, like 210.",
-      });
-    },
-  );
+  it.each([
+    ["-1", "The ZiG price can't be negative. Enter it like 210."],
+    ["210.555", "The ZiG price can have at most 2 decimal places, like 210."],
+    ["2,10", "The ZiG price uses a comma. Write a point for the decimal, like 210."],
+    ["ZiG 210", "The ZiG price must be digits only, like 210: no currency sign, letters or spaces."],
+    ["1e3", "The ZiG price must be digits only, like 210: no currency sign, letters or spaces."],
+    ["NaN", "The ZiG price must be digits only, like 210: no currency sign, letters or spaces."],
+    ["Infinity", "The ZiG price must be digits only, like 210: no currency sign, letters or spaces."],
+    ["1000000000", "The ZiG price is too large. The most is 999,999,999.99."],
+  ])("refuses the ZiG price %j, saying what is wrong", (priceZig, message) => {
+    expect(parseNewMenuItem(form({ ...valid, priceZig }))).toEqual({ success: false, message });
+  });
+
+  it.each([
+    ["$8.50", "The USD price must be digits only, like 8.50: no currency sign, letters or spaces."],
+    ["8,50", "The USD price uses a comma. Write a point for the decimal, like 8.50."],
+    ["-8", "The USD price can't be negative. Enter it like 8.50."],
+    ["8.505", "The USD price can have at most 2 decimal places, like 8.50."],
+    ["1000000", "The USD price is too large. The most is 999,999.99."],
+  ])("refuses the USD price %j, saying what is wrong", (priceUsd, message) => {
+    expect(parseNewMenuItem(form({ ...valid, priceUsd }))).toEqual({ success: false, message });
+  });
+
+  it("takes a zero price: asking first is the route's job", () => {
+    expect(parseNewMenuItem(form({ ...valid, priceUsd: "0.00" }))).toMatchObject({
+      success: true,
+      data: { priceUsd: "0.00" },
+    });
+  });
 
   it.each([
     ["no name", { name: "" }],

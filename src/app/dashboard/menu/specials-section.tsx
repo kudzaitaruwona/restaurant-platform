@@ -2,15 +2,15 @@ import { Check, Clock, Pause, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input, Select } from "@/components/ui/input";
-import { formatUsd, formatZig } from "@/lib/pricing";
+import { Input } from "@/components/ui/input";
+import { formatUsd, formatZig, type Pricing } from "@/lib/pricing";
 import type { listSpecials, SpecialStatus } from "@/lib/specials";
 import { ActionForm } from "../action-form";
 import { Field } from "../field";
 import { Disclosure } from "./disclosure";
 import { Pill } from "./pill";
+import { type PickableItem, SpecialItemPicker } from "./special-item-picker";
 
-type Item = { id: string; name: string };
 
 const statusPill: Record<SpecialStatus, { label: string; tone: "positive" | "neutral" | "muted"; icon: ReactNode }> = {
   live: { label: "On now", tone: "positive", icon: <Check aria-hidden /> },
@@ -43,10 +43,12 @@ function price(special: { priceUsd: string | null; priceZig: string | null }) {
 export function SpecialsSection({
   specials,
   items,
+  pricing,
   timezone,
 }: {
   specials: Awaited<ReturnType<typeof listSpecials>>;
-  items: Item[];
+  items: PickableItem[];
+  pricing: Pricing;
   timezone: string;
 }) {
   return (
@@ -105,20 +107,12 @@ export function SpecialsSection({
               resetOnSuccess
               className="@container flex flex-col gap-4"
             >
-              <Field label="Item">
-                <Select name="menuItemId">
-                  {items.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
+              <SpecialItemPicker items={items} pricing={pricing} />
               <Field label="Badge" hint="Optional, like Taco Tuesday.">
                 <Input name="title" maxLength={80} />
               </Field>
               <p className="text-caption text-ink-2">
-                Leave both prices blank for a badge alone. A price in one currency discounts both.
+                Leave both prices blank for a badge alone. A price in one currency discounts both, and has to be below the normal price.
               </p>
               <div className="grid gap-4 @md:grid-cols-2">
                 <Field label="Special price (USD)" hint="Optional.">

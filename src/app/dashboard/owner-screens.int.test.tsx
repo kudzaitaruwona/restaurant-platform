@@ -2211,7 +2211,7 @@ describe("/dashboard/menu specials", () => {
   it.each([
     ["no item", {}, "Choose an item."],
     ["nothing to show", { menuItemId: "x" }, "Enter a badge, a special price, or both."],
-    ["a bad price", { menuItemId: "x", priceUsd: "abc" }, "Enter the special USD price as a number, like 6.50."],
+    ["a bad price", { menuItemId: "x", priceUsd: "abc" }, "The special USD price must be digits only, like 6.50: no currency sign, letters or spaces."],
     ["a backwards window", { menuItemId: "x", title: "t", startDate: "2030-02-02", endDate: "2030-02-01" }, "The end date can't be before the start date."],
   ])("refuses %s with a reason the form can show", async (_name, fields, error) => {
     const response = await addSpecial(post("/api/menu/specials", fields));

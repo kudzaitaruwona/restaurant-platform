@@ -1,9 +1,11 @@
 import "server-only";
-import { and, asc, eq, gt, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { categories, menuItems, restaurants, specials } from "@/db/schema";
 import { latestRate } from "@/lib/exchange-rate";
+import { isZero, zeroPriceWarnings } from "@/lib/confirmation";
 import { revalidateMenu } from "@/lib/menu-cache";
+import { type PriceShape, priceProblem, usdShape, zigShape } from "@/lib/price-input";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import {
   type TenantContext,
@@ -34,8 +36,6 @@ const messages = {
   categoryName: "Enter the category's name, up to 200 characters.",
   itemName: "Enter the item's name, up to 200 characters.",
   description: "Enter a description of up to 1000 characters.",
-  priceUsd: "Enter the USD price as a number, like 8.50.",
-  priceZig: "Enter the ZiG price as a number, like 210.",
   price: "Enter a USD price, a ZiG price, or both.",
   category: "Choose a category.",
   sortOrder: "Enter the sort order as a whole number from 0 to 9999.",
@@ -56,14 +56,18 @@ const newAvailability = z.object({
 });
 
 // A price field left blank is no price. Postgres would also take 1e3, NaN and
-// Infinity as numeric, so the spelling is checked here.
-export const optionalPrice = (pattern: RegExp, message: string) =>
+// Infinity as numeric, so the spelling is checked here, and each kind of
+// mistake says what it is (price-input.ts).
+export const optionalPrice = (shape: PriceShape) =>
   z.preprocess(
     (value) => (value === undefined ? "" : value),
     z
-      .string(message)
+      .string(`Enter the ${shape.label} as a number, like ${shape.example}.`)
       .trim()
-      .refine((value) => value === "" || pattern.test(value), message)
+      .superRefine((value, ctx) => {
+        const problem = value === "" ? null : priceProblem(value, shape);
+        if (problem) ctx.addIssue({ code: "custom", message: problem });
+      })
       .transform((value) => value || null),
   );
 
@@ -80,9 +84,9 @@ export const itemFields = z.object({
     .string(messages.description)
     .trim()
     .max(1000, messages.description),
-  priceUsd: optionalPrice(/^[0-9]{1,6}(\.[0-9]{1,2})?$/, messages.priceUsd),
+  priceUsd: optionalPrice(usdShape()),
   // Set means a fixed ZiG price. Blank means calculated from the rate (S-10).
-  priceZig: optionalPrice(/^[0-9]{1,9}(\.[0-9]{1,2})?$/, messages.priceZig),
+  priceZig: optionalPrice(zigShape()),
   // Only that one was chosen. Whether it's this restaurant's is addMenuItem's
   // question, so another restaurant's id gets the 404 an unknown one does.
   categoryId: z.string(messages.category).min(1, messages.category),
@@ -262,6 +266,92 @@ export function getMenu(
       // In the categories' order, as promotions are.
       bundles: groups.flatMap((group) => liveBundles.get(group.id) ?? []),
     };
+  });
+}
+
+const nameKey = (column: typeof menuItems.name | typeof categories.name) =>
+  sql`lower(btrim(${column}))`;
+const keyOf = (name: string) => name.trim().toLowerCase();
+
+/**
+ * What is worth asking about before an item is saved (issue #112): a zero price,
+ * and a name another live item of that category already has, which the CSV
+ * import skips as a duplicate. Nothing is refused: two "Soda"s at different
+ * sizes are real. An edit asks only about what it changes (`itemId`), so saving
+ * a description doesn't re-ask about a name or a free price that was there.
+ */
+export function itemWarnings(
+  ctx: Tenant,
+  fields: { name: string; categoryId: string; priceUsd: string | null; priceZig: string | null },
+  itemId?: string,
+): Promise<string[]> {
+  const { restaurantId } = ctx;
+  return withTenant(ctx, async (tx) => {
+    const [saved] = itemId && isId(itemId)
+      ? await tx
+          .select({
+            name: menuItems.name,
+            categoryId: menuItems.categoryId,
+            priceUsd: menuItems.priceUsd,
+            priceZig: menuItems.priceZig,
+          })
+          .from(menuItems)
+          .where(liveItem(restaurantId, itemId))
+      : [];
+    const warnings = zeroPriceWarnings({
+      usd: isZero(fields.priceUsd) && saved && isZero(saved.priceUsd) ? null : fields.priceUsd,
+      zig: isZero(fields.priceZig) && saved && isZero(saved.priceZig) ? null : fields.priceZig,
+    });
+
+    const unchanged =
+      saved && saved.categoryId === fields.categoryId && keyOf(saved.name) === keyOf(fields.name);
+    if (!unchanged && isId(fields.categoryId)) {
+      const [twin] = await tx
+        .select({ name: menuItems.name, category: categories.name })
+        .from(menuItems)
+        .innerJoin(
+          categories,
+          and(eq(categories.restaurantId, menuItems.restaurantId), eq(categories.id, menuItems.categoryId)),
+        )
+        .where(
+          and(
+            eq(menuItems.restaurantId, restaurantId),
+            eq(menuItems.categoryId, fields.categoryId),
+            isNull(menuItems.archivedAt),
+            sql`${nameKey(menuItems.name)} = ${keyOf(fields.name)}`,
+            itemId && isId(itemId) ? ne(menuItems.id, itemId) : undefined,
+          ),
+        )
+        .limit(1);
+      if (twin) {
+        warnings.push(
+          `${twin.category} already has an item called "${twin.name}". Two with one name are hard to tell apart.`,
+        );
+      }
+    }
+    return warnings;
+  });
+}
+
+/** A live category of that name already (the CSV import would match it, not add one). */
+export function categoryWarnings(ctx: Tenant, name: string, categoryId?: string): Promise<string[]> {
+  const { restaurantId } = ctx;
+  return withTenant(ctx, async (tx) => {
+    const [twin] = await tx
+      .select({ name: categories.name })
+      .from(categories)
+      .where(
+        and(
+          eq(categories.restaurantId, restaurantId),
+          isNull(categories.archivedAt),
+          sql`${nameKey(categories.name)} = ${keyOf(name)}`,
+          categoryId && isId(categoryId) ? ne(categories.id, categoryId) : undefined,
+        ),
+      )
+      .limit(1);
+    return twin
+      ? [`There is already a category called "${twin.name}". Two with one name are hard to tell apart.`]
+      : [];
   });
 }
 

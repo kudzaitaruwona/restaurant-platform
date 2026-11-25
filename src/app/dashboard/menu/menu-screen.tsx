@@ -230,7 +230,17 @@ export async function MenuScreen() {
 
                 <SpecialsSection
                   specials={specials}
-                  items={menu.categories.flatMap((category) => category.items)}
+                  items={menu.categories.flatMap((category) =>
+                    category.items.map((item) => ({
+                      id: item.id,
+                      name: item.name,
+                      category: category.name,
+                      priceUsd: item.priceUsd,
+                      priceZig: item.priceZig,
+                      bundle: item.visibility === "special_only",
+                    })),
+                  )}
+                  pricing={menu.pricing}
                   timezone={menu.timezone}
                 />
 

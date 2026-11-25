@@ -1,11 +1,13 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
+import { confirmationNeeded, zeroPriceWarnings } from "@/lib/confirmation";
 import { formSaved } from "@/lib/form-response";
 import {
   alreadyOverMessage,
   createSpecial,
   overlapMessage,
   parseNewSpecial,
+  specialPriceProblem,
 } from "@/lib/specials";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
@@ -18,12 +20,18 @@ export async function POST(request: NextRequest) {
   const tenant = await getTenantContext();
   requireOwner(tenant);
 
-  const special = parseNewSpecial(
-    await request.formData().catch(() => new FormData()),
-  );
+  const form = await request.formData().catch(() => new FormData());
+  const special = parseNewSpecial(form);
   if (!special.success) {
     return Response.json({ error: special.message }, { status: 400 });
   }
+  const tooHigh = await specialPriceProblem(tenant, special.data);
+  if (tooHigh) return Response.json({ error: tooHigh }, { status: 400 });
+  const ask = confirmationNeeded(
+    zeroPriceWarnings({ usd: special.data.priceUsd, zig: special.data.priceZig }, "special"),
+    form,
+  );
+  if (ask) return ask;
 
   const result = await createSpecial(tenant, special.data);
   if (result === "no_such_item") notFound();

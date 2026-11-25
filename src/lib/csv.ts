@@ -39,6 +39,10 @@ function delimiterOf(text: string) {
   return semicolons > commas ? ";" : ",";
 }
 
+/** The delimiter parseCsv will use for this text. */
+export const csvDelimiter = (input: string) =>
+  delimiterOf(input.startsWith(BOM) ? input.slice(1) : input);
+
 export function parseCsv(input: string): Parsed {
   if (byteLength(input) > CSV_MAX_BYTES) {
     return { ok: false, error: "The file is over 1 MB. Split it and import each part." };
