@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LayoutGrid, RefreshCw, TriangleAlert } from "lucide-react";
+import { LayoutGrid, RefreshCw, TriangleAlert, Undo2 } from "lucide-react";
 import { ActionForm } from "@/app/dashboard/action-form";
 import { StaffTopBarAction } from "@/app/dashboard/shell/top-bar-action";
 import { buttonVariants } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { localTime } from "@/lib/booking-engine";
 import { type ItemCounts, getFloor } from "@/lib/floor";
 import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
+import { tableName } from "@/lib/table-name";
 import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { CallingBell, dismissButtonClassName } from "./waiter-call";
@@ -40,6 +41,19 @@ export function RefreshAction({ href }: { href: string }) {
         <IconButton href={href} label="Refresh" icon={<RefreshCw />} variant="ghost" />
       </StaffTopBarAction>
     </>
+  );
+}
+
+/** The flag on an open session idle long enough for idle expiry that the job can't close (spec 06), on the grid and in detail. */
+export function FlaggedNote() {
+  return (
+    <span className="flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2.5 text-caption text-attention-ink">
+      <TriangleAlert aria-hidden className="mt-px size-4 shrink-0" />
+      <span>
+        <strong className="font-semibold">Flagged.</strong> No activity for {IDLE_EXPIRY_MINUTES} minutes, and items
+        not delivered, so it can&apos;t close on its own.
+      </span>
+    </span>
   );
 }
 
@@ -110,7 +124,7 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                   >
                     <span className="flex items-baseline justify-between gap-2">
                       <span className="text-heading leading-none font-semibold tracking-[-0.01em]">
-                        {table.label}
+                        {tableName(table.label)}
                         <span className="ml-2 text-caption font-normal tracking-normal text-ink-2">
                           Seats {table.capacity}
                         </span>
@@ -130,13 +144,11 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                         <span className="text-ink-2">since {localTime(table.openedAt, timezone)}</span>
                       </span>
                     )}
-                    {table.status === "flagged" && (
-                      <span className="flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2.5 text-caption text-attention-ink">
-                        <TriangleAlert aria-hidden className="mt-px size-4 shrink-0" />
-                        <span>
-                          <strong className="font-semibold">Flagged.</strong> No activity for {IDLE_EXPIRY_MINUTES}{" "}
-                          minutes, and items not delivered, so it can&apos;t close on its own.
-                        </span>
+                    {table.status === "flagged" && <FlaggedNote />}
+                    {table.reopenable && (
+                      <span className="flex items-center gap-2 text-caption font-medium text-ink-2">
+                        <Undo2 aria-hidden className="size-4 shrink-0" />
+                        Last session can be reopened
                       </span>
                     )}
                     {table.openedAt && (

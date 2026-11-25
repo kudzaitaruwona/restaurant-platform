@@ -40,6 +40,7 @@ export async function POST(
             ? "This item is delivered, so it can't be voided."
             : "This item is already voided.",
         status: result.status,
+        refresh: true,
       },
       { status: 409, headers },
     );

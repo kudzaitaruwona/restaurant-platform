@@ -1,11 +1,13 @@
 import { and, eq, sql, type SQLWrapper } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { auditLog, diningTables, orderItems, orders, tableSessions } from "@/db/schema";
+import { auditLog, diningTables, menuItems, orderItems, orders, tableSessions } from "@/db/schema";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
 import { orderingRestaurant } from "../../test/integration/ordering";
 import {
   dismissWaiter,
   floorCounts,
+  latestSessionIds,
+  reopenableAmong,
   floorTables,
   getFloor,
   getTableDetail,
@@ -332,6 +334,36 @@ describe("the floor grid, at a restaurant with months of history", () => {
   });
 });
 
+describe("the grid's reopen marks, at a restaurant with months of history (#102)", () => {
+  it("reads one session per free table, none of the table's history", async () => {
+    const restaurant = await orderingRestaurant(owner.db);
+    const other = await addTable(restaurant, "Bar 1", 1);
+    let plans: { latest: PlanNode; among: PlanNode } | undefined;
+    await owner.db
+      .transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level repeatable read`);
+        await history(tx, restaurant, { sessions: 1000, linesPerOrder: 1 });
+        await tx.execute(sql`analyze table_sessions, tables`);
+        await tx.execute(sql`set local role app_tenant`);
+        await tx.execute(sql`select set_config('app.restaurant_id', ${restaurant.restaurantId}, true)`);
+        const ids = [restaurant.tableId, other];
+        const rows = await latestSessionIds(tx, restaurant, ids);
+        plans = {
+          latest: await explain(tx, latestSessionIds(tx, restaurant, ids)),
+          among: await explain(tx, reopenableAmong(tx, restaurant, rows.flatMap((row) => (row.id ? [row.id] : [])))),
+        };
+        tx.rollback();
+      })
+      .catch((error: unknown) => {
+        if (plans === undefined) throw error;
+      });
+
+    // Two free tables, one of them with 1,000 closed sessions: it is the latest of those that is read.
+    expect(rowsRead(plans!.latest, "table_sessions")).toBeLessThanOrEqual(2);
+    expect(rowsRead(plans!.among, "table_sessions")).toBeLessThanOrEqual(2);
+  });
+});
+
 describe("a table's detail", () => {
   it("has every order and item of the open session with customer name, note and status", async () => {
     const r = await orderingRestaurant(owner.db);
@@ -371,6 +403,99 @@ describe("a table's detail", () => {
     expect(await getTableDetail(ctx(mine), theirs.tableId)).toBeNull();
     expect(await getTableDetail(ctx(mine), crypto.randomUUID())).toBeNull();
     expect(await getTableDetail(ctx(mine), archived)).toBeNull();
+  });
+});
+
+describe("a table's detail, for settling the bill (#102)", () => {
+  it("prices each line at its frozen price times quantity, and totals what isn't voided", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await order(r, [
+      { name: "Stew", quantity: 2, unitPriceUsd: "8", unitPriceZig: "210", zigSource: "calculated" },
+      { name: "Sadza", quantity: 1, unitPriceUsd: "1.5", unitPriceZig: "40", zigSource: "fixed" },
+      { name: "Mistake", quantity: 5, unitPriceUsd: "100", unitPriceZig: "2600", zigSource: "fixed", status: "voided", voidReason: "x", voidedBy: r.staffId },
+    ]);
+    // The menu moves on after the order: the bill doesn't.
+    await owner.db.update(menuItems).set({ priceUsd: "99" }).where(eq(menuItems.restaurantId, r.restaurantId));
+
+    const detail = await getTableDetail(ctx(r), r.tableId);
+
+    expect(detail?.currencyMode).toBe("both");
+    expect(detail?.orders[0].items.map((i) => [i.name, i.price]).sort()).toEqual([
+      ["Mistake", { usd: "500", zig: "13000" }],
+      ["Sadza", { usd: "1.5", zig: "40" }],
+      ["Stew", { usd: "16", zig: "420" }],
+    ]);
+    expect(detail?.total).toEqual({ usd: "17.5", zig: "460" });
+  });
+
+  it("has no total in a currency a line couldn't be priced in", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await order(r, [{ unitPriceUsd: "8", unitPriceZig: null }, { unitPriceUsd: "2", unitPriceZig: "50", zigSource: "fixed" }]);
+
+    expect((await getTableDetail(ctx(r), r.tableId))?.total).toEqual({ usd: "10", zig: null });
+  });
+
+  it("says whether the table is flagged: idle with a line in play", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const { sessionId } = await order(r, [{ status: "cooking" }]);
+    expect((await getTableDetail(ctx(r), r.tableId))?.flagged).toBe(false);
+
+    await owner.db
+      .update(tableSessions)
+      .set({ lastActivityAt: new Date(Date.now() - 100 * 60_000) })
+      .where(eq(tableSessions.id, sessionId));
+    expect((await getTableDetail(ctx(r), r.tableId))?.flagged).toBe(true);
+
+    await owner.db.update(orderItems).set({ status: "delivered" }).where(eq(orderItems.restaurantId, r.restaurantId));
+    expect((await getTableDetail(ctx(r), r.tableId))?.flagged).toBe(false);
+  });
+});
+
+describe("reopenable tables on the grid (#102)", () => {
+  const closedAgo = (r: Restaurant, tableId: string, minutes: number) =>
+    owner.db.execute(sql`
+      insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason)
+      values (${r.restaurantId}, ${tableId}, 'closed', now() - interval '2 hours',
+        now() - make_interval(mins => ${minutes}), 'staff_clear')`);
+
+  it("marks a free table whose last session closed within the window, and no other", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const late = await addTable(r, "Late", 2);
+    const never = await addTable(r, "Never", 3);
+    const taken = await addTable(r, "Taken", 4);
+    await closedAgo(r, r.tableId, 5);
+    await closedAgo(r, late, 16);
+    await closedAgo(r, taken, 5);
+    await order(r, [{}], { tableId: taken });
+
+    const { tables } = await getFloor(ctx(r));
+
+    expect(Object.fromEntries(tables.map((t) => [t.id, t.reopenable]))).toEqual({
+      [r.tableId]: true,
+      [late]: false,
+      [never]: false,
+      [taken]: false,
+    });
+  });
+
+  it("offers the table's latest session, not an older one that closed in the window", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await closedAgo(r, r.tableId, 10); // opened 2 hours ago
+    await owner.db.execute(sql`
+      insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason)
+      values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '5 minutes', now() - interval '1 minute', 'staff_clear')`);
+    // The latest session by when it opened is the newer one, closed a minute ago.
+    expect((await getFloor(ctx(r))).tables[0].reopenable).toBe(true);
+  });
+
+  it("doesn't fall back to an older session in the window when the latest is past it", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await closedAgo(r, r.tableId, 10); // opened 2 hours ago
+    await owner.db.execute(sql`
+      insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason)
+      values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '1 hour', now() - interval '16 minutes', 'staff_clear')`);
+
+    expect((await getFloor(ctx(r))).tables[0].reopenable).toBe(false);
   });
 });
 

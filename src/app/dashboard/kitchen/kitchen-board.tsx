@@ -23,18 +23,22 @@ import {
   type BoardItem,
   boardColumns,
   cardMenuActions,
+  freshAnswers,
   type BoardStatus,
   type ItemStatus,
   itemsOfOrder,
   nextStatus,
   previousStatus,
+  sameSpotGuard,
   sendMove,
   sendReject,
   sendVoid,
+  type Tap,
   VOID_REASON_MAX,
   voidReasonFrom,
 } from "@/lib/kitchen-board";
 import { type Changes, type Connection, startPolling } from "@/lib/kitchen-poll";
+import { tableName } from "@/lib/table-name";
 import { cn } from "@/lib/utils";
 
 const columnNames: Record<BoardStatus, string> = {
@@ -71,6 +75,10 @@ const LONG_PRESS_MS = 500;
 const TICK_MS = 15_000;
 /** How long a refused move's message stays up. */
 const MESSAGE_MS = 6_000;
+/** Said for a tap the same-spot guard ignored (#100). */
+const SPOT_MESSAGE = "Second tap in one spot ignored. Tap again in a moment if you meant it.";
+
+type TapPoint = Omit<Tap, "itemId">;
 
 type Override = "void" | "reject";
 type Asking = { itemId: string; kind: Override };
@@ -104,6 +112,8 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     arrivals({ makeAudio: () => new AudioContext(), onFlash: setFlashing }),
   );
   const poller = useRef<ReturnType<typeof startPolling> | null>(null);
+  // One per board: a ticket that slides under a double tap isn't advanced (#100).
+  const spot = useRef(sameSpotGuard());
 
   /** Applies changed items, and flashes and sounds for the ones new to the board. */
   function update(items: BoardItem[]) {
@@ -120,13 +130,18 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
   useEffect(() => {
     skew.current = Date.parse(initial.now) - Date.now();
     const tick = setInterval(() => setClock(Date.now() + skew.current), TICK_MS);
+    let askedAt = 0; // One poll at a time, so it is the answering poll's.
     poller.current = startPolling({
       cursor: initial.cursor,
-      fetch: (url, signal) => fetch(url, { signal, cache: "no-store" }),
+      fetch: (url, signal) => {
+        askedAt = performance.now();
+        return fetch(url, { signal, cache: "no-store" });
+      },
       onChanges: (changes) => {
         skew.current = Date.parse(changes.now) - Date.now();
         setClock(Date.parse(changes.now));
         updateRef.current(changes.items);
+        spot.current.polled(askedAt, performance.now());
       },
       onConnection: setConnection,
     });
@@ -143,6 +158,9 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     return () => clearTimeout(timer);
   }, [message]);
 
+  /** A move's answer, applied only if it is still true of the board (#101). */
+  const applyAnswer = (items: BoardItem[]) => update(freshAnswers(current.current, items));
+
   function enableSound() {
     alert.enableSound();
     setSoundOn(true);
@@ -154,11 +172,15 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     try {
       await sendMove(item, to, {
         fetch: (url, init) => fetch(url, init),
-        apply: update,
+        apply: applyAnswer,
         say: setMessage,
         poller: poller.current,
+        timedOut: () => spot.current.unanswered(item.id, performance.now()),
       });
     } finally {
+      // The ticket moves about now, so the spot is guarded from here (#100). A
+      // timed-out move's is kept for the poll that shows where the item is.
+      spot.current.settled(item.id, performance.now());
       setPending((was) => {
         const next = new Set(was);
         next.delete(item.id);
@@ -174,7 +196,7 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     setPending((was) => new Set([...was, ...busy.map((it) => it.id)]));
     const deps = {
       fetch: (url: string, init: RequestInit & { body: FormData }) => fetch(url, init),
-      apply: update,
+      apply: applyAnswer,
       say: setMessage,
       poller: poller.current,
     };
@@ -275,9 +297,15 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
                   flashing={flashing}
                   pending={pending}
                   asking={asking}
-                  onForward={(item) => {
+                  onForward={(item, tap) => {
                     const to = nextStatus(item.status);
-                    if (to) void move(item, to);
+                    if (!to) return;
+                    if (!spot.current.allow({ itemId: item.id, ...tap })) {
+                      // Never over a refused move's message, which matters more.
+                      setMessage((was) => was ?? SPOT_MESSAGE);
+                      return;
+                    }
+                    void move(item, to);
                   }}
                   onBack={(item) => {
                     const to = previousStatus(item.status);
@@ -322,7 +350,7 @@ function Ticket({
   flashing: ReadonlySet<string>;
   pending: ReadonlySet<string>;
   asking: Asking | undefined;
-  onForward: (item: BoardItem) => void;
+  onForward: (item: BoardItem, tap: TapPoint) => void;
   onBack: (item: BoardItem) => void;
   onAsk: (asking: Asking | undefined) => void;
   onOverride: (item: BoardItem, kind: Override, reason: string) => Promise<void>;
@@ -345,24 +373,25 @@ function Ticket({
     >
       <div
         className={cn(
-          "flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-line py-2.5 pr-3 pl-4",
+          "flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line py-2.5 pr-3 pl-4",
           status === "done" && "bg-accent-soft",
           age.level !== "fresh" && "bg-attention-soft",
         )}
       >
-        <span className="text-[2em] leading-none font-bold tracking-tight">{group.table}</span>
-        {/* At least 5em, so a narrow column wraps the age under the name instead of breaking the name per letter; nothing on a card is cut off. */}
-        <span className="min-w-[5em] flex-1 break-words text-[1.0625em] font-medium text-ink-2">
+        <span className="text-[2em] leading-none font-bold tracking-tight">{tableName(group.table)}</span>
+        {/* The name has a line of its own (last in the flow, first in the markup), so it breaks between words and only breaks a word that is longer than the card; nothing on a card is cut off (#101). */}
+        <span className="order-last basis-full break-words text-[1.0625em] font-medium text-ink-2">
           {group.customerName}
         </span>
         {isNew && (
-          <span className="shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[.8125em] font-semibold text-on-accent motion-safe:animate-pulse">
+          <span className="ml-auto shrink-0 rounded-full bg-accent px-2.5 py-0.5 text-[.8125em] font-semibold text-on-accent motion-safe:animate-pulse">
             New
           </span>
         )}
         <span
           className={cn(
             "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums",
+            !isNew && "ml-auto",
             status === "done" ? "text-[.9375em] font-medium text-ink-2" : "text-[1.25em] font-semibold",
             age.level === "amber" && "text-attention-ink",
             age.level === "red" && "rounded-control bg-attention px-3 py-1.5 text-on-attention",
@@ -383,7 +412,7 @@ function Ticket({
           key={item.id}
           item={item}
           pending={pending.has(item.id)}
-          onForward={() => onForward(item)}
+          onForward={(tap) => onForward(item, tap)}
           onBack={() => onBack(item)}
           onAsk={(kind) => onAsk({ itemId: item.id, kind })}
         />
@@ -412,7 +441,7 @@ function ItemRow({
 }: {
   item: BoardItem;
   pending: boolean;
-  onForward: () => void;
+  onForward: (tap: TapPoint) => void;
   onBack: () => void;
   onAsk: (kind: Override) => void;
 }) {
@@ -428,12 +457,18 @@ function ItemRow({
     setTimeout(() => row.current?.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')?.click());
 
   return (
-    <div ref={row} className="flex items-stretch border-line not-first-of-type:border-t">
+    // The "..." button sits over the row's top-right corner, so a note below it
+    // can use the ticket's whole width instead of what is left beside the button (#101).
+    <div ref={row} className="relative border-line not-first-of-type:border-t">
       <button
         type="button"
         disabled={pending}
-        aria-label={`${forwardWords[item.status]}: ${item.quantity} × ${item.name}, ${item.table}`}
-        className="grid min-h-16 min-w-0 flex-1 touch-manipulation grid-cols-[3em_minmax(0,1fr)] items-start gap-x-2 py-3 pr-1 pl-4 text-left transition-colors duration-150 ease-out outline-none select-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset active:bg-accent-soft disabled:cursor-progress disabled:opacity-55"
+        aria-label={`${forwardWords[item.status]}: ${item.quantity} × ${item.name}, ${tableName(item.table)}`}
+        className={cn(
+          "grid min-h-16 w-full min-w-0 touch-manipulation grid-cols-[3em_minmax(0,1fr)] items-start gap-x-2 py-3 pr-4 pl-4 text-left transition-colors duration-150 ease-out outline-none select-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset active:bg-accent-soft disabled:cursor-progress disabled:opacity-55",
+          // The name's row is as tall as the menu button, so a note never runs under it.
+          item.note && "grid-rows-[minmax(3.25rem,auto)_auto]",
+        )}
         onPointerDown={() => {
           longPressed.current = false;
           cancelPress();
@@ -448,23 +483,23 @@ function ItemRow({
         onPointerLeave={cancelPress}
         onPointerCancel={cancelPress}
         onContextMenu={(event) => event.preventDefault()}
-        onClick={() => {
+        onClick={(event) => {
           if (longPressed.current) {
             longPressed.current = false;
             return;
           }
-          onForward();
+          onForward({ x: event.clientX, y: event.clientY, at: event.timeStamp, fromPointer: event.detail > 0 });
         }}
       >
-        <span className="text-[1.5em] leading-[1.07] font-bold tabular-nums">
-          {item.quantity}
-          <span className="ml-px text-[.7em] font-medium text-ink-2">×</span>
+        <span className="text-[1.5em] leading-[1.07] font-bold whitespace-nowrap tabular-nums">
+          {item.quantity}{" "}
+          <span className="text-[.7em] font-medium text-ink-2">×</span>
         </span>
-        <span className="text-[1.25em] leading-[1.28] font-semibold break-words">{item.name}</span>
+        <span className="pr-10 text-[1.25em] leading-[1.28] font-semibold break-words">{item.name}</span>
         {item.note && (
           <span
             data-note="true"
-            className="col-start-2 mt-2 flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2 text-[1.0625em] font-semibold whitespace-pre-wrap break-words text-ink"
+            className="col-span-2 mt-2 flex items-start gap-2 rounded-control bg-attention-soft px-3 py-2 text-[1.0625em] font-semibold whitespace-pre-wrap break-words text-ink"
           >
             <MessageSquareText aria-hidden className="mt-0.5 size-[1.1em] shrink-0 text-attention-ink" />
             <span className="min-w-0">{item.note}</span>
@@ -473,10 +508,10 @@ function ItemRow({
       </button>
       <RowMenu
         label={`More for ${item.quantity} × ${item.name}`}
-        className="h-auto min-h-16 w-14 rounded-none border-0 bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink focus-visible:ring-inset focus-visible:ring-offset-0 aria-expanded:bg-surface-2 aria-expanded:text-ink [&_svg]:size-6"
+        className="absolute top-0 right-0 h-16 w-14 rounded-none border-0 bg-transparent text-ink-2 hover:bg-surface-2 hover:text-ink focus-visible:ring-inset focus-visible:ring-offset-0 aria-expanded:bg-surface-2 aria-expanded:text-ink [&_svg]:size-6"
       >
         <RowMenuLabel>
-          {item.quantity} × {item.name}, {item.table}
+          {item.quantity} × {item.name}, {tableName(item.table)}
         </RowMenuLabel>
         {actions.includes("back") && back && (
           <>
@@ -519,9 +554,16 @@ function ReasonForm({
   onSubmit: (reason: string) => Promise<void>;
 }) {
   const [reason, setReason] = useState("");
+  const form = useRef<HTMLFormElement>(null);
+  // The field's autofocus only scrolls the field into view, which leaves the
+  // buttons below the fold on a lower ticket (#101): bring the whole form in.
+  useEffect(() => {
+    form.current?.scrollIntoView({ block: "nearest" });
+  }, []);
   return (
     <form
-      className="grid gap-2.5 border-t border-line p-3"
+      ref={form}
+      className="grid scroll-mb-24 gap-2.5 border-t border-line p-3"
       onSubmit={(event) => {
         event.preventDefault();
         const trimmed = voidReasonFrom(reason);
@@ -532,7 +574,7 @@ function ReasonForm({
       <label className="grid gap-2 text-[.9375em] font-semibold">
         {kind === "void"
           ? `Why void ${item.quantity} × ${item.name}?`
-          : `Why reject ${item.customerName}'s whole order at ${item.table}?`}
+          : `Why reject ${item.customerName}'s whole order at ${tableName(item.table)}?`}
         <Input
           name="reason"
           required

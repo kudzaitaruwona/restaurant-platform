@@ -1,12 +1,22 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+} from "react";
 import { Notice } from "@/components/ui/notice";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
-import { announceSend, clearOnOtherSend } from "./refusals";
+import { type Refusal, announceSend, clearOnOtherSend, pageRefusal, refusalPlace } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
 export type Confirmation = {
@@ -43,6 +53,7 @@ export function ActionForm({
   resetOnSuccess = false,
   keepOnReset = [],
   savedMessage,
+  refusalOnPage = false,
   onSaved,
   refreshOnRefusal = false,
   children,
@@ -56,6 +67,8 @@ export function ActionForm({
   /** Fields (by name) that keep their value through the reset, e.g. the time chosen for the next booking. */
   keepOnReset?: string[];
   savedMessage?: string;
+  /** Shows its refusals on the page (PageRefusalAlert), for a form whose surroundings can't grow (#102). */
+  refusalOnPage?: boolean;
   /** Called after a save, for a form whose own message goes with it (a deleted row). */
   onSaved?: () => void;
   /** Reloads the page's data after a refusal too, for a form whose page shows what the refusal found out (a stale list). */
@@ -66,6 +79,7 @@ export function ActionForm({
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
+  const page = useContext(PageRefusalContext);
   const [detail, setDetail] = useState<SavedDetail>();
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -96,6 +110,12 @@ export function ActionForm({
         : (event.nativeEvent as SubmitEvent).submitter;
     if (ask) setAsking(true);
     else void send(event.currentTarget);
+  }
+
+  function refuse(refusal: Refusal) {
+    if (page && refusalPlace(refusal, { page: true, onPage: refusalOnPage }) === "page") return page.show(refusal);
+    setError(refusal);
+    if (refusal.refresh) router.refresh();
   }
 
   async function send(form: HTMLFormElement, confirmed = false) {
@@ -129,12 +149,12 @@ export function ActionForm({
           setWarnings(refusal.warnings);
           setWarned(true);
         } else {
-          setError(refusal);
-          if (refreshOnRefusal) router.refresh();
+          refuse(refusal);
+          if (refreshOnRefusal && !refusal.refresh) router.refresh();
         }
       }
     } catch {
-      setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [] });
+      refuse({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
     } finally {
       setPending(false);
     }
@@ -166,27 +186,7 @@ export function ActionForm({
             {savedMessage}
           </p>
         )}
-        {error && (
-          <div role="alert" className="text-caption text-danger">
-            <p>{error.message}</p>
-            {error.bookings.length > 0 && (
-              <ul className="list-disc pl-5">
-                {error.bookings.map((booking) => (
-                  <li key={booking.id}>
-                    {booking.href ? (
-                      // A full load, so the day's row is the page's :target.
-                      <a href={booking.href} className="underline underline-offset-2">
-                        {booking.summary}
-                      </a>
-                    ) : (
-                      booking.summary
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+        {error && <RefusalAlert refusal={error} />}
       </fieldset>
       {warnings.length > 0 && (
         <ConfirmDialog
@@ -226,6 +226,75 @@ export function ActionForm({
   );
 }
 
+const PageRefusalContext = createContext<
+  { refusal: Refusal | undefined; refreshing: boolean; show: (refusal: Refusal) => void } | undefined
+>(undefined);
+
+/**
+ * Gives a page a place of its own for refusals (#102): a stale form's, which
+ * reloads the page and may take the form with it, and those of forms with
+ * `refusalOnPage`. They show where PageRefusalAlert is.
+ */
+export function PageRefusals({ className, children }: { className?: string; children: ReactNode }) {
+  const router = useRouter();
+  const [store] = useState(pageRefusal);
+  const refusal = useSyncExternalStore(store.subscribe, store.get, () => undefined);
+  const [refreshing, startRefresh] = useTransition();
+  function show(next: Refusal) {
+    store.show(next);
+    if (next.refresh) startRefresh(() => router.refresh());
+  }
+  return (
+    <PageRefusalContext value={{ refusal, refreshing, show }}>
+      <div className={className}>{children}</div>
+    </PageRefusalContext>
+  );
+}
+
+/**
+ * The page's refusal, in the page's flow so that it covers nothing, and scrolled
+ * into view: when it appears, and once the refreshed page has settled.
+ */
+export function PageRefusalAlert({ className }: { className?: string }) {
+  const { refusal, refreshing } = useContext(PageRefusalContext) ?? {};
+  const place = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (refusal) place.current?.scrollIntoView({ block: "nearest" });
+  }, [refusal, refreshing]);
+  return (
+    refusal && (
+      <div ref={place} className={className}>
+        <RefusalAlert refusal={refusal} />
+      </div>
+    )
+  );
+}
+
+/** A refusal in place: its message, and the items or bookings in the way. */
+export function RefusalAlert({ refusal }: { refusal: Refusal }) {
+  return (
+    <div role="alert" className="text-caption text-danger">
+      <p>{refusal.message}</p>
+      {refusal.bookings.length > 0 && (
+        <ul className="list-disc pl-5">
+          {refusal.bookings.map((booking) => (
+            <li key={booking.id}>
+              {booking.href ? (
+                // A full load, so the day's row is the page's :target.
+                <a href={booking.href} className="underline underline-offset-2">
+                  {booking.summary}
+                </a>
+              ) : (
+                booking.summary
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** What a save says about itself, when the route answers with more than a 204. */
 type SavedDetail = { message: string; href?: string; linkLabel?: string; warning?: string };
 
@@ -245,13 +314,6 @@ export async function savedFrom(response: Response): Promise<SavedDetail | undef
     ...(typeof saved.warning === "string" ? { warning: saved.warning } : {}),
   };
 }
-
-type Refusal = {
-  message: string;
-  bookings: { id: string; summary: string; href?: string }[];
-  /** A 409 that asks first: nothing was saved (lib/confirmation.ts). */
-  warnings: string[];
-};
 
 /**
  * A refusal says why, and may list what is in the way: the bookings on a table
@@ -282,5 +344,6 @@ export async function refusalFrom(response: Response): Promise<Refusal> {
     warnings: Array.isArray(body?.confirm?.warnings)
       ? body.confirm.warnings.filter((warning: unknown) => typeof warning === "string")
       : [],
+    refresh: body?.refresh === true,
   };
 }

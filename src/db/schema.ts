@@ -974,8 +974,12 @@ export const orders = pgTable(
     customerName: text("customer_name").notNull(),
     rateUsed: numeric("rate_used"),
     placedAt: timestamp("placed_at", { withTimezone: true }).notNull().defaultNow(),
+    // The page's id for the submission (#84); null from a page without one.
+    requestId: uuid("request_id"),
   },
   (table) => [
+    // A submission sent again is the same order. orders_frozen holds the id too.
+    unique("orders_request_once").on(table.restaurantId, table.sessionId, table.requestId),
     foreignKey({
       columns: [table.restaurantId],
       foreignColumns: [restaurants.id],

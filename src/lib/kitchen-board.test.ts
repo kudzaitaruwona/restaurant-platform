@@ -7,8 +7,13 @@ import {
   boardColumns,
   FLASH_MS,
   cardMenuActions,
+  freshAnswers,
   isMove,
+  sameSpotGuard,
+  SAME_SPOT_HOLD_MS,
+  SAME_SPOT_MS,
   itemsOfOrder,
+  MOVE_TIMEOUT_MS,
   nextStatus,
   previousStatus,
   sendMove,
@@ -17,6 +22,7 @@ import {
   VOID_REASON_MAX,
   voidReasonFrom,
 } from "./kitchen-board";
+import { startPolling } from "./kitchen-poll";
 
 const MINUTE = 60_000;
 const placedAt = "2026-11-11T10:00:00.000Z";
@@ -79,6 +85,13 @@ describe("ageing (proposed: amber at 15 minutes, red at 25, from ordering)", () 
     expect(ageOf(item(), at(minutes)).level).toBe(level);
   });
 
+  it("reads ninety-five minutes as hours and minutes, not \"95 min ago\" (#101)", () => {
+    expect(ageOf(item(), at(59.9)).label).toBe("59 min ago");
+    expect(ageOf(item(), at(60)).label).toBe("1 h ago");
+    expect(ageOf(item(), at(95)).label).toBe("1 h 35 min ago");
+    expect(ageOf(item(), at(180)).label).toBe("3 h ago");
+  });
+
   it("runs from ordering for a cooking item, however recently it started cooking", () => {
     const cooking = item({ status: "cooking", statusChangedAt: at(20).toISOString() });
     expect(ageOf(cooking, at(26)).level).toBe("red");
@@ -113,6 +126,25 @@ describe("applying a poll's changes", () => {
     expect(result.board.get("moved")?.status).toBe("cooking");
     expect(result.arrived).toEqual(["new"]);
     expect(board.get("moved")?.status).toBe("placed");
+  });
+
+  it("ignores a change older than what the board holds, so a late answer can't undo a newer state (#101)", () => {
+    const newer = item({ id: "a", status: "done", statusChangedAt: "2026-11-11T10:05:00.000Z" });
+    const older = { ...newer, status: "cooking" as const, statusChangedAt: "2026-11-11T10:02:00.000Z" };
+    const { board } = applyChanges(new Map([[newer.id, newer]]), [older]);
+    expect(board.get("a")?.status).toBe("done");
+    // The same moment is as new as the board: a refused move shows where the item is.
+    expect(applyChanges(board, [{ ...newer, status: "cooking" }]).board.get("a")?.status).toBe("cooking");
+  });
+
+  it("takes an answer only for an item the board still holds and hasn't moved past (#101)", () => {
+    const held = item({ id: "a", status: "cooking", statusChangedAt: "2026-11-11T10:05:00.000Z" });
+    const board = new Map([[held.id, held]]);
+    const gone = item({ id: "gone", status: "done" });
+    const stale = { ...held, status: "placed" as const, statusChangedAt: "2026-11-11T10:01:00.000Z" };
+    const fresh = { ...held, status: "done" as const, statusChangedAt: "2026-11-11T10:06:00.000Z" };
+    expect(freshAnswers(board, [gone, stale])).toEqual([]);
+    expect(freshAnswers(board, [fresh])).toEqual([fresh]);
   });
 
   it("doesn't count an item seen before as arriving again", () => {
@@ -306,6 +338,185 @@ describe("a void's reason", () => {
   });
 });
 
+describe("a move that hangs (#101)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** A fetch that never answers, until `answer` is called; it honours its signal as fetch does. */
+  const hung = () => {
+    let answer: (response: Response) => void = () => {};
+    const signals: AbortSignal[] = [];
+    const fetch = (_url: string, init: { signal?: AbortSignal }) =>
+      new Promise<Response>((resolve, reject) => {
+        answer = resolve;
+        if (init.signal) {
+          signals.push(init.signal);
+          init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }
+      });
+    return { fetch, answer: (r: Response) => answer(r), signals };
+  };
+  const deps = (fetch: ReturnType<typeof hung>["fetch"]) => {
+    const applied: BoardItem[][] = [];
+    const said: (string | undefined)[] = [];
+    const poller = { refreshes: 0, refresh() { this.refreshes += 1; } };
+    return {
+      deps: {
+        fetch,
+        apply: (items: BoardItem[]) => void applied.push(items),
+        say: (m: string | undefined) => void said.push(m),
+        poller,
+      },
+      applied,
+      said,
+      poller,
+    };
+  };
+
+  it("gives up before the same-spot hold lapses, so the row is back before the guard's cap", () => {
+    expect(MOVE_TIMEOUT_MS).toBeGreaterThan(4_000); // a poll's own limit
+    expect(MOVE_TIMEOUT_MS).toBeLessThan(SAME_SPOT_HOLD_MS);
+  });
+
+  it("times out, says so, applies nothing and refreshes the board to find where the item really is", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, applied, said, poller } = deps(server.fetch);
+    const done = sendMove(item(), "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS - 1);
+    expect(said.at(-1)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(server.signals[0].aborted).toBe(true);
+    expect(said.at(-1)).toMatch(/too long/);
+    expect(said.at(-1)).toMatch(/check the board/i);
+    expect(applied).toEqual([]);
+    expect(poller.refreshes).toBe(1);
+  });
+
+  it("drops a late answer: nothing is applied after the timeout", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, applied } = deps(server.fetch);
+    const card = item({ id: "item-1" });
+    const done = sendMove(card, "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    server.answer(new Response(JSON.stringify({ item: { ...card, status: "cooking" } }), { status: 200 }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(applied).toEqual([]);
+  });
+
+  it("times out an answer whose body never finishes, too", async () => {
+    vi.useFakeTimers();
+    const stuck = (_url: string, init: { signal?: AbortSignal }) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          new Promise((_resolve, reject) =>
+            init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+          ),
+      } as unknown as Response);
+    const { deps: d, said } = deps(stuck);
+    const done = sendMove(item(), "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    expect(said.at(-1)).toMatch(/too long/);
+  });
+
+  it("doesn't time out a move that is answered, and stops its clock", async () => {
+    vi.useFakeTimers();
+    const card = item({ id: "item-1" });
+    const moved = { ...card, status: "cooking" as const };
+    const { deps: d, applied, said, poller } = deps(() =>
+      Promise.resolve(new Response(JSON.stringify({ item: moved }), { status: 200 })),
+    );
+    await sendMove(card, "cooking", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS * 2);
+    expect(applied).toEqual([[moved]]);
+    expect(said.at(-1)).toBeUndefined();
+    expect(poller.refreshes).toBe(0);
+  });
+
+  it("keeps the spot of a timed-out move that did work held until a poll shows it, then for the moment after", async () => {
+    vi.useFakeTimers();
+    const guard = sameSpotGuard();
+    const now = () => performance.now();
+    const tap = (itemId: string) => ({ itemId, x: 300, y: 200, at: now(), fromPointer: true });
+    const first = item({ id: "a" });
+    let asked = 0;
+    const shown: string[][] = [];
+    const poller = startPolling({
+      cursor: "1",
+      fetch: async () => {
+        asked = now();
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        return new Response(JSON.stringify({ cursor: "2", now: placedAt, items: [{ ...first, status: "cooking" }] }));
+      },
+      onChanges: (changes) => {
+        shown.push(changes.items.map((it) => it.id));
+        guard.polled(asked, now());
+      },
+      onConnection: () => {},
+    });
+    expect(guard.allow(tap("a"))).toBe(true);
+    const server = hung();
+    const done = sendMove(first, "cooking", {
+      ...deps(server.fetch).deps,
+      poller,
+      timedOut: () => guard.unanswered("a", now()),
+    }).finally(() => guard.settled("a", now()));
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    shown.length = 0;
+    expect(guard.allow(tap("a"))).toBe(true); // the item itself is free again
+    guard.settled("a", now()); // ... and that retap never reached the server
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(guard.allow(tap("b"))).toBe(false); // past 0.6 s, but no poll has answered yet
+    await vi.advanceTimersByTimeAsync(500);
+    expect(shown).toEqual([["a"]]); // A slides away, 1.5 s after the timeout
+    await vi.advanceTimersByTimeAsync(100);
+    expect(guard.allow(tap("b"))).toBe(false);
+    await vi.advanceTimersByTimeAsync(SAME_SPOT_MS);
+    expect(guard.allow(tap("b"))).toBe(true);
+    poller.stop();
+  });
+
+  it("marks the timeout before it polls, and not for a move that was answered or refused", async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const server = hung();
+    const timed = deps(server.fetch).deps;
+    const done = sendMove(item(), "cooking", {
+      ...timed,
+      poller: { refresh: () => void order.push("poll") },
+      timedOut: () => void order.push("timed out"),
+    });
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    await done;
+    expect(order).toEqual(["timed out", "poll"]);
+
+    order.length = 0;
+    for (const answer of [
+      () => Promise.resolve(new Response("{}", { status: 409 })),
+      () => Promise.reject(new TypeError("Failed to fetch")),
+    ]) {
+      await sendMove(item(), "cooking", { ...timed, fetch: answer, timedOut: () => void order.push("timed out") });
+    }
+    expect(order).toEqual([]);
+  });
+
+  it("times out a void or reject too, says so and leaves the form to try again", async () => {
+    vi.useFakeTimers();
+    const server = hung();
+    const { deps: d, said, poller } = deps(server.fetch);
+    const done = sendVoid(item(), "Dropped it", d);
+    await vi.advanceTimersByTimeAsync(MOVE_TIMEOUT_MS);
+    expect(await done).toBe(false);
+    expect(said.at(-1)).toMatch(/too long/);
+    expect(poller.refreshes).toBe(1);
+  });
+});
+
 describe("voiding and rejecting from the board", () => {
   const reply = (status: number, body?: unknown) =>
     Promise.resolve(new Response(body === undefined ? null : JSON.stringify(body), { status }));
@@ -398,5 +609,118 @@ describe("the card menu (#73)", () => {
 
     expect(itemsOfOrder(board, "order-1")).toEqual([first, second]);
     expect(itemsOfOrder(board, "order-3")).toEqual([]);
+  });
+});
+
+describe("a double tap on one spot (#100)", () => {
+  const tap = (itemId: string, at: number, x = 300, y = 200, fromPointer = true) => ({ itemId, x, y, at, fromPointer });
+
+  it("refuses a second ticket's tap on the same spot straight after", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 1000))).toBe(true);
+    expect(guard.allow(tap("b", 1000 + 250, 305, 204))).toBe(false);
+  });
+
+  it("holds the spot while the move is in flight, then for a moment after it settles", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    expect(guard.allow(tap("b", 700))).toBe(false); // still in flight: a poll may have moved A already
+    guard.settled("a", 800);
+    expect(guard.allow(tap("b", 850))).toBe(false);
+  });
+
+  it("lets the next ticket through once the moment after the move has passed", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.settled("a", 800);
+    expect(guard.allow(tap("b", 800 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("lets rapid work on a different spot through while a move is in flight", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    expect(guard.allow(tap("b", 200, 300, 330))).toBe(true);
+    guard.settled("a", 800);
+    expect(guard.allow(tap("c", 850, 900, 200))).toBe(true);
+  });
+
+  it("keeps one spot per move: settling one doesn't release another", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.allow(tap("b", 200, 300, 330));
+    guard.settled("b", 400);
+    expect(guard.allow(tap("c", 1100))).toBe(false);
+    expect(guard.allow(tap("c", 1100, 300, 330))).toBe(true);
+  });
+
+  it("guards the first spot even after a tap somewhere else", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    guard.settled("a", 50);
+    expect(guard.allow(tap("c", 200, 900, 200))).toBe(true);
+    expect(guard.allow(tap("b", 400))).toBe(false);
+  });
+
+  it("keeps the spot guarded through a triple tap", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    guard.settled("a", 10);
+    expect(guard.allow(tap("b", 300))).toBe(false);
+    expect(guard.allow(tap("b", 620))).toBe(false);
+    expect(guard.allow(tap("b", 620 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("lets a failed move's own item be tapped again straight away, and releases the spot", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.settled("a", 300);
+    expect(guard.allow(tap("a", 350))).toBe(true);
+    guard.settled("a", 500);
+    expect(guard.allow(tap("b", 500 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("holds the spot of an unanswered move for 10 seconds at most", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS - 1))).toBe(false);
+    expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS))).toBe(true);
+  });
+
+  it("keeps a timed-out move's spot for a poll asked after it, not one already on its way (#101)", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.unanswered("a", 8_000);
+    guard.settled("a", 8_000);
+    guard.polled(7_000, 8_500); // may have been read before the move was applied
+    expect(guard.allow(tap("b", 9_500))).toBe(false);
+    guard.polled(8_500, 10_000);
+    expect(guard.allow(tap("b", 10_000 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("doesn't lock a timed-out move's spot while polls fail, and guards it again when one answers (#101)", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.unanswered("a", 8_000);
+    const lapses = 8_000 + SAME_SPOT_HOLD_MS;
+    expect(guard.allow(tap("b", lapses - 1))).toBe(false); // refused taps don't extend it
+    expect(guard.allow(tap("b", lapses))).toBe(true);
+    guard.settled("b", lapses + 100);
+    guard.polled(66_000, 67_000); // the outage ends, and A slides now
+    expect(guard.allow(tap("c", 67_050))).toBe(false);
+    expect(guard.allow(tap("c", 67_050 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("is not released by a poll while its move may still be answered", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.polled(100, 200);
+    expect(guard.allow(tap("b", 2_000))).toBe(false);
+  });
+
+  it("never blocks an activation that isn't a pointer's", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 1000))).toBe(true);
+    expect(guard.allow(tap("b", 1100, 300, 200, false))).toBe(true);
+    expect(guard.allow(tap("c", 1150))).toBe(false);
   });
 });

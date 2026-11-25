@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { diningTables, orderItems, restaurants, tableSessions } from "@/db/schema";
+import { diningTables, menuItems, orderItems, restaurants, tableSessions } from "@/db/schema";
+import { dismissWaiter, getTableDetail } from "@/lib/floor";
 import {
   openOwnerDatabase,
   testDatabaseSettings,
@@ -8,6 +9,7 @@ import {
 import { orderingRestaurant } from "../../../../../../test/integration/ordering";
 import { POST as joinSession } from "../session/route";
 import { POST as placeOrder } from "../orders/route";
+import { POST as callWaiter } from "../waiter/route";
 import { GET } from "./route";
 
 /**
@@ -59,6 +61,34 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     ]);
   });
 
+  it("keeps the cart's order within an order (#99)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const dishes = Array.from({ length: 12 }, (_, n) => `Dish ${12 - n}`);
+    const rows = await owner.db
+      .insert(menuItems)
+      .values(dishes.map((name) => ({ restaurantId: r.restaurantId, categoryId: r.categoryId, name, priceUsd: "1" })))
+      .returning({ id: menuItems.id, name: menuItems.name });
+    const session = await join(r.qrToken);
+    const form = new URLSearchParams({ name: "Tariro", session });
+    for (const dish of dishes) {
+      form.append("item", rows.find((row) => row.name === dish)!.id);
+      form.append("quantity", "1");
+    }
+    const response = await placeOrder(
+      new Request("http://localhost/x", { method: "POST", body: form }),
+      params(r.qrToken),
+    );
+    expect(response.status).toBe(201);
+
+    const names = (await (await track(r.qrToken)).json()).items.map((item: { name: string }) => item.name);
+    expect(names).toEqual(dishes);
+
+    // And on the floor's page.
+    const ctx = { restaurantId: r.restaurantId };
+    const floor = await getTableDetail(ctx, r.tableId);
+    expect(floor!.orders[0].items.map((item) => item.name)).toEqual(dishes);
+  });
+
   it("carries each item's current status, and shows a voided one as voided", async () => {
     const r = await orderingRestaurant(owner.db);
     const session = await join(r.qrToken);
@@ -96,9 +126,19 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     expect(Math.abs(minutes(time) - minutes(expected))).toBeLessThanOrEqual(1);
   });
 
+  it("leaves the table's label to the scan, which names the table as staff see it (#99)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const scanned = async () =>
+      (await joinSession(new Request("http://localhost/x", { method: "POST" }), params(r.qrToken))).json();
+    expect(await scanned()).toEqual({ session: expect.any(String), table: "Table 7" });
+    await owner.db.update(diningTables).set({ label: "12" }).where(eq(diningTables.id, r.tableId));
+    expect((await scanned()).table).toBe("Table 12");
+    expect(Object.keys(await (await track(r.qrToken)).json()).sort()).toEqual(["items", "session", "waiter"]);
+  });
+
   it("is empty, with no session, for a table nobody has scanned", async () => {
     const r = await orderingRestaurant(owner.db);
-    expect(await (await track(r.qrToken)).json()).toEqual({ session: null, items: [] });
+    expect(await (await track(r.qrToken)).json()).toEqual({ session: null, items: [], waiter: false });
   });
 
   it("says nothing of a closed session: the table's next session starts empty", async () => {
@@ -112,10 +152,10 @@ describe("GET /api/t/[qrToken]/tracker", () => {
       .set({ status: "closed", closedAt: new Date(), closeReason: "staff_clear" })
       .where(eq(tableSessions.id, old));
 
-    expect(await (await track(r.qrToken)).json()).toEqual({ session: null, items: [] });
+    expect(await (await track(r.qrToken)).json()).toEqual({ session: null, items: [], waiter: false });
     const fresh = await join(r.qrToken);
     const body = await (await track(r.qrToken)).json();
-    expect(body).toEqual({ session: fresh, items: [] });
+    expect(body).toEqual({ session: fresh, items: [], waiter: false });
   });
 
   it("shows only its own table: another table's items never appear", async () => {
@@ -142,6 +182,44 @@ describe("GET /api/t/[qrToken]/tracker", () => {
     await join(second);
 
     expect((await (await track(second)).json()).items).toEqual([]);
+  });
+
+  const call = (qrToken: string) =>
+    callWaiter(new Request("http://localhost/x", { method: "POST" }), params(qrToken));
+  const body = async (qrToken: string) => (await track(qrToken)).json();
+
+  it("says whether a waiter call is pending, until staff dismiss it, and nothing more of it (#97)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const session = await join(r.qrToken);
+    expect(await body(r.qrToken)).toEqual({ session, items: [], waiter: false });
+
+    await call(r.qrToken);
+    // Whole: no time, no id and nothing about staff.
+    expect(await body(r.qrToken)).toEqual({ session, items: [], waiter: true });
+
+    const actor = { restaurantId: r.restaurantId, staffId: r.staffId };
+    expect(await dismissWaiter(actor, r.tableId)).toEqual({ outcome: "done" });
+    expect(await body(r.qrToken)).toEqual({ session, items: [], waiter: false });
+  });
+
+  it("never shows a call to the next party, nor to another table (#97)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const [{ qrToken: second }] = await owner.db
+      .insert(diningTables)
+      .values({ restaurantId: r.restaurantId, label: "Table 8", capacity: 2, qrToken: crypto.randomUUID().replaceAll("-", "").slice(0, 22) })
+      .returning({ qrToken: diningTables.qrToken });
+    const old = await join(r.qrToken);
+    await call(r.qrToken);
+    await join(second);
+    expect((await body(second)).waiter).toBe(false);
+
+    await owner.db
+      .update(tableSessions)
+      .set({ status: "closed", closedAt: new Date(), closeReason: "staff_clear" })
+      .where(eq(tableSessions.id, old));
+    expect(await body(r.qrToken)).toEqual({ session: null, items: [], waiter: false });
+    const fresh = await join(r.qrToken);
+    expect(await body(r.qrToken)).toEqual({ session: fresh, items: [], waiter: false });
   });
 
   it("is a 404 for an unknown token, and for a table that was archived", async () => {

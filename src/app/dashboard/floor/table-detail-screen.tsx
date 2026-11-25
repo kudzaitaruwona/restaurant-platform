@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft, MessageSquare, Undo2 } from "lucide-react";
 import { z } from "zod";
-import { ActionForm, type Confirmation } from "@/app/dashboard/action-form";
+import { ActionForm, type Confirmation, PageRefusalAlert, PageRefusals } from "@/app/dashboard/action-form";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -10,10 +10,12 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { localTime } from "@/lib/booking-engine";
 import { REOPEN_WINDOW_MINUTES } from "@/lib/closing";
 import { getTableDetail } from "@/lib/floor";
+import { type CurrencyMode, amountsDisplay } from "@/lib/pricing";
 import { VOID_REASON_MAX } from "@/lib/kitchen-board";
+import { tableName } from "@/lib/table-name";
 import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
-import { RefreshAction, openFor } from "./floor-screen";
+import { FlaggedNote, RefreshAction, openFor } from "./floor-screen";
 import { CallingBell, dismissButtonClassName } from "./waiter-call";
 
 type LineStatus = "placed" | "cooking" | "done" | "delivered" | "voided";
@@ -31,6 +33,25 @@ const closedWords = {
 const voidable = (status: LineStatus) => status !== "delivered" && status !== "voided";
 
 /**
+ * What an amount reads as in the restaurant's `currency_mode` (S-10): a
+ * currency that couldn't be worked out falls back to the other, and none at all
+ * is null.
+ */
+const shown = (amounts: { usd: string | null; zig: string | null }, mode: CurrencyMode) =>
+  amounts.usd === null && amounts.zig === null ? null : amountsDisplay(amounts, mode);
+
+function Money({ amounts, mode, className }: { amounts: { usd: string | null; zig: string | null }; mode: CurrencyMode; className?: string }) {
+  const display = shown(amounts, mode);
+  if (!display) return <span className={cn("text-caption text-ink-2", className)}>No price</span>;
+  return (
+    <span className={cn("flex flex-col tabular-nums", className)}>
+      <span>{display.main}</span>
+      {display.sub && <span className="text-caption font-normal text-ink-2">{display.sub}</span>}
+    </span>
+  );
+}
+
+/**
  * The reason a void, reject or force-close asks for in its dialog (#73, #74,
  * S-41). The dialog checks it's there; the route has the final say.
  */
@@ -46,7 +67,10 @@ const reasonField = (hint: string): Confirmation["reason"] => ({
  * name, the note and the status, Mark delivered on lines that are done, Void on
  * lines not yet delivered and Reject on orders with any (#73, S-36), and Clear
  * table and Force-close for the session (#74), pinned to the bottom. Void,
- * Reject and Force-close take their reason in a dialog (S-41). A free table
+ * Reject and Force-close take their reason in a dialog (S-41). Each line shows
+ * the price it froze when ordered, times its quantity (struck through once
+ * voided), and the bill's total leaves voided lines out, in the restaurant's
+ * `currency_mode` (#102). A flagged table says so, as the grid does. A free table
  * whose last session closed within the last 15 minutes offers Reopen (#76),
  * until when on the restaurant's clock; Postgres has the final say when it's
  * pressed. A table that isn't a live one of this restaurant is a 404. React
@@ -59,12 +83,12 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
   if (!id.success) notFound();
   const detail = await getTableDetail(tenant, id.data);
   if (!detail) notFound();
-  const { table, session, orders, timezone, reopenable } = detail;
+  const { table, session, orders, timezone, reopenable, currencyMode, flagged, total } = detail;
   const at = now ?? new Date();
   const outstanding = orders.flatMap((order) => order.items.filter((item) => voidable(item.status)));
 
   return (
-    <div className="flex flex-1 flex-col gap-5">
+    <PageRefusals className="flex flex-1 flex-col gap-5">
       <div>
         <Link
           href="/dashboard/floor"
@@ -76,7 +100,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
         <PageHeader
           title={
             <>
-              {table.label}
+              {tableName(table.label)}
               <span className="ml-2 text-lead font-normal tracking-normal text-ink-2">Seats {table.capacity}</span>
             </>
           }
@@ -132,6 +156,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               </ActionForm>
             </div>
           )}
+          {flagged && <FlaggedNote />}
           {orders.length === 0 && <p className="text-ink-2">Nothing ordered yet.</p>}
           <div className="flex flex-col gap-3">
             {orders.map((order) => (
@@ -165,15 +190,15 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                     return (
                       <li
                         key={item.id}
-                        className="grid min-h-18 grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[40px_minmax(0,1fr)_auto]"
+                        className="grid min-h-18 grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[44px_minmax(0,1fr)_auto_auto]"
                       >
                         <span
                           className={cn(
-                            "text-lead text-ink-2 tabular-nums",
+                            "text-lead whitespace-nowrap text-ink-2 tabular-nums",
                             settled ? "font-normal" : "font-semibold",
                           )}
                         >
-                          {item.quantity}x
+                          {item.quantity} ×
                         </span>
                         <span className="flex min-w-0 flex-col gap-0.5">
                           <span
@@ -192,7 +217,15 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                             </span>
                           )}
                         </span>
-                        <span className="col-start-2 flex flex-wrap items-center gap-2 sm:col-start-3 sm:justify-end">
+                        <Money
+                          amounts={item.price}
+                          mode={currencyMode}
+                          className={cn(
+                            "text-right font-medium",
+                            item.status === "voided" && "font-normal text-ink-2 line-through",
+                          )}
+                        />
+                        <span className="col-span-3 col-start-2 flex flex-wrap items-center gap-2 sm:col-span-1 sm:col-start-4 sm:justify-end">
                           <StatusPill status={item.status} className={cn(item.status === "delivered" && "px-1")} />
                           {item.status === "done" && (
                             <ActionForm action={`/api/order-items/${item.id}/deliver`}>
@@ -205,7 +238,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                             <ActionForm
                               action={`/api/order-items/${item.id}/void`}
                               confirmation={{
-                                title: `Void ${item.quantity}x ${item.name}?`,
+                                title: `Void ${item.quantity} × ${item.name}?`,
                                 description: `It comes off ${order.customerName}'s order and the kitchen board.`,
                                 confirmLabel: "Void item",
                                 reason: reasonField("Required. Recorded with the void."),
@@ -224,52 +257,73 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               </Card>
             ))}
           </div>
-          <div className="sticky bottom-0 z-10 -mx-4 mt-auto -mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:-mx-8 md:-mb-8 md:px-8">
-            <p className="max-w-[34ch] text-caption text-ink-2">
-              Clear table works once every item is delivered or voided.
-            </p>
-            <div className="flex flex-1 justify-end gap-2">
-              <ActionForm
-                action={`/api/floor/${table.id}/force-close`}
-                confirmation={{
-                  title: `Force-close ${table.label}?`,
-                  description:
-                    outstanding.length === 0 ? (
-                      "Every item is delivered or voided. This closes the table."
-                    ) : (
-                      <>
-                        <p>These items aren&apos;t delivered yet. Force-close voids them, then closes the table.</p>
-                        <ul className="mt-3 divide-y divide-line rounded-control border border-line text-ink">
-                          {outstanding.map((item) => (
-                            <li key={item.id} className="flex justify-between gap-3 px-3 py-2.5">
-                              <span>
-                                {item.quantity}x {item.name}
-                              </span>
-                              <StatusPill status={item.status} />
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    ),
-                  confirmLabel: outstanding.length === 0 ? "Close table" : `Void ${outstanding.length} and close`,
-                  reason: reasonField("Required. Recorded on each voided item."),
-                }}
-              >
-                <input type="hidden" name="session" value={session.id} />
-                <Button type="submit" variant="danger-secondary" size="staff">
-                  Force-close
-                </Button>
-              </ActionForm>
-              <ActionForm action={`/api/floor/${table.id}/clear`}>
-                <input type="hidden" name="session" value={session.id} />
-                <Button type="submit" size="staff">
-                  Clear table
-                </Button>
-              </ActionForm>
-            </div>
-          </div>
+          {orders.length > 0 && total && (
+            <Card as="section" className="flex items-baseline justify-between gap-3 px-4 py-3">
+              <h2 className="text-lead font-semibold">Total</h2>
+              <Money amounts={total} mode={currencyMode} className="items-end text-lead font-semibold" />
+            </Card>
+          )}
         </>
       )}
-    </div>
+      {/* In the page's flow, outside the forms and the session: it covers nothing, can't move the bar, and outlives both. */}
+      <PageRefusalAlert className="scroll-mb-48 rounded-card border border-danger bg-surface px-4 py-3" />
+      {session && (
+        <div className="sticky bottom-0 z-10 -mx-4 mt-auto -mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:-mx-8 md:-mb-8 md:px-8">
+          <p className="max-w-[34ch] text-caption text-ink-2">
+            {outstanding.length === 0
+              ? "Every item is delivered or voided: the table can be cleared."
+              : "Clear table works once every item is delivered or voided."}
+          </p>
+          <div className="flex flex-1 justify-end gap-2">
+            <ActionForm
+              action={`/api/floor/${table.id}/force-close`}
+              confirmation={{
+                title: `Force-close ${tableName(table.label)}?`,
+                description:
+                  outstanding.length === 0 ? (
+                    "Every item is delivered or voided. This closes the table."
+                  ) : (
+                    <>
+                      <p>These items aren&apos;t delivered yet. Force-close voids them, then closes the table.</p>
+                      <ul className="mt-3 divide-y divide-line rounded-control border border-line text-ink">
+                        {outstanding.map((item) => (
+                          <li key={item.id} className="flex justify-between gap-3 px-3 py-2.5">
+                            <span>
+                              {item.quantity} × {item.name}
+                            </span>
+                            <StatusPill status={item.status} />
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ),
+                confirmLabel: outstanding.length === 0 ? "Close table" : `Void ${outstanding.length} and close`,
+                reason: reasonField(
+                  outstanding.length === 0
+                    ? "Required. Recorded with the close."
+                    : "Required. Recorded on each voided item.",
+                ),
+              }}
+              refusalOnPage
+            >
+              <input type="hidden" name="session" value={session.id} />
+              {outstanding.map((item) => (
+                <input key={item.id} type="hidden" name="item" value={item.id} />
+              ))}
+              <Button type="submit" variant="danger-secondary" size="staff">
+                Force-close
+              </Button>
+            </ActionForm>
+            <ActionForm action={`/api/floor/${table.id}/clear`} refusalOnPage>
+              <input type="hidden" name="session" value={session.id} />
+              {/* The page knows it will be refused while a line is outstanding (#102). */}
+              <Button type="submit" size="staff" disabled={outstanding.length > 0}>
+                Clear table
+              </Button>
+            </ActionForm>
+          </div>
+        </div>
+      )}
+    </PageRefusals>
   );
 }

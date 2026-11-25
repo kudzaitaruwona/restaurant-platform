@@ -157,6 +157,31 @@ export function priceDisplay(
   );
 }
 
+/** What a mode shows for amounts already worked out (a frozen line's, or a sum of them). */
+export function amountsDisplay(
+  amounts: { usd: string | null; zig: string | null },
+  mode: CurrencyMode,
+): PriceDisplay {
+  return arranged(formatted(amounts.usd, amounts.zig), mode);
+}
+
+/** `unit` times a whole `quantity`, exact. */
+export function timesQuantity(unit: string, quantity: number): string {
+  const { int, scale } = decimal(unit);
+  return toText({ int: int * BigInt(quantity), scale });
+}
+
+/** The exact sum of money amounts: "0" for none. */
+export function sumAmounts(amounts: string[]): string {
+  const parsed = amounts.map(decimal);
+  const scale = Math.max(0, ...parsed.map((amount) => amount.scale));
+  const int = parsed.reduce(
+    (sum, amount) => sum + amount.int * power10(scale - amount.scale),
+    ZERO,
+  );
+  return toText({ int, scale });
+}
+
 /** A special's own prices (spec 00, specials): either, both or neither (badge only). */
 export type SpecialPrices = { priceUsd: string | null; priceZig: string | null };
 

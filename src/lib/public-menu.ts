@@ -40,6 +40,7 @@ main{max-width:40rem;margin:0 auto;padding-bottom:40px}
 .hrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01em;text-wrap:balance}
 .head p{margin:4px 0 0;font-size:15px;color:var(--ink-2)}
+.head .table{font-weight:600;color:var(--ink);overflow-wrap:anywhere}
 .wifi{display:flex;align-items:center;gap:6px}
 .wifi .icon{width:16px;height:16px}
 .head .book-again{margin-top:8px}
@@ -123,23 +124,25 @@ main{padding-bottom:104px}
 .tracker ul{margin-top:8px}
 .tracker li{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:10px 0}
 .tracker li+li{border-top:1px solid var(--line)}
-.tw{display:flex;flex-direction:column;min-width:0}
+.tw{display:flex;flex-direction:column;min-width:0;overflow-wrap:anywhere}
+.tracker .pill{flex:none}
 .tn{font-size:15px;font-weight:600}
 .tm,.tnote{font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
-.tnote{color:var(--attention-ink)}
+.tnote,.task{color:var(--attention-ink)}
+.task{font-size:13px;font-weight:600}
 .voided .tn{text-decoration:line-through;color:var(--ink-2)}
 .pill-served{--i:var(--i-check);padding:0 2px}.pill-served::before{background:var(--accent)}
 .pay{margin:4px 0 0;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--ink-2)}
-.confirm{--i:var(--i-ok);display:grid;grid-template-columns:20px 1fr;column-gap:10px;margin:-4px -4px 16px;padding:12px;border-radius:10px;background:var(--accent-soft)}
-.confirm::before{width:20px;height:20px;margin-top:1px;background:var(--accent);grid-row:span 2}
+.confirm{--i:var(--i-ok);display:grid;grid-template-columns:20px minmax(0,1fr);overflow-wrap:anywhere;column-gap:10px;margin:-4px -4px 16px;padding:12px;border-radius:10px;background:var(--accent-soft)}
+.confirm::before{width:20px;height:20px;margin-top:1px;background:var(--accent)}
 .confirm p{margin:0}
 .ct{font-size:15px;font-weight:600}
-.cs{margin-top:2px!important;font-size:13px;color:var(--ink-2)}
 @media (prefers-reduced-motion:no-preference){.confirm,.inorder{animation:in .2s ease-out}.order{animation:up .2s ease-out}}
 @keyframes in{from{translate:0 -4px;opacity:.4}}
 @keyframes up{from{translate:0 32px}}
 .add{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px 0 10px;border:1px solid var(--brand);border-radius:10px;background:var(--surface);color:var(--brand);font-size:15px;font-weight:600;cursor:pointer;transition:background-color .15s ease-out;touch-action:manipulation}
 .add:active{background:var(--surface-2);transform:translateY(1px)}
+.add:disabled{border-color:var(--line);color:var(--ink-2);cursor:default;transform:none}
 .inorder{--i:var(--i-check);display:inline-flex;align-items:center;gap:4px;margin-top:8px;font-size:13px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
 .dock{position:fixed;inset:auto 0 0;z-index:30;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);border-top:1px solid var(--line);box-shadow:0 -8px 24px -16px rgb(var(--shadow)/.3)}
 .dock:has(>[hidden]),.order:not([hidden])~.dock{display:none}
@@ -164,6 +167,8 @@ body:has(.order:not([hidden])){overflow:hidden}
 .q{min-width:28px;text-align:center;font-weight:600;font-variant-numeric:tabular-nums}
 .rm{--i:var(--i-trash);display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 4px 0 8px;border:0;background:none;color:var(--ink-2);font-size:15px;cursor:pointer}
 .fl{display:flex;flex-direction:column;gap:4px;margin-top:12px;font-size:13px;color:var(--ink-2)}
+.fh{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 8px}
+.note{display:block;resize:none;field-sizing:content;min-height:72px}
 .fname{padding-top:16px;border-top:1px solid var(--line);font-size:15px;font-weight:600;color:var(--ink)}
 .cl+.fname,#cart:empty+.fname{margin-top:8px}
 .order .sheet-foot{display:block}
@@ -190,10 +195,19 @@ body:has(.order:not([hidden])){overflow:hidden}
  * seconds, so a slow line can't pile them up or land an older answer over a newer
  * one: a tick during a poll is skipped, and a poll asked for after an order runs
  * once the one in flight is done. "Call a waiter" *(proposed, #77)* posts to its own
- * endpoint, one call at a time, and says on the page that it went through; the
- * page keeps nothing of it, since the floor view owns when a call ends. A session the table has left behind (staff
+ * endpoint, one call at a time. The call itself is the server's (#97): the tracker
+ * says whether one is pending, so the page shows it from then (after a reload, or on
+ * another phone, too) until staff dismiss it or the session ends. What it says goes
+ * in the status line it shares with the join (#98) and a failed order, and replaces
+ * or clears only its own words there. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
- * next Add or Place order joins the table's fresh one.
+ * next Add or Place order joins the table's fresh one and clears the name. Each line
+ * remembers the session it was added in: lines from another one are sent only after
+ * the guest has been told and places the order again (#85).
+ * Each submission has an id of its own (#84), kept until it is answered as placed,
+ * so a retry is the same submission and the server places it once. While the last
+ * answer was lost, a retry goes to the session it was first sent to, even one that
+ * has ended, where the server can say whether it was placed.
  */
 export const ORDER_SCRIPT = `(() => {
   const api = (path) => "/api/t/" + encodeURIComponent(location.pathname.split("/")[2]) + path;
@@ -206,6 +220,8 @@ export const ORDER_SCRIPT = `(() => {
   const size = $("cart-items");
   const list = $("cart");
   const tracker = $("tracker");
+  const title = $("tracker-title");
+  const tableName = $("table-name");
   const confirmed = $("tracker-confirm");
   const waiter = $("call-waiter");
   const waiterSaid = $("waiter-status");
@@ -237,17 +253,58 @@ export const ORDER_SCRIPT = `(() => {
     waiterSaid.dataset.tone = "error";
     waiterSaid.textContent = text;
   };
+  // The waiter call (#97): whether it is pending, and the words it last put in the
+  // status line, which it changes only while they are still there.
+  let called = false;
+  let own = "";
+  const say = (text, tone) => {
+    own = text;
+    waiterSaid.textContent = text;
+    if (tone) waiterSaid.dataset.tone = tone; else delete waiterSaid.dataset.tone;
+  };
+  const showCall = (pending, text) => {
+    called = pending;
+    if (pending) waiter.dataset.called = ""; else delete waiter.dataset.called;
+    if (waiterSaid.textContent === own) say(text);
+  };
+  const sent = "Your table's call has been sent to the staff.";
+  // A refusal shown there (#87) outlives the polls, and goes at the guest's next Add
+  // or with the session, giving the line back to the call.
+  const clearRefusal = () => { if (waiterSaid.textContent !== own) say(called ? sent : ""); };
+  // A poll asked before this moved on is out of date: its answer is dropped.
+  let epoch = 0;
   const times = (quantity, name) => quantity + " \\u00d7 " + name;
   let session = null;
   let ended = false;
   let cart = [];
-  const join = async () => {
-    const response = await fetch(api("/session"), { method: "POST" });
-    if (!response.ok) throw new Error(String(response.status));
-    const next = (await response.json()).session;
-    if (session && next !== session) fields.name.value = "";
+  // The submission's id, and the session it went to while its answer is unknown.
+  let request = null;
+  let asked = null;
+  // A retry's confirmation, kept when the poll after it finds the session ended.
+  let keep = false;
+  // Not crypto.randomUUID: older phones, and plain http, don't have it.
+  const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+  // The session the page is now in. A new one asks for the name again.
+  const enter = (next) => {
+    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; items = []; showCall(false, ""); clearRefusal(); }
     session = next;
     ended = false;
+    for (const line of cart) line.from = line.from || next;
+  };
+  const scan = async () => {
+    const response = await fetch(api("/session"), Object.assign({ method: "POST" }, AbortSignal.timeout && { signal: AbortSignal.timeout(8000) }));
+    if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status, wait: Number(response.headers && response.headers.get("retry-after")) || 0 });
+    const scanned = await response.json();
+    tableName.textContent = scanned.table || "";
+    tableName.hidden = !scanned.table;
+    return scanned.session;
+  };
+  // Given up after 8 seconds, body included, on phones without AbortSignal.timeout
+  // too: an answer that comes later is dropped, not entered.
+  const join = async () => {
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("late")), 8000); });
+    try { enter(await Promise.race([scan(), late])); } finally { clearTimeout(timer); }
     try { fields.name.value = localStorage.getItem("order-name:" + session) || fields.name.value; } catch {}
   };
 
@@ -291,21 +348,41 @@ export const ORDER_SCRIPT = `(() => {
       remove.addEventListener("click", () => { cart = cart.filter((other) => other !== line); error.textContent = ""; draw(); });
       const controls = make("div", undefined, "crow");
       controls.append(stepper, remove);
-      const note = make("input", undefined, "input note");
+      // A textarea, so a long note shows whole, but one line of text (#99).
+      const note = make("textarea", undefined, "input note");
+      const used = make("span");
+      const showUsed = () => {
+        const size = note.value.length;
+        used.textContent = size + " of 200 characters" + (size >= 200 ? ". That's the limit." : "");
+      };
       note.maxLength = 200;
+      note.rows = 2;
       note.placeholder = "For example, no onions";
       note.value = line.note;
-      note.setAttribute("aria-label", "Note for " + line.name);
-      note.addEventListener("input", () => { line.note = note.value; });
+      note.setAttribute("aria-label", "Note for " + line.name + ", up to 200 characters");
+      note.addEventListener("input", () => {
+        if (note.value.includes("\\n")) note.value = note.value.replace(/\\s*\\n\\s*/g, " ");
+        line.note = note.value;
+        showUsed();
+      });
+      showUsed();
       const label = make("label", undefined, "fl");
-      label.append(make("span", "Kitchen note (optional)"), note);
+      const head = make("span", undefined, "fh");
+      head.append(make("span", "Kitchen note (optional)"), used);
+      label.append(head, note);
       row.append(top, controls, label);
       return row;
     }));
   };
 
-  const words = { placed: "Ordered", cooking: "Cooking", done: "Ready", delivered: "Served", voided: "Voided" };
+  const words = { placed: "Placed", cooking: "Cooking", done: "Done", delivered: "Served", voided: "Voided" };
   const pills = { placed: "placed", cooking: "cooking", done: "done", delivered: "served ico", voided: "voided" };
+  // The items last polled. A confirmation comes down once the session has more voided
+  // lines of a dish it names than when its submission was made (#99).
+  let items = [];
+  let dishes = [];
+  let voidsBefore = {};
+  const voids = () => items.reduce((counts, item) => { if (item.status === "voided") counts[item.name] = (counts[item.name] || 0) + 1; return counts; }, Object.create(null));
   let shown = false;
   let last = "";
   let polling = false;
@@ -314,17 +391,26 @@ export const ORDER_SCRIPT = `(() => {
     if (!session) return;
     if (polling) { again = again || fresh; return; }
     polling = true;
+    const at = epoch;
     try {
       const response = await fetch(api("/tracker"), AbortSignal.timeout ? { signal: AbortSignal.timeout(4000) } : {});
       if (!response.ok) return;
       const feed = await response.json();
       const text = JSON.stringify(feed);
-      if (text === last) return;
+      if (at !== epoch || text === last) return;
       last = text;
       ended = feed.session !== session;
-      const items = ended ? [] : feed.items;
+      // Reopened: a line added meanwhile, whose own join failed, is this session's.
+      if (!ended) for (const line of cart) line.from = line.from || session;
+      if (ended) { if (called || own) showCall(false, ""); clearRefusal(); }
+      else if (!!feed.waiter !== called) showCall(!called, called ? "The staff have seen your table's call." : sent);
+      items = ended ? [] : feed.items;
+      const voided = voids();
+      if (dishes.some((name) => (voided[name] || 0) > (voidsBefore[name] || 0))) confirmed.replaceChildren();
+      title.hidden = items.length === 0;
       if (!ended) shown = items.length > 0;
-      if (ended) confirmed.replaceChildren();
+      if (!ended) keep = false;
+      else if (!keep) confirmed.replaceChildren();
       tracker.hidden = !shown && !confirmed.textContent;
       feedState.textContent = ended ? "This table's session has ended. Add an item to start a new one." : "";
       feedList.replaceChildren(...items.map((item) => {
@@ -332,6 +418,7 @@ export const ORDER_SCRIPT = `(() => {
         const what = make("div", undefined, "tw");
         what.append(make("span", times(item.quantity, item.name), "tn"), make("span", item.customer + " at " + item.time, "tm"));
         if (item.note) what.append(make("span", "Note: " + item.note, "tnote"));
+        if (item.status === "voided") what.append(make("span", "Ask a member of staff about this item.", "task"));
         row.append(what, make("span", words[item.status] || item.status, "pill pill-" + (pills[item.status] || "neutral")));
         return row;
       }));
@@ -341,22 +428,53 @@ export const ORDER_SCRIPT = `(() => {
     }
   };
 
-  join().then(() => {
-    for (const button of adds) button.hidden = false;
-    waiter.hidden = false;
-    poll();
-    setInterval(() => { if (!document.hidden) poll(); }, 5000);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
-  }, () => {});
+  // The first join (#98): a failed one is retried 5 times, after 2, 5, 10, 20 and 40
+  // seconds (a rate limit's Retry-After if longer), then left to "Try again".
+  // Any other 4xx (a code that no longer works, ordering off, an archived table)
+  // is final: the plain menu, no message.
+  const delays = [2000, 5000, 10000, 20000, 40000];
+  const retry = make("button", "Try again", "btn");
+  retry.type = "button";
+  const problem = make("span");
+  let tries = 0;
+  let waiting = null;
+  let connecting = false;
+  // Never disabled or moved while it is up: either would drop a keyboard's focus.
+  const connect = () => {
+    if (connecting) return;
+    connecting = true;
+    clearTimeout(waiting);
+    join().then(() => {
+      waiterSaid.replaceChildren();
+      delete waiterSaid.dataset.tone;
+      for (const button of adds) button.hidden = false;
+      waiter.hidden = false;
+      poll();
+      setInterval(() => { if (!document.hidden) poll(); }, 5000);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+    }, (failure) => {
+      connecting = false;
+      const refused = failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429;
+      if (refused) { delete waiterSaid.dataset.tone; return waiterSaid.replaceChildren(); }
+      const more = tries < delays.length;
+      waiterSaid.dataset.tone = "error";
+      problem.textContent = more ? "Couldn't reach the table. Trying again\u2026 " : "Ordering isn't available right now. Check your connection and try again. ";
+      if (waiterSaid.children[0] !== problem) waiterSaid.replaceChildren(problem, retry);
+      if (more) waiting = setTimeout(connect, Math.min(60000, Math.max(delays[tries++], (failure.wait || 0) * 1000)));
+    });
+  };
+  retry.addEventListener("click", () => { tries = 0; connect(); });
+  connect();
 
   document.addEventListener("click", async (event) => {
     const button = event.target instanceof Element && event.target.closest("button[data-item]");
-    if (!button) return;
+    if (!button || button.disabled) return;
     const line = cart.find((other) => other.id === button.dataset.item);
     if (line) line.quantity = Math.min(20, line.quantity + 1);
     else if (cart.length >= 20) return fail("An order can have up to 20 different items.");
-    else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "" });
+    else cart.push({ id: button.dataset.item, name: button.dataset.name, price: button.dataset.price || "", quantity: 1, note: "", from: ended ? null : session });
     error.textContent = "";
+    clearRefusal();
     confirmed.replaceChildren();
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
@@ -369,19 +487,14 @@ export const ORDER_SCRIPT = `(() => {
       const response = await fetch(api("/waiter"), { method: "POST" });
       if (!response.ok) throw new Error(String(response.status));
       const next = (await response.json()).session;
-      if (next !== session) {
-        fields.name.value = "";
-        session = next;
-        ended = false;
-        last = "";
-        poll(true);
-      }
-      waiter.dataset.called = "";
-      delete waiterSaid.dataset.tone;
-      waiterSaid.textContent = "A waiter is on the way.";
+      if (next !== session) enter(next);
+      say(sent);
+      showCall(true, sent);
+      epoch++;
+      last = "";
+      poll(true);
     } catch {
-      waiterSaid.dataset.tone = "error";
-      waiterSaid.textContent = "That didn't go through. Check your connection and try again.";
+      say("That didn't go through. Check your connection and try again.", "error");
     } finally {
       waiter.disabled = false;
     }
@@ -389,14 +502,28 @@ export const ORDER_SCRIPT = `(() => {
   bar.addEventListener("click", () => { error.textContent = ""; openSheet(); });
   $("order-cancel").addEventListener("click", closeSheet);
   $("order-scrim").addEventListener("click", closeSheet);
+  // The guest has been told: the cart is this session's now.
+  const keepCart = () => { for (const line of cart) line.from = session; };
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const name = fields.name.value.trim();
     if (cart.length === 0) return;
-    if (!name) return fail("Enter a name for the waiter.");
     fields.place.disabled = true;
     try {
-      if (ended) await join();
+      if (ended && !asked) await join();
+      // A retry goes to its own session, so it can't land in the next one.
+      if (!asked && cart.some((line) => line.from !== session)) {
+        keepCart();
+        poll(true);
+        return fail("This table's session has ended. Check your order and your name, then place it again if you're still at this table.");
+      }
+      // Read after joining, which may have cleared it.
+      const name = fields.name.value.trim();
+      if (!name) return fail("Enter a name for the waiter.");
+      const retrying = asked;
+      asked = asked || session;
+      const to = asked;
+      if (!request) voidsBefore = voids();
+      request = request || newId();
       const body = new URLSearchParams();
       for (const line of cart) {
         body.append("item", line.id);
@@ -404,28 +531,42 @@ export const ORDER_SCRIPT = `(() => {
         body.append("note", line.note);
       }
       body.set("name", name);
-      body.set("session", session || "");
+      body.set("session", to || "");
+      body.set("request", request);
       const response = await fetch(api("/orders"), { method: "POST", body });
       const answer = await response.json().catch(() => ({}));
-      if (response.status === 201) {
-        try { localStorage.setItem("order-name:" + session, name); } catch {}
+      if (answer.placed || (answer.error && response.status < 500)) asked = null;
+      if (response.status === 201 && answer.placed) {
+        request = null;
+        keep = !!retrying;
+        try { localStorage.setItem("order-name:" + to, name); } catch {}
         cart = [];
         error.textContent = "";
         draw();
-        confirmed.replaceChildren(
-          make("p", "Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ".", "ct"),
-          make("p", "Pay at the table with your waiter as usual.", "cs"),
-        );
+        dishes = answer.placed.lines.map((line) => line.name);
+        confirmed.replaceChildren(make("p", "Ordered: " + answer.placed.lines.map((line) => times(line.quantity, line.name)).join(", ") + ".", "ct"));
         tracker.hidden = false;
         if (tracker.scrollIntoView) tracker.scrollIntoView({ block: "start" });
         last = "";
         poll(true);
         return;
       }
-      if (answer.code === "session_changed") await join().catch(() => {});
+      if (answer.code === "session_changed" || answer.code === "already_placed") request = null;
+      if (answer.code === "session_changed") {
+        await join().catch(() => {});
+        keepCart();
+      }
       if (answer.code === "unavailable") {
+        // The item is sold out: out of the cart, and its Add can't be pressed on this open page (#87).
+        const gone = adds.filter((button) => button.dataset.item === answer.item);
+        const named = cart.find((line) => line.id === answer.item) || (gone[0] && gone[0].dataset);
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
+        for (const button of gone) { button.disabled = true; button.textContent = "Sold out"; }
+        fail("Sorry, " + (named ? named.name : "that item") + " isn't available right now. It was taken out of your order.");
+        // With the cart empty the message is on the page, not in the sheet: bring it into view.
+        if (cart.length === 0 && waiterSaid.scrollIntoView) waiterSaid.scrollIntoView({ block: "center" });
+        return;
       }
       fail(answer.error || "That didn't go through. Try again.");
     } catch {
@@ -444,7 +585,7 @@ const orderScript = trusted(ORDER_SCRIPT);
  * Both stay empty and hidden until the script fills them.
  */
 const trackerBlock = html`<p id="waiter-status" class="said" role="status"></p>
-<section id="tracker" class="tracker" aria-live="polite" hidden><div id="tracker-confirm" class="confirm ico"></div><h2>Your table's orders</h2><p id="tracker-state" class="tstate"></p><ul id="tracker-list"></ul><p class="pay">Pay at the table with your waiter as usual.</p></section>
+<section id="tracker" class="tracker" aria-live="polite" hidden><div id="tracker-confirm" class="confirm ico"></div><h2 id="tracker-title" hidden>Your table's orders</h2><p id="tracker-state" class="tstate"></p><ul id="tracker-list"></ul><p class="pay">Pay at the table with your waiter as usual.</p></section>
 `;
 
 const waiterButton = trusted(
@@ -570,7 +711,7 @@ function menuPage(menu: Menu, bookAgain: string | null, ordering: boolean) {
   return page(
     menu.restaurantName,
     html`<header class="head"><div class="hrow"><div><h1>${menu.restaurantName}</h1>
-${menu.wifiName && html`<p class="wifi">${WIFI}Wi-Fi: ${menu.wifiName}</p>`}
+${ordering && trusted('<p id="table-name" class="table" hidden></p>')}${menu.wifiName && html`<p class="wifi">${WIFI}Wi-Fi: ${menu.wifiName}</p>`}
 ${bookAgainLine(bookAgain)}</div>${ordering && waiterButton}</div></header>
 ${ordering && trackerBlock}${jumpBar}
 <div class="sections">${specials}

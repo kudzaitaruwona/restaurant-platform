@@ -53,6 +53,10 @@ class FakeElement {
   dispatch(type: string, event: Record<string, unknown> = {}) {
     return this.listeners.get(type)?.({ target: this, preventDefault() {}, ...event });
   }
+  scrolledTo = 0;
+  scrollIntoView() {
+    this.scrolledTo += 1;
+  }
   focusCount = 0;
   focus() {
     this.focusCount += 1;
@@ -70,24 +74,39 @@ class FakeElement {
   }
 }
 
-type Feed = { session: string | null; items: Record<string, unknown>[] };
-type Reply = { status: number; json: unknown };
+type Feed = { session: string | null; items: Record<string, unknown>[]; waiter?: boolean };
+type Reply = { status: number; json: unknown; headers?: Record<string, string> };
 
 /** One page load: a fresh page over the same phone's storage. */
 async function loadPage(
   storage: Map<string, string>,
   sessionId: string,
-  { feed = { session: sessionId, items: [] } as Feed } = {},
+  {
+    feed = { session: sessionId, items: [] } as Feed,
+    joinReplies = [] as (Reply | "abort" | "hang")[],
+  } = {},
 ) {
   const state = {
     feed,
     sessionId,
+    tableName: "Table 7" as string | undefined,
     orderReply: undefined as Reply | undefined,
+    /** While true, an order is sent and no answer comes back. */
+    loseOrderReply: false,
     waiterReply: undefined as Reply | undefined,
+    /** Answers to the next scans, in turn: a reply, "abort" for one that fails, or "hang" for one that never answers. */
+    joinReplies,
+    /** Answers each scan that hung, late. */
+    hung: [] as ((reply: unknown) => void)[],
+    /** Timeouts the script set, by delay in milliseconds, until they run. */
+    later: [] as { ms: number; run: () => void }[],
     requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
     /** While true, a tracker poll waits for its answer until `answer()` is called. */
     holdPolls: false,
     held: [] as (() => void)[],
+    /** While true, a waiter call is answered only by `answerCall()`. */
+    holdWaiter: false,
+    heldWaiter: [] as (() => void)[],
     /** The timeouts the script asked AbortSignal for, in milliseconds. */
     timeouts: [] as number[],
   };
@@ -107,7 +126,9 @@ async function loadPage(
     "cart-items": new FakeElement(),
     cart: new FakeElement(),
     tracker: Object.assign(new FakeElement(), { hidden: true }),
+    "table-name": Object.assign(new FakeElement(), { hidden: true }),
     "tracker-confirm": new FakeElement(),
+    "tracker-title": Object.assign(new FakeElement(), { hidden: true }),
     "tracker-state": new FakeElement(),
     "tracker-list": new FakeElement(),
     "call-waiter": Object.assign(new FakeElement(), { hidden: true }),
@@ -143,13 +164,29 @@ async function loadPage(
     const path = url.replace("/api/t/some-token", "");
     state.requests.push({ path, method: init.method ?? "GET", body: init.body, signal: init.signal });
     if (path === "/session") {
-      return { ok: true, status: 200, json: async () => ({ session: state.sessionId }) };
+      const next = state.joinReplies.shift();
+      if (next === "abort") throw new TypeError("Failed to fetch");
+      // As on a phone without AbortSignal.timeout: the fetch itself is never given up.
+      if (next === "hang") return new Promise((resolve) => state.hung.push(resolve));
+      if (next) {
+        return {
+          ok: next.status < 400,
+          status: next.status,
+          headers: { get: (name: string) => next.headers?.[name] ?? null },
+          json: async () => next.json,
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ session: state.sessionId, table: state.tableName }) };
     }
     if (path === "/waiter") {
       const reply = state.waiterReply ?? {
         status: 200,
         json: { session: state.sessionId, requestedAt: "2026-01-01T10:00:00.000Z" },
       };
+      // As the server does: the table's feed shows the call from now on.
+      if (reply.status < 400) state.feed = { ...state.feed, waiter: true };
+      // Committed, then held until the test lets its answer through.
+      if (state.holdWaiter) await new Promise<void>((resolve) => state.heldWaiter.push(resolve));
       return { ok: reply.status < 400, status: reply.status, json: async () => reply.json };
     }
     if (path === "/tracker") {
@@ -158,6 +195,7 @@ async function loadPage(
       if (state.holdPolls) await new Promise<void>((resolve) => state.held.push(resolve));
       return { ok: true, status: 200, json: async () => feed };
     }
+    if (state.loseOrderReply) throw new TypeError("Failed to fetch");
     const reply = state.orderReply ?? {
       status: 201,
       json: {
@@ -180,12 +218,22 @@ async function loadPage(
     localStorage,
     fetch,
     URLSearchParams,
+    crypto,
     Element: FakeElement,
     AbortSignal: {
       timeout: (ms: number) => {
         state.timeouts.push(ms);
         return { timeoutMs: ms };
       },
+    },
+    setTimeout: (run: () => void, ms: number) => {
+      const entry = { ms, run };
+      state.later.push(entry);
+      return entry;
+    },
+    clearTimeout: (entry: unknown) => {
+      const at = state.later.indexOf(entry as (typeof state.later)[number]);
+      if (at >= 0) state.later.splice(at, 1);
     },
     setInterval: (callback: () => unknown) => void (timer = callback),
     location: { pathname: "/t/some-token" },
@@ -211,6 +259,8 @@ async function loadPage(
     /** Where the waiter's answer shows: under the header. */
     waiterStatus: elements["waiter-status"],
     cart: elements.cart,
+    tableName: elements["table-name"],
+    trackerTitle: elements["tracker-title"],
     tracker: elements.tracker,
     trackerState: elements["tracker-state"],
     trackerList: elements["tracker-list"],
@@ -221,7 +271,7 @@ async function loadPage(
       [...Object.values(elements), ...Object.values(fields)]
         .flatMap((element) => (element instanceof FakeElement ? element.find(() => true) : []))
         .reduce((sum, element) => sum + element.focusCount, 0),
-    noteInputs: () => elements.cart.find((el) => el.tagName === "input"),
+    noteInputs: () => elements.cart.find((el) => el.tagName === "textarea"),
     /** The quantity each cart line shows in its stepper, by name. */
     quantities: () =>
       Object.fromEntries(
@@ -253,6 +303,17 @@ async function loadPage(
       await settle();
       await settle();
     },
+    async answerCall() {
+      state.heldWaiter.splice(0).forEach((resolve) => resolve());
+      await settle();
+      await settle();
+    },
+    /** Runs the oldest retry the script has waiting. */
+    async retryNow() {
+      state.later.shift()?.run();
+      await settle();
+    },
+    joins: () => state.requests.filter((request) => request.path === "/session").length,
     polls: () => state.requests.filter((request) => request.path === "/tracker"),
     async orderOne(name: string) {
       await this.add(stew);
@@ -309,6 +370,199 @@ describe("the table page remembers the customer's name", () => {
     expect(page.state.requests.filter((request) => request.path === "/orders")).toEqual([]);
     expect(page.error.textContent).toMatch(/name/i);
     expect(page.form.hidden).toBe(false);
+  });
+});
+
+describe("a first scan that fails (#98)", () => {
+  const down = "abort" as const;
+
+  it("says so, retries by itself with growing waits, and orders once it works, without a reload", async () => {
+    const failing = await loadPage(new Map(), "session-1", { joinReplies: [down, down, down] });
+    expect(failing.stew.hidden).toBe(true);
+    expect(failing.waiterStatus.textContent).toMatch(/trying again/i);
+    expect(failing.waiter.hidden).toBe(true);
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([2000]);
+
+    await failing.retryNow();
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([5000]);
+    await failing.retryNow();
+    expect(failing.state.later.map((entry) => entry.ms)).toEqual([10000]);
+    await failing.retryNow();
+
+    expect(failing.joins()).toBe(4);
+    expect(failing.stew.hidden).toBe(false);
+    expect(failing.waiter.hidden).toBe(false);
+    expect(failing.waiterStatus.textContent).toBe("");
+  });
+
+  it("stops after five retries and leaves a message with a manual retry", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: Array(6).fill(down) });
+    for (let i = 0; i < 5; i++) await page.retryNow();
+
+    expect(page.joins()).toBe(6);
+    expect(page.state.later).toEqual([]);
+    expect(page.waiterStatus.textContent).toMatch(/isn't available/i);
+    expect(page.stew.hidden).toBe(true);
+  });
+
+  it("joins at once when Try again is pressed, and then shows ordering", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: Array(6).fill(down) });
+    for (let i = 0; i < 5; i++) await page.retryNow();
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+
+    await button.dispatch("click");
+    await settle();
+
+    expect(page.joins()).toBe(7);
+    expect(page.stew.hidden).toBe(false);
+    expect(page.waiterStatus.textContent).toBe("");
+  });
+
+  it("a manual retry during the wait replaces the timer rather than doubling the joins", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: [down] });
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+
+    await button.dispatch("click");
+    await settle();
+
+    expect(page.joins()).toBe(2);
+    expect(page.state.later).toEqual([]);
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("retries a 5xx, and waits at least as long as a 429's Retry-After", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: [{ status: 503, json: {} }, { status: 429, json: {}, headers: { "retry-after": "30" } }],
+    });
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([2000]);
+    await page.retryNow();
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([30000]);
+    await page.retryNow();
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("doesn't retry a refusal that won't change: a code that no longer works is the plain menu", async () => {
+    for (const status of [404, 403, 400]) {
+      const page = await loadPage(new Map(), "session-1", { joinReplies: [{ status, json: {} }] });
+      expect(page.joins()).toBe(1);
+      expect(page.state.later).toEqual([]);
+      expect(page.waiterStatus.textContent).toBe("");
+      expect(page.stew.hidden).toBe(true);
+    }
+  });
+});
+
+describe("a scan that never answers (#98)", () => {
+  const late = (session: string) => ({ ok: true, status: 200, json: async () => ({ session }) });
+
+  it("is given up after 8 seconds and retried, and its late answer changes nothing", async () => {
+    const page = await loadPage(new Map(), "session-2", { joinReplies: ["hang"] });
+    expect(page.state.timeouts).toEqual([8000]);
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([8000]);
+    expect(page.waiterStatus.textContent).toBe("");
+
+    await page.retryNow(); // the 8 seconds pass
+    expect(page.waiterStatus.textContent).toMatch(/trying again/i);
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([2000]);
+
+    await page.retryNow();
+    expect(page.stew.hidden).toBe(false);
+    expect(page.waiterStatus.textContent).toBe("");
+    expect(page.state.later).toEqual([]);
+
+    const polls = page.polls().length;
+    page.state.hung[0](late("session-1"));
+    await settle();
+    expect(page.polls()).toHaveLength(polls);
+    await page.add(page.stew);
+    await page.placeAs("Ada");
+    expect(page.state.requests.find((request) => request.path === "/orders")!.body!.get("session")).toBe("session-2");
+  });
+
+  it("leaves the message and Try again up, and frees the button, if an answer arrives after it was given up", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: ["hang"] });
+    await page.retryNow();
+    page.state.hung[0](late("session-1"));
+    await settle();
+
+    expect(page.stew.hidden).toBe(true);
+    await page.waiterStatus.find((el) => el.tagName === "button")[0].dispatch("click");
+    await settle();
+    expect(page.joins()).toBe(2);
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("gives Place order back, with the cart and a message", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("hang");
+    page.name.value = "Ada";
+    void page.form.dispatch("submit");
+    await settle();
+    expect(page.form.elements.place.disabled).toBe(true);
+
+    await page.retryNow(); // the 8 seconds pass
+    expect(page.form.elements.place.disabled).toBe(false);
+    expect(page.error.textContent).toMatch(/didn't go through/);
+    expect(page.cart.children).toHaveLength(1);
+  });
+
+  it("leaves an Add in the cart when its join hangs", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("hang");
+    void page.document.dispatch("click", { target: page.stew });
+    await settle();
+    await page.retryNow();
+    expect(page.cart.children).toHaveLength(1);
+    expect(page.state.later).toEqual([]);
+  });
+});
+
+describe("Try again and the keyboard (#98)", () => {
+  it("is never disabled, replaced or moved while the retries run", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: [...Array(6).fill("abort"), "hang"] });
+    const placed = page.waiterStatus.children;
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+    for (let i = 0; i < 5; i++) {
+      await page.retryNow();
+      expect(page.waiterStatus.children).toBe(placed);
+      expect(button.disabled).toBe(false);
+    }
+    expect(page.waiterStatus.textContent).toMatch(/isn't available/i);
+
+    // A second press while one is being tried asks nothing more.
+    await button.dispatch("click");
+    await button.dispatch("click");
+    await settle();
+    expect(page.joins()).toBe(7);
+    expect(button.disabled).toBe(false);
+  });
+});
+
+describe("a first scan that fails, then #85's rules (#98 with #85)", () => {
+  it("a refusal after a transient failure leaves no error tone behind", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: [{ status: 503, json: {} }, { status: 404, json: {} }],
+    });
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+    await page.retryNow();
+    expect(page.waiterStatus.textContent).toBe("");
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    expect(page.state.later).toEqual([]);
+  });
+
+  it("a retried first join tags the cart to its session, so an order places without the ended-session prompt", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: ["abort" as const] });
+    await page.retryNow();
+    await page.add(page.stew);
+    await page.placeAs("Ada");
+
+    expect(page.state.requests.filter((request) => request.path === "/orders")).toHaveLength(1);
+    expect(page.joins()).toBe(2);
   });
 });
 
@@ -455,6 +709,34 @@ describe("placing the order", () => {
     expect(body.get("session")).toBe("session-1");
   });
 
+  it("says how much of a note's 200 characters is used, and that the limit is reached (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    expect(page.cartText()).toContain("0 of 200 characters");
+    const [note] = page.noteInputs();
+
+    note.value = "no onions";
+    note.dispatch("input");
+    expect(page.cartText()).toContain("9 of 200 characters");
+
+    note.value = "x".repeat(200);
+    note.dispatch("input");
+    expect(page.cartText()).toContain("200 of 200 characters. That's the limit.");
+
+    // Kept when the cart is drawn again.
+    await page.add(page.rice);
+    expect(page.cartText()).toContain("200 of 200 characters. That's the limit.");
+  });
+
+  it("keeps a note on one line, as the kitchen reads it (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    const [note] = page.noteInputs();
+    note.value = "no onions\nno salt";
+    note.dispatch("input");
+    expect(note.value).toBe("no onions no salt");
+  });
+
   it("sends nothing that says what anything costs", async () => {
     const page = await loadPage(new Map(), "session-1");
     await page.add(page.stew);
@@ -462,7 +744,7 @@ describe("placing the order", () => {
     await page.placeAs("Tariro");
 
     const body = page.state.requests.find((request) => request.path === "/orders")!.body!;
-    expect([...new Set(body.keys())].sort()).toEqual(["item", "name", "note", "quantity", "session"]);
+    expect([...new Set(body.keys())].sort()).toEqual(["item", "name", "note", "quantity", "request", "session"]);
   });
 
   it("empties the cart, closes it, and confirms at the top of the tracker that there is nothing to pay on the page", async () => {
@@ -477,7 +759,8 @@ describe("placing the order", () => {
     expect(page.open.hidden).toBe(true);
     expect(page.form.hidden).toBe(true);
     expect(page.confirmation.textContent).toContain("1 × Dish 1, 1 × Dish 2");
-    expect(page.confirmation.textContent).toContain("Pay at the table with your waiter as usual");
+    // The tracker it sits in says "Pay at the table" once, for both (#99).
+    expect(page.confirmation.textContent).not.toContain("Pay at the table");
     expect(page.tracker.hidden).toBe(false);
     expect(page.error.textContent).toBe("");
 
@@ -511,7 +794,24 @@ describe("placing the order", () => {
 
     expect(page.cartText()).toContain("Beef stew");
     expect(page.cartText()).not.toContain("Rice");
-    expect(page.error.textContent).toContain("isn't available");
+    expect(page.error.textContent).toBe("Sorry, Rice isn't available right now. It was taken out of your order.");
+  });
+
+  it("can no longer add an item that has sold out, without a reload (#87)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    await page.add(page.rice);
+    page.state.orderReply = {
+      status: 409,
+      json: { error: "Sorry, that item isn't available right now.", code: "unavailable", item: "item-rice" },
+    };
+    await page.placeAs("Tariro");
+
+    expect(page.rice.disabled).toBe(true);
+    expect(page.rice.textContent).toBe("Sold out");
+    expect(page.stew.disabled).toBe(false);
+    await page.add(page.rice);
+    expect(page.cartText()).not.toContain("Rice");
   });
 
   it("doesn't reopen an empty sheet when the only item is no longer available, and says so on the page", async () => {
@@ -526,7 +826,10 @@ describe("placing the order", () => {
 
     expect(page.cart.children).toHaveLength(0);
     expect(page.form.hidden).toBe(true);
-    expect(page.document.getElementById("waiter-status").textContent).toContain("isn't available");
+    const said = page.document.getElementById("waiter-status");
+    expect(said.textContent).toBe("Sorry, Beef stew isn't available right now. It was taken out of your order.");
+    // Wherever the guest had scrolled, it is brought into view (#87).
+    expect(said.scrolledTo).toBe(1);
   });
 
   it("rejoins the table's session when the order says it has changed", async () => {
@@ -541,6 +844,288 @@ describe("placing the order", () => {
 
     const orders = page.state.requests.filter((request) => request.path === "/orders");
     expect(orders.map((request) => request.body!.get("session"))).toEqual(["session-1", "session-2"]);
+  });
+});
+
+describe("retrying an order whose answer was lost (#84)", () => {
+  const bodies = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/orders").map((request) => request.body!);
+
+  async function lostOrder() {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    expect(page.error.textContent).toMatch(/didn't go through/);
+    page.state.loseOrderReply = false;
+    return page;
+  }
+
+  it("sends the very same submission, and shows it as placed", async () => {
+    const page = await lostOrder();
+
+    await page.placeAs("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(first.get("request")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(second.toString()).toBe(first.toString());
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+    expect(page.cart.children).toHaveLength(0);
+  });
+
+  it.each([
+    ["a server error", { status: 500, json: { error: "boom" } }],
+    ["an answer cut short", { status: 201, json: {} }],
+  ])("keeps the same submission after %s", async (_what, reply) => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.orderReply = reply;
+    await page.orderOne("Tariro");
+    page.state.orderReply = undefined;
+
+    await page.placeAs("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(second.get("request")).toBe(first.get("request"));
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+  });
+
+  it("is a new submission once the last one was placed: the same dish can be ordered again", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.orderOne("Tariro");
+    await page.orderOne("Tariro");
+
+    const [first, second] = bodies(page);
+    expect(second.get("request")).not.toBe(first.get("request"));
+  });
+
+  it("asks the session it was sent to, even once that has ended, and keeps the confirmation", async () => {
+    const page = await lostOrder();
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+
+    await page.placeAs("Tariro");
+    await page.tick();
+
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+    expect(page.confirmation.textContent).toContain("1 × Dish 1");
+    expect(page.tracker.hidden).toBe(false);
+  });
+
+  it("still asks the first session after an Add has joined the table's fresh one", async () => {
+    const page = await lostOrder();
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+    await page.add(page.rice);
+
+    await page.placeAs("Tariro");
+
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+    expect(bodies(page)[1].get("request")).toBe(bodies(page)[0].get("request"));
+  });
+
+  it("places it in the table's fresh session, as a new submission, when the first never arrived", async () => {
+    const page = await lostOrder();
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "reset", code: "session_changed" } };
+    await page.placeAs("Tariro");
+    page.state.orderReply = undefined;
+    await page.placeAs("Tariro");
+
+    const [first, , third] = bodies(page);
+    expect(third.get("session")).toBe("session-2");
+    expect(third.get("request")).not.toBe(first.get("request"));
+  });
+
+  it("goes back to joining first once a refusal has answered", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.orderReply = { status: 429, json: { error: "Wait." } };
+    await page.orderOne("Tariro");
+    page.state.orderReply = undefined;
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.sessionId = "session-2";
+
+    await page.placeAs("Tariro");
+    expect(bodies(page)).toHaveLength(1);
+    await page.placeAs("Tariro");
+
+    expect(bodies(page)[1].get("session")).toBe("session-2");
+  });
+
+  it("keeps a cart changed since, saying the first order went through, and can then place it", async () => {
+    const page = await lostOrder();
+    await page.add(page.rice);
+    page.state.orderReply = { status: 409, json: { error: "Your earlier order went through.", code: "already_placed" } };
+    await page.placeAs("Tariro");
+
+    expect(page.cart.children).toHaveLength(2);
+    expect(page.error.textContent).toBe("Your earlier order went through.");
+
+    page.state.orderReply = undefined;
+    await page.placeAs("Tariro");
+    const [first, second, third] = bodies(page);
+    expect(second.get("request")).toBe(first.get("request"));
+    expect(third.get("request")).not.toBe(first.get("request"));
+    expect(page.cart.children).toHaveLength(0);
+  });
+});
+
+describe("a cart left over from a session that ended (#85)", () => {
+  const bodies = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/orders").map((request) => request.body!);
+  const submit = async (page: Awaited<ReturnType<typeof loadPage>>) => {
+    await page.form.dispatch("submit");
+    await settle();
+  };
+
+  /** A remembered name and one stew in the cart, then staff close the table. */
+  async function leftOver(next: string | null) {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: next, items: [] };
+    await page.tick();
+    return page;
+  }
+
+  it.each([
+    ["nobody has opened the next session", null],
+    ["another phone has already opened the next one", "session-2"],
+  ])("sends nothing, asks for the name again and keeps the cart when %s", async (_what, next) => {
+    const page = await leftOver(next);
+    expect(page.name.value).toBe("Tariro");
+
+    await submit(page);
+    expect(bodies(page)).toEqual([]);
+    expect(page.name.value).toBe("");
+    expect(page.cart.children).toHaveLength(1);
+    expect(page.form.hidden).toBe(false);
+    expect(page.error.textContent).toMatch(/session has ended.*check your order/i);
+
+    await submit(page);
+    expect(bodies(page)).toEqual([]);
+    expect(page.error.textContent).toBe("Enter a name for the waiter.");
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toHaveLength(1);
+    expect(bodies(page)[0].get("session")).toBe("session-2");
+    expect(bodies(page)[0].get("name")).toBe("Rudo");
+  });
+
+  it("stops saying the session has ended once Place order has joined the next one", async () => {
+    const page = await leftOver("session-2");
+    await submit(page);
+    expect(page.trackerState.textContent).toBe("");
+  });
+
+  it("asks before sending an old line with one added in the next session", async () => {
+    const page = await leftOver("session-2");
+    await page.add(page.rice);
+    expect(page.name.value).toBe("");
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+    expect(page.error.textContent).toMatch(/session has ended/i);
+
+    await submit(page);
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-stew", "item-rice"]);
+    expect(bodies(page)[0].get("name")).toBe("Rudo");
+  });
+
+  it("asks after a waiter call has joined the next session", async () => {
+    const page = await leftOver("session-2");
+    await page.waiter.dispatch("click");
+    await settle();
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+  });
+
+  it("asks again if the next session has ended too by the time the guest confirms", async () => {
+    const page = await leftOver("session-2");
+    await submit(page);
+    page.state.sessionId = "session-3";
+    page.state.feed = { session: "session-3", items: [] };
+    await page.tick();
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)).toEqual([]);
+    expect(page.name.value).toBe("");
+  });
+
+  it("doesn't ask about a cart started after the session ended", async () => {
+    const page = await leftOver(null);
+    await page.buttonLabelled("Remove").dispatch("click");
+    await page.add(page.rice);
+
+    await page.placeAs("Rudo");
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-rice"]);
+    expect(bodies(page)[0].get("session")).toBe("session-2");
+  });
+
+  it("goes straight on when staff reopened the same session", async () => {
+    const page = await leftOver(null);
+    page.state.sessionId = "session-1";
+
+    await submit(page);
+    expect(bodies(page)[0].get("session")).toBe("session-1");
+    expect(bodies(page)[0].get("name")).toBe("Tariro");
+  });
+
+  it("counts a line added while ended, whose join failed, as current once the session is seen reopened", async () => {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("abort");
+    await page.add(page.stew);
+    page.state.feed = { session: "session-1", items: [] };
+    await page.tick();
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+    expect(bodies(page)[0].get("session")).toBe("session-1");
+  });
+
+  it("clears the name and asks once when the server is first to say the session changed", async () => {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "reset", code: "session_changed" } };
+    await submit(page);
+    page.state.orderReply = undefined;
+    expect(page.error.textContent).toBe("reset");
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+    await page.placeAs("Rudo");
+    expect(bodies(page)[1].get("session")).toBe("session-2");
+  });
+
+  it("asks before sending the rest, after a lost order's retry found it had been placed (#84)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    page.state.loseOrderReply = false;
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: "session-2", items: [] };
+    await page.tick();
+    await page.add(page.rice);
+    page.state.orderReply = { status: 409, json: { error: "Already.", code: "already_placed" } };
+    await page.placeAs("Rudo");
+    page.state.orderReply = undefined;
+    expect(bodies(page)[1].get("session")).toBe("session-1");
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(2);
+    expect(page.error.textContent).toMatch(/session has ended/i);
+    await submit(page);
+    expect(bodies(page)[2].get("session")).toBe("session-2");
   });
 });
 
@@ -572,7 +1157,7 @@ describe("the order tracker", () => {
     expect(text).toContain("no onions");
     expect(text).toContain("Tariro");
     expect(text).toContain("19:42");
-    expect(text).toContain("Ordered");
+    expect(text).toContain("Placed");
     expect(text).toContain("1 × Rice");
     expect(text).toContain("Farai");
   });
@@ -598,6 +1183,99 @@ describe("the order tracker", () => {
     const row = page.trackerList.children[0];
     expect(row.textContent).toContain("Voided");
     expect(row.className).toContain("voided");
+    expect(row.textContent).toContain("Ask a member of staff about this item.");
+  });
+
+  it("asks nobody to see staff about an item that isn't voided (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1", { feed: { session: "session-1", items: [item()] } });
+    expect(page.trackerList.textContent).not.toContain("Ask a member of staff");
+  });
+
+  it("takes the confirmation down once an item it names is voided (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1" })] };
+    await page.orderOne("Tariro");
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+
+    expect(page.confirmation.textContent).toBe("");
+    expect(page.tracker.hidden).toBe(false);
+    expect(page.trackerList.textContent).toContain("Ask a member of staff about this item.");
+  });
+
+  it("keeps the confirmation of an order placed after the same dish was voided, or when another dish is (#99)", async () => {
+    const old = item({ name: "Dish 1", status: "voided" });
+    const page = await loadPage(new Map(), "session-1", { feed: { session: "session-1", items: [old] } });
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1" })] };
+    await page.orderOne("Tariro");
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1" }), item({ name: "Soup", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toContain("Dish 1");
+
+    page.state.feed = { session: "session-1", items: [old, item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toBe("");
+  });
+
+  it("doesn't count an ended session's voids against an order placed in the next one (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      feed: { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] },
+    });
+    await page.add(page.stew);
+    // The table was closed and taken again since the last poll: the order is first to find out.
+    page.state.sessionId = "session-2";
+    page.state.orderReply = { status: 409, json: { error: "The session has changed.", code: "session_changed" } };
+    await page.placeAs("Rudo");
+    page.state.orderReply = undefined;
+    page.state.feed = { session: "session-2", items: [item({ name: "Dish 1" })] };
+    await page.placeAs("Rudo");
+    expect(page.confirmation.textContent).toContain("Ordered");
+
+    page.state.feed = { session: "session-2", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    expect(page.confirmation.textContent).toBe("");
+  });
+
+  it("doesn't confirm a retry whose item was voided while its answer was lost (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.loseOrderReply = true;
+    await page.orderOne("Tariro");
+    page.state.feed = { session: "session-1", items: [item({ name: "Dish 1", status: "voided" })] };
+    await page.tick();
+    page.state.loseOrderReply = false;
+
+    await page.placeAs("Tariro");
+
+    expect(page.confirmation.textContent).toBe("");
+    expect(page.trackerList.textContent).toContain("Voided");
+  });
+
+  it("has no heading over an empty list: not before the first poll, nor once the session ends (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdPolls = true;
+    await page.orderOne("Tariro");
+    expect(page.tracker.hidden).toBe(false);
+    expect(page.trackerTitle.hidden).toBe(true);
+
+    page.state.holdPolls = false;
+    page.state.feed = { session: "session-1", items: [item()] };
+    await page.answer();
+    await page.tick();
+    expect(page.trackerTitle.hidden).toBe(false);
+
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    expect(page.trackerTitle.hidden).toBe(true);
+  });
+
+  it("shows the table's name once joined, as text (#99)", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    expect(page.tableName.hidden).toBe(false);
+    expect(page.tableName.textContent).toBe("Table 7");
   });
 
   it("shows the other statuses in plain words", async () => {
@@ -607,9 +1285,9 @@ describe("the order tracker", () => {
     });
 
     expect(page.trackerList.children.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Ordered"),
+      expect.stringContaining("Placed"),
       expect.stringContaining("Cooking"),
-      expect.stringContaining("Ready"),
+      expect.stringContaining("Done"),
       expect.stringContaining("Served"),
     ]);
     expect(page.trackerList.children.map((row) => row.children[1].className)).toEqual([
@@ -731,6 +1409,10 @@ describe("the order tracker", () => {
   });
 });
 
+/** Sent, and no more than that: nobody has acknowledged it yet (#97). */
+const SENT = "Your table's call has been sent to the staff.";
+const SEEN = "The staff have seen your table's call.";
+
 describe("Call a waiter", () => {
   const waiterCalls = (page: Awaited<ReturnType<typeof loadPage>>) =>
     page.state.requests.filter((request) => request.path === "/waiter");
@@ -747,8 +1429,7 @@ describe("Call a waiter", () => {
     await settle();
 
     expect(waiterCalls(page)).toEqual([expect.objectContaining({ method: "POST", body: undefined })]);
-    expect(page.waiterStatus.textContent).toMatch(/waiter/i);
-    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toBe(SENT);
     expect(page.waiter.dataset).toHaveProperty("called");
   });
 
@@ -764,7 +1445,7 @@ describe("Call a waiter", () => {
     page.state.waiterReply = undefined;
     await page.waiter.dispatch("click");
     await settle();
-    expect(page.waiterStatus.textContent).toMatch(/on (their|the) way|coming/i);
+    expect(page.waiterStatus.textContent).toBe(SENT);
     expect(page.waiterStatus.dataset.tone).toBeUndefined();
   });
 
@@ -804,5 +1485,237 @@ describe("Call a waiter", () => {
     await page.waiter.dispatch("click");
     await settle();
     expect(page.waiterStatus.children).toEqual([]);
+  });
+});
+
+describe("a waiter call follows the server (#97)", () => {
+  type Page = Awaited<ReturnType<typeof loadPage>>;
+  const call = async (page: Page) => {
+    await page.waiter.dispatch("click");
+    await settle();
+    await settle();
+  };
+  const tickWith = async (page: Page, feed: Feed) => {
+    page.state.feed = feed;
+    await page.tick();
+  };
+  const shows = (page: Page) => ({
+    called: "called" in page.waiter.dataset,
+    says: page.waiterStatus.textContent,
+  });
+  const IDLE = { called: false, says: "" };
+  const PENDING = { called: true, says: SENT };
+
+  it("never claims a waiter is coming before anyone has acknowledged the call", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    expect(page.waiterStatus.textContent).not.toMatch(/way|coming|will|soon/i);
+    expect(ORDER_SCRIPT).not.toMatch(/on the way/i);
+  });
+
+  it("a reload keeps a pending call, from the first poll", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      feed: { session: "session-1", items: [], waiter: true },
+    });
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("stays pending while the server says so", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.tick();
+    await page.tick();
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("says staff have seen it once it is dismissed, and can be called again", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+
+    await call(page);
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("is dropped when the session ends, whether or not it had been seen", async () => {
+    for (const seen of [false, true]) {
+      const page = await loadPage(new Map(), "session-1");
+      await call(page);
+      if (seen) await tickWith(page, { session: "session-1", items: [], waiter: false });
+      await tickWith(page, { session: null, items: [], waiter: false });
+      expect(shows(page)).toEqual(IDLE);
+    }
+  });
+
+  it("never shows another session's call: the next party's on an old page, or the old one's after joining", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await tickWith(page, { session: "session-2", items: [], waiter: true });
+    expect(shows(page)).toEqual(IDLE);
+  });
+
+  it("drops the old session's call when an order is what finds the session changed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.add(page.stew);
+    page.state.sessionId = "session-2";
+    page.state.feed = { session: "session-2", items: [], waiter: false };
+    page.state.orderReply = { status: 409, json: { error: "Ended.", code: "session_changed" } };
+    await page.placeAs("Tariro");
+    expect(shows(page)).toEqual(IDLE);
+
+    await page.tick();
+    expect(shows(page)).toEqual(IDLE);
+  });
+
+  it("shows a call another phone at the table made", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await tickWith(page, { session: "session-1", items: [], waiter: true });
+    expect(shows(page)).toEqual(PENDING);
+  });
+
+  it("a poll asked before the call went through can't take it for dismissed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdPolls = true;
+    await page.tick();
+    await call(page);
+    page.state.holdPolls = false;
+    await page.answer();
+    expect(shows(page)).toEqual(PENDING);
+
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+  });
+
+  it("a call answered late, after staff dismissed it, ends as dismissed", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.holdWaiter = true;
+    void page.waiter.dispatch("click");
+    await settle();
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    await page.answerCall();
+    expect(shows(page)).toEqual({ called: false, says: SEEN });
+  });
+
+  it("a failed call the server did get is shown as sent by the next poll", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.waiterReply = { status: 500, json: {} };
+    await call(page);
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+    await tickWith(page, { session: "session-1", items: [], waiter: true });
+    expect(shows(page)).toEqual(PENDING);
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+  });
+
+  it("leaves a problem with the order up in the shared place, and the button still follows the server", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    await page.add(page.stew);
+    page.state.orderReply = {
+      status: 409,
+      json: { error: "Beef stew has sold out.", code: "unavailable", item: "item-stew" },
+    };
+    await page.placeAs("Tariro");
+    await tickWith(page, { session: "session-1", items: [], waiter: false });
+    expect(shows(page)).toEqual({ called: false, says: "Sorry, Beef stew isn't available right now. It was taken out of your order." });
+    expect(page.waiterStatus.dataset.tone).toBe("error");
+  });
+
+  describe("a sold-out refusal in the shared place (#87)", () => {
+    const refused = async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      page.state.orderReply = {
+        status: 409,
+        json: { error: "Sold out.", code: "unavailable", item: "item-stew" },
+      };
+      await page.placeAs("Tariro");
+      return page;
+    };
+    const SORRY = "Sorry, Beef stew isn't available right now. It was taken out of your order.";
+
+    it("outlives polls, another phone's call among them, then gives way to it at the next Add", async () => {
+      const page = await refused();
+      await page.tick();
+      await tickWith(page, { session: "session-1", items: [], waiter: true });
+      expect(shows(page)).toEqual({ called: true, says: SORRY });
+
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(PENDING);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("is gone at the next Add with no call pending, and the waiter's words work again", async () => {
+      const page = await refused();
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(IDLE);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+      await tickWith(page, { session: "session-1", items: [], waiter: true });
+      expect(shows(page)).toEqual(PENDING);
+    });
+
+    it("goes with the session it was about", async () => {
+      const page = await refused();
+      await tickWith(page, { session: null, items: [], waiter: false });
+      expect(shows(page)).toEqual(IDLE);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("gives way to the guest's own call", async () => {
+      const page = await refused();
+      await call(page);
+      expect(shows(page)).toEqual(PENDING);
+      expect(page.waiterStatus.dataset.tone).toBeUndefined();
+    });
+
+    it("is kept when a call was already pending and staff dismiss it", async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await call(page);
+      await page.add(page.stew);
+      page.state.orderReply = {
+        status: 409,
+        json: { error: "Sold out.", code: "unavailable", item: "item-stew" },
+      };
+      await page.placeAs("Tariro");
+      await tickWith(page, { session: "session-1", items: [], waiter: false });
+      expect(shows(page)).toEqual({ called: false, says: SORRY });
+      await page.add(page.rice);
+      expect(shows(page)).toEqual(IDLE);
+    });
+
+    it("the ended-session prompt goes in the sheet, not over the call's words (#85)", async () => {
+      const page = await loadPage(new Map(), "session-1");
+      await page.add(page.stew);
+      page.state.sessionId = "session-2";
+      await tickWith(page, { session: "session-2", items: [], waiter: true });
+      expect(shows(page)).toEqual(IDLE);
+      await page.placeAs("Tariro");
+      expect(page.error.textContent).toMatch(/session has ended/);
+      expect(shows(page)).toEqual(PENDING);
+    });
+  });
+
+  it("the join's message gives way to a pending call once the join works (#98)", async () => {
+    const page = await loadPage(new Map(), "session-1", {
+      joinReplies: ["abort"],
+      feed: { session: "session-1", items: [], waiter: true },
+    });
+    expect(page.waiterStatus.textContent).toMatch(/couldn't reach/i);
+    expect(page.waiter.dataset).not.toHaveProperty("called");
+
+    await page.retryNow();
+    expect(shows(page)).toEqual(PENDING);
+    expect(page.waiterStatus.dataset.tone).toBeUndefined();
+  });
+
+  it("isn't written again by a poll that changes something else", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await call(page);
+    const item = { quantity: 1, name: "Rice", note: null, customer: "Farai", status: "placed", time: "12:00" };
+    page.waiterStatus.textContent = "";
+    await tickWith(page, { session: "session-1", items: [item], waiter: true });
+    // A status region written again is read out again.
+    expect(page.waiterStatus.textContent).toBe("");
   });
 });

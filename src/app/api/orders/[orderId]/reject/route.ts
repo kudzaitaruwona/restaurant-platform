@@ -36,7 +36,7 @@ export async function POST(
   if (result.outcome === "not_found") notFound();
   if (result.outcome === "nothing_to_void") {
     return Response.json(
-      { error: "Nothing left to reject: every item of this order is delivered or voided." },
+      { error: "Nothing left to reject: every item of this order is delivered or voided.", refresh: true },
       { status: 409, headers },
     );
   }

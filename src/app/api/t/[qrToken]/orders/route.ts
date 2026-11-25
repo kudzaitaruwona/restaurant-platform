@@ -16,10 +16,12 @@ const refuse = (error: string, status: number, extra?: Record<string, string>) =
 /**
  * A customer's order from a table's page (spec 06, S-36): no session, no
  * approval, no code. The token in the path is the only tenant input, and the
- * body carries only the item, quantity, note and name, plus the session the page
- * joined, which is checked, never written to by id. Prices are worked out on the
- * server. Uncached and outside /t/, because the proxy keeps every write off the
- * cached menu (S-32). What it costs to ask is bounded before anything else.
+ * body carries only the item, quantity, note and name, the session the page joined,
+ * which is checked, never written to by id, and the submission's id (`request`).
+ * Prices are worked out on the server. A submission sent again, under the same
+ * `request`, is answered with the order it placed (#84). Uncached and outside
+ * /t/, because the proxy keeps every write off the cached menu (S-32). What it
+ * costs to ask is bounded before anything else.
  */
 export async function POST(request: Request, { params }: RouteContext<"/api/t/[qrToken]/orders">) {
   const length = declaredLength(request.headers);
@@ -43,6 +45,14 @@ export async function POST(request: Request, { params }: RouteContext<"/api/t/[q
         409,
         { code: "session_changed" },
       );
+    case "already_placed": {
+      const lines = result.placed.lines.map(({ name, quantity }) => `${quantity} × ${name}`).join(", ");
+      return refuse(
+        `Your earlier order already went through: ${lines}. Take out anything you've already ordered, then place the rest.`,
+        409,
+        { code: "already_placed" },
+      );
+    }
     case "unavailable":
       return refuse("Sorry, that item isn't available right now.", 409, { code: "unavailable", item: result.item });
     case "rate_limited":

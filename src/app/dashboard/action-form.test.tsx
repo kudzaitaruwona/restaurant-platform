@@ -70,7 +70,13 @@ describe("a save the server asks about first (issue #112)", () => {
 
   it("is an ordinary refusal when there is nothing to confirm", async () => {
     const refusal = await refusalFrom(Response.json({ error: "No." }, { status: 409 }));
-    expect(refusal).toEqual({ message: "No.", bookings: [], warnings: [] });
+    expect(refusal).toEqual({ message: "No.", bookings: [], warnings: [], refresh: false });
+  });
+
+  it("reads that the page is out of date, with the list now, so the form can refresh it (#95)", async () => {
+    const items = [{ id: "1", summary: "1 × Rice for Chipo: placed" }];
+    const refusal = await refusalFrom(Response.json({ error: "Changed.", items, refresh: true }, { status: 409 }));
+    expect(refusal).toMatchObject({ bookings: items, refresh: true });
   });
 });
 
