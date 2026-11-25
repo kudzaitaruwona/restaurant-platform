@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { addDays, localToday } from "@/lib/booking-engine";
+import { closures } from "@/db/schema";
+import { addDays, instantOf, localToday } from "@/lib/booking-engine";
 import type { TenantContext } from "@/lib/tenant";
 import { bookableRestaurant } from "../../../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../../../test/integration/database";
@@ -64,5 +65,34 @@ describe("add booking", () => {
     for (const query of [{ party: "0", date: soon }, { party: "2", date: "9999-12-31" }, { party: "2", date: "2026-02-31" }, { party: "x\0", date: soon }]) {
       expect(await render(query)).not.toContain('name="name"');
     }
+  });
+
+  it("explains a past date in the URL, and offers no details form", async () => {
+    await aRestaurant();
+    const gone = addDays(localToday(new Date(), "Africa/Harare"), -2);
+
+    const html = await render({ party: "2", date: gone });
+
+    expect(html).toContain("has passed, so a booking can&#x27;t be added to it");
+    expect(html).not.toContain('name="name"');
+    expect(html).toContain(`href="/dashboard/bookings?date=${gone}"`);
+  });
+
+  it("says a day is closed, with the reason, instead of blaming service periods", async () => {
+    await aRestaurant();
+    const { restaurantId } = session.tenant as TenantContext;
+    await owner.db.insert(closures).values({
+      restaurantId,
+      startsAt: instantOf(soon, "00:00", "Africa/Harare"),
+      endsAt: instantOf(addDays(soon, 1), "00:00", "Africa/Harare"),
+      reason: "Staff holiday",
+    });
+
+    const html = await render({ party: "2", date: soon });
+
+    expect(html).toContain("The restaurant is closed on that day.");
+    expect(html).toContain("Staff holiday");
+    expect(html).not.toContain("no service period");
+    expect(html).not.toContain('name="name"');
   });
 });

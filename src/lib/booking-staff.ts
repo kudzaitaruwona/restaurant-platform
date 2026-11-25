@@ -17,6 +17,7 @@ import {
   tablesFor,
   type EngineTable,
 } from "@/lib/booking-engine";
+import { closuresOnDay } from "@/lib/booking-closures";
 import {
   dbErrorOf,
   E164,
@@ -259,6 +260,12 @@ export function getStaffBookingForm(
       .where(and(eq(diningTables.restaurantId, tenant.restaurantId), isNull(diningTables.archivedAt)))
       .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
 
+    // Why a chosen date offers nothing, said before the form is: a day gone by
+    // (the date field's `min` is today, but a URL isn't bound by it), or a closure.
+    const chosen = choice.date && isLocalDate(choice.date) ? choice.date : undefined;
+    const pastDate = chosen !== undefined && chosen < today ? chosen : undefined;
+    const closed = date ? await closuresOnDay(tx, tenant.restaurantId, date, timezone) : undefined;
+
     let times: { time: string; period: string; open: boolean }[] | undefined;
     if (party && date) {
       const staffView = staffRules(rules);
@@ -280,7 +287,7 @@ export function getStaffBookingForm(
         open: free.has(time),
       }));
     }
-    return { today, last, party, date, tables, times };
+    return { today, last, party, date, tables, times, pastDate, closures: closed?.closures ?? [], closedAllDay: closed?.wholeDay ?? false };
   });
 }
 

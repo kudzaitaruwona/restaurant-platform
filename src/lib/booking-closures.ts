@@ -3,7 +3,15 @@ import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { bookings, closures, restaurants } from "@/db/schema";
-import { addDays, dateLabel, isLocalDate, localTime, localToday } from "@/lib/booking-engine";
+import {
+  addDays,
+  dateLabel,
+  instantOf,
+  isLocalDate,
+  type LocalDate,
+  localTime,
+  localToday,
+} from "@/lib/booking-engine";
 import { dbErrorOf, noNul } from "@/lib/bookings";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
@@ -45,6 +53,7 @@ const messages = {
   over: "That closure is already over.",
   far: "A closure can't end more than two years from today.",
   long: "A closure can run for 366 days at most.",
+  duplicate: "That closure is already saved.",
   reason: "Keep the reason to 200 characters.",
 };
 
@@ -131,6 +140,8 @@ const BLOCKING_LIST_LIMIT = 100;
 
 /** The guard trigger's constraint name (migration 0026). */
 const COVER_GUARD = "closures_cover_bookings";
+/** The same restaurant, start and end twice (migration 0051). */
+const WINDOW_UNIQUE = "closures_window_unique";
 
 export type BlockingBooking = {
   id: string;
@@ -139,7 +150,13 @@ export type BlockingBooking = {
   partySize: number;
   /** "Fri 6 Nov, 19:00 · Tendai · 4 guests", on the restaurant's clock. Never a phone. */
   summary: string;
+  /** Its day on the bookings page, scrolled to the booking: where staff cancel it. */
+  href: string;
 };
+
+/** The day view of `date`, at the booking's row (`id="booking-…"` in the day view). */
+export const bookingHref = (bookingId: string, date: LocalDate) =>
+  `/dashboard/bookings?date=${date}#booking-${bookingId}`;
 
 /**
  * The confirmed bookings a closure from `startsAt` to `endsAt` would cover, soonest
@@ -184,6 +201,7 @@ async function blockingBookings(
     summary:
       `${dateLabel(localToday(row.startsAt, timezone))}, ${localTime(row.startsAt, timezone)}` +
       ` · ${row.guestName} · ${row.partySize} ${row.partySize === 1 ? "guest" : "guests"}`,
+    href: bookingHref(row.id, localToday(row.startsAt, timezone)),
   }));
 }
 
@@ -286,6 +304,8 @@ export async function addClosure(
   } catch (error) {
     const constraint = dbErrorOf(error)?.constraint;
     if (constraint === "closures_times_ordered") return { outcome: "invalid", message: messages.order };
+    // Postgres decides, so two saves at once have one winner (migration 0051).
+    if (constraint === WINDOW_UNIQUE) return { outcome: "invalid", message: messages.duplicate };
     if (constraint !== COVER_GUARD) throw error;
     // Lost a race with a confirm: the guard refused, so nothing was saved.
     return withTenant(ctx, async (tx) => {
@@ -362,4 +382,51 @@ export function deleteClosure(ctx: Writer, closureId: string): Promise<"saved" |
     });
     return "saved" as const;
   });
+}
+
+// --- one day ----------------------------------------------------------------
+
+export type DayClosure = {
+  /** "Fri 6 Nov", or with times when it covers part of a day, on the restaurant's clock. */
+  label: string;
+  reason: string | null;
+};
+
+/**
+ * The closures that touch one local day, for the day view and Add booking to
+ * explain a closed day. `wholeDay` is when one closure covers the day from its
+ * first instant to its last, so nothing can be booked on it. Closures that
+ * together cover the day, none of them all of it, are listed but don't make it
+ * `wholeDay`: the engine still judges those times.
+ */
+export async function closuresOnDay(
+  tx: TenantTransaction,
+  restaurantId: string,
+  date: LocalDate,
+  timezone: string,
+): Promise<{ closures: DayClosure[]; wholeDay: boolean }> {
+  const dayStarts = instantOf(date, "00:00", timezone);
+  const dayEnds = instantOf(addDays(date, 1), "00:00", timezone);
+  const rows = await tx
+    .select({ startsAt: closures.startsAt, endsAt: closures.endsAt, reason: closures.reason })
+    .from(closures)
+    .where(
+      and(
+        eq(closures.restaurantId, restaurantId),
+        gt(closures.endsAt, dayStarts),
+        sql`${closures.startsAt} < ${dayEnds.toISOString()}::timestamptz`,
+      ),
+    )
+    .orderBy(asc(closures.startsAt), asc(closures.id))
+    .limit(20);
+  return {
+    closures: rows.map(({ startsAt, endsAt, reason }) => ({
+      label: closureLabel(startsAt, endsAt, timezone),
+      reason,
+    })),
+    wholeDay: rows.some(
+      ({ startsAt, endsAt }) =>
+        startsAt.getTime() <= dayStarts.getTime() && endsAt.getTime() >= dayEnds.getTime(),
+    ),
+  };
 }

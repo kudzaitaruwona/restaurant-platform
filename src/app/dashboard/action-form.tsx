@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
@@ -123,7 +124,15 @@ export function ActionForm({
             {error.bookings.length > 0 && (
               <ul className="list-disc pl-5">
                 {error.bookings.map((booking) => (
-                  <li key={booking.id}>{booking.summary}</li>
+                  <li key={booking.id}>
+                    {booking.href ? (
+                      <Link href={booking.href} className="underline underline-offset-2">
+                        {booking.summary}
+                      </Link>
+                    ) : (
+                      booking.summary
+                    )}
+                  </li>
                 ))}
               </ul>
             )}
@@ -170,7 +179,7 @@ export function ActionForm({
 
 type Refusal = {
   message: string;
-  bookings: { id: string; summary: string }[];
+  bookings: { id: string; summary: string; href?: string }[];
   /** A 409 that asks first: nothing was saved (lib/confirmation.ts). */
   warnings: string[];
 };
@@ -189,10 +198,17 @@ export async function refusalFrom(response: Response): Promise<Refusal> {
         ? body.error
         : "That didn't work. Reload the page and try again.",
     bookings: Array.isArray(list)
-      ? list.filter(
-          (item: { id?: unknown; summary?: unknown }) =>
-            typeof item?.id === "string" && typeof item?.summary === "string",
-        )
+      ? list
+          .filter(
+            (item: { id?: unknown; summary?: unknown }) =>
+              typeof item?.id === "string" && typeof item?.summary === "string",
+          )
+          // A link only to the dashboard's own pages, whatever the body says.
+          .map(({ id, summary, href }: { id: string; summary: string; href?: unknown }) => ({
+            id,
+            summary,
+            ...(typeof href === "string" && /^\/dashboard\//.test(href) ? { href } : {}),
+          }))
       : [],
     warnings: Array.isArray(body?.confirm?.warnings)
       ? body.confirm.warnings.filter((warning: unknown) => typeof warning === "string")

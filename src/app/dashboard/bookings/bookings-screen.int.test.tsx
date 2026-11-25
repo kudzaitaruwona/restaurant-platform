@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { bookings, diningTables, notifications } from "@/db/schema";
-import { addDays, localToday } from "@/lib/booking-engine";
+import { bookings, closures, diningTables, notifications } from "@/db/schema";
+import { addDays, instantOf, localToday } from "@/lib/booking-engine";
 import type { TenantContext } from "@/lib/tenant";
 import { aBooking, bookableRestaurant } from "../../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../../test/integration/database";
@@ -280,5 +280,95 @@ describe("seat walk-in on the day view", () => {
     expect(html).toContain("12:00");
     expect(html).toContain("Finish");
     expect(html).not.toContain("tel:");
+  });
+});
+
+describe("closed and past days (#108)", () => {
+  const today = localToday(new Date(), "Africa/Harare");
+  const wholeDay = (restaurantId: string, date: string, reason: string | null) =>
+    owner.db.insert(closures).values({
+      restaurantId,
+      startsAt: instantOf(date, "00:00", "Africa/Harare"),
+      endsAt: instantOf(addDays(date, 1), "00:00", "Africa/Harare"),
+      reason,
+    });
+
+  it("shows a closed day's closure and reason, and offers no Add booking", async () => {
+    await dayWith([]);
+    await wholeDay((session.tenant as TenantContext).restaurantId, day, "Independence Day <b>");
+
+    const html = await render(day);
+
+    expect(html).toContain("The restaurant is closed on this day.");
+    expect(html).toContain("Independence Day &lt;b&gt;");
+    expect(html).not.toContain("Add booking");
+    expect(html).not.toContain("/dashboard/bookings/new");
+  });
+
+  it("shows part of a day's closure with its times, and still offers Add booking", async () => {
+    await dayWith([]);
+    await owner.db.insert(closures).values({
+      restaurantId: (session.tenant as TenantContext).restaurantId,
+      startsAt: instantOf(day, "19:00", "Africa/Harare"),
+      endsAt: instantOf(day, "22:00", "Africa/Harare"),
+      reason: "Private event",
+    });
+
+    const html = await render(day);
+
+    expect(html).toContain("closed for part of this day");
+    expect(html).toContain("19:00 to 22:00");
+    expect(html).toContain("Private event");
+    expect(html).toContain("Add booking");
+  });
+
+  it("shows a closure only on the days it touches", async () => {
+    await dayWith([]);
+    await wholeDay((session.tenant as TenantContext).restaurantId, day, "Away");
+
+    expect(await render(addDays(day, 1))).not.toContain("closed");
+    expect(await render(addDays(day, 1))).toContain("Add booking");
+  });
+
+  it("offers no Add booking on a past day, and says why; today and later days do", async () => {
+    await dayWith([]);
+
+    const past = await render(addDays(today, -2));
+
+    expect(past).toContain("This day has passed, so bookings can&#x27;t be added to it.");
+    expect(past).not.toContain("Add booking");
+    expect(past).not.toContain("/dashboard/bookings/new");
+    expect(await render()).toContain("Add booking");
+    expect(await render(addDays(today, 1))).toContain("Add booking");
+    expect(await render()).not.toContain("has passed");
+  });
+
+  it("gives each booking row an anchor the conflict list links to", async () => {
+    await dayWith([{ guestName: "Tariro" }]);
+    const [{ id }] = await owner.db
+      .select({ id: bookings.id })
+      .from(bookings)
+      .where(eq(bookings.restaurantId, (session.tenant as TenantContext).restaurantId));
+
+    expect(await render(day)).toContain(`id="booking-${id}"`);
+  });
+
+  it("names the year unless it is this year's, in the heading", async () => {
+    await dayWith([]);
+    const heading = async (date?: string) => /<h2[^>]*>([^<]*)<\/h2>/.exec(await render(date))?.[1];
+    const thisYear = today.slice(0, 4);
+
+    expect(await heading(today)).not.toMatch(/\d{4}/);
+    expect(await heading(day)).toMatch(day.startsWith(thisYear) ? /^[A-Za-z]+ \d+ [A-Za-z]+$/ : /\d{4}$/);
+    for (const date of [addDays(today, 366), addDays(today, -366)]) {
+      expect(await heading(date)).toContain(date.slice(0, 4));
+    }
+  });
+
+  it("lets the heading wrap rather than cut it off", async () => {
+    await dayWith([]);
+    const html = await render(day);
+    const h2 = /<h2[^>]*>/.exec(html)?.[0] ?? "";
+    expect(h2).not.toContain("truncate");
   });
 });
