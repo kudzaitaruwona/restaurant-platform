@@ -287,7 +287,9 @@ export function Confirmed({ confirmation }: { confirmation: Confirmation }) {
   const { restaurantName, dateLabel, time, party, manageToken, contactPhone } = confirmation;
   const section = useRef<HTMLElement>(null);
   // On a phone the choices sit above: bring the guest to the answer.
-  useEffect(() => section.current?.scrollIntoView({ block: "start" }), []);
+  useEffect(() => {
+    section.current?.scrollIntoView({ block: "start" });
+  }, []);
   return (
     <section ref={section} role="status" className="flex scroll-mt-4 flex-col gap-5 pt-2">
       <span className="grid size-14 place-items-center rounded-full bg-accent-soft text-accent">
