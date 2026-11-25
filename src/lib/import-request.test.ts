@@ -24,6 +24,75 @@ describe("readImportRequest", () => {
     expect(input).toEqual({ csv: expect.stringMatching(/^\uFEFF?a,b\n1,2$/), intent: "confirm" });
   });
 
+  describe("the bytes of an uploaded file are read here, not trusted from the browser", () => {
+    const upload = async (bytes: Uint8Array | string, intent = "preview") => {
+      const file = new File([bytes as BlobPart], "menu.csv", { type: "text/csv" });
+      return readImportRequest(post({ csv: file, intent }));
+    };
+    const refusal = async (answer: unknown) => {
+      expect(answer).toBeInstanceOf(Response);
+      const response = answer as Response;
+      expect(response.status).toBe(400);
+      return ((await response.json()) as { error: string }).error;
+    };
+
+    it("reads UTF-8 accents as they are, with or without a byte order mark", async () => {
+      expect(await upload("name\nCr\u00e8me")).toEqual({ csv: "name\nCr\u00e8me", intent: "preview" });
+      const withBom = Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("name\nCr\u00e8me")]);
+      expect(await upload(withBom)).toEqual({ csv: "name\nCr\u00e8me", intent: "preview" });
+    });
+
+    it("refuses a Windows-1252 file, whose accents would be corrupted, saying how to save it", async () => {
+      // "Crème" in Windows-1252: the e-grave is the single byte 0xE8.
+      const error = await refusal(await upload(Uint8Array.from([0x6e, 0x0a, 0x43, 0x72, 0xe8, 0x6d, 0x65])));
+      expect(error).toBe(
+        "This file isn't saved as UTF-8, so accented letters would be damaged. Save it as CSV UTF-8 and choose it again.",
+      );
+    });
+
+    it("refuses a UTF-16 file, with or without its byte order mark", async () => {
+      const le = Uint8Array.from([0xff, 0xfe, ...[..."a,b\n1,2"].flatMap((c) => [c.charCodeAt(0), 0])]);
+      const be = Uint8Array.from([0xfe, 0xff, ...[..."a,b\n1,2"].flatMap((c) => [0, c.charCodeAt(0)])]);
+      const bare = Uint8Array.from([..."a,b\n1,2"].flatMap((c) => [c.charCodeAt(0), 0]));
+      for (const bytes of [le, be]) {
+        expect(await refusal(await upload(bytes))).toBe(
+          "This file is saved as UTF-16. Save it as CSV UTF-8 and choose it again.",
+        );
+      }
+      expect(await refusal(await upload(bare))).toBe("That isn't a CSV file. Choose a .csv file, or paste the rows.");
+    });
+
+    it("refuses a PNG with a plain message, not a header error", async () => {
+      const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+      expect(await refusal(await upload(png))).toBe("That isn't a CSV file. Choose a .csv file, or paste the rows.");
+    });
+
+    it("refuses an empty file, and one that is only spaces", async () => {
+      expect(await refusal(await upload(new Uint8Array()))).toBe("That file is empty.");
+      expect(await refusal(await upload("  \n "))).toBe("That file is empty.");
+    });
+
+    it("refuses an oversized file with 413 before decoding it", async () => {
+      const answer = (await upload(new Uint8Array(CSV_MAX_BYTES + 1).fill(97))) as Response;
+      expect(answer.status).toBe(413);
+    });
+  });
+
+  describe("pasted text", () => {
+    it("is refused when it carries the replacement character a bad decoding leaves", async () => {
+      const answer = (await readImportRequest(post({ csv: "name\nCr\ufffdme", intent: "preview" }))) as Response;
+      expect(answer.status).toBe(400);
+      expect(((await answer.json()) as { error: string }).error).toBe(
+        "This text has a character that couldn't be read (\ufffd), so letters were damaged on the way in. Paste it again, or save the file as CSV UTF-8 and choose the file.",
+      );
+    });
+
+    it("is refused when it is only spaces", async () => {
+      const answer = (await readImportRequest(post({ csv: "  ", intent: "preview" }))) as Response;
+      expect(answer.status).toBe(400);
+    });
+  });
+
   it("refuses a body with no declared length once it passes the limit, without reading the rest", async () => {
     let pulled = 0;
     const chunk = new Uint8Array(256 * 1024).fill(97);

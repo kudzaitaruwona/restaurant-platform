@@ -25,6 +25,8 @@ export type ImportReport = {
   ready: number;
   /** Set once confirmed: how many rows were added. */
   imported: number | null;
+  /** Worth knowing before importing, not tied to a row (a second owner login, spec 01). */
+  notice?: string;
 };
 
 export const importColumns = {
