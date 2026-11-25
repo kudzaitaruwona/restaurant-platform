@@ -502,7 +502,8 @@ describe("what a guest sees once a closure is saved", () => {
 
     const result = await confirmBooking({ restaurantId }, guest({ time: "19:30" }), now);
 
-    expect(result).toEqual({ outcome: "race_lost", times: [{ period: "Dinner", time: "18:00" }, { period: "Dinner", time: "18:30" }] });
+    const left = [{ period: "Dinner", time: "18:00" }, { period: "Dinner", time: "18:30" }];
+    expect(result).toEqual({ outcome: "race_lost", times: left, available: left });
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
 
