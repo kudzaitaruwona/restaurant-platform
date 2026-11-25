@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { createBundle, parseNewBundle } from "@/lib/bundles";
-import { confirmationNeeded } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
 import { formSaved } from "@/lib/form-response";
 import { itemWarnings } from "@/lib/menu";
 import { alreadyOverMessage, overlapMessage } from "@/lib/specials";
@@ -22,7 +22,9 @@ export async function POST(request: NextRequest) {
   if (!bundle.success) {
     return Response.json({ error: bundle.message }, { status: 400 });
   }
-  const ask = confirmationNeeded(await itemWarnings(tenant, bundle.data), form);
+  const ask = await confirmationNeeded(request, form, "/dashboard/menu", () =>
+    itemWarnings(tenant, bundle.data),
+  );
   if (ask) return ask;
 
   const result = await createBundle(tenant, bundle.data);

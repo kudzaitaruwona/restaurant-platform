@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
-import { confirmationNeeded } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
 import { formSaved } from "@/lib/form-response";
 import { bundleDescriptionMessage, itemWarnings, parseItemEdit, updateMenuItem } from "@/lib/menu";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
@@ -19,7 +19,9 @@ export async function POST(
   if (!item.success) {
     return Response.json({ error: item.message }, { status: 400 });
   }
-  const ask = confirmationNeeded(await itemWarnings(tenant, item.data, itemId), form);
+  const ask = await confirmationNeeded(request, form, "/dashboard/menu", () =>
+    itemWarnings(tenant, item.data, itemId),
+  );
   if (ask) return ask;
 
   const result = await updateMenuItem(tenant, itemId, item.data);

@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { confirmationNeeded } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
 import { formSaved } from "@/lib/form-response";
 import { addCategory, categoryWarnings, parseNewCategory } from "@/lib/menu";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
@@ -14,7 +14,9 @@ export async function POST(request: NextRequest) {
   if (!category.success) {
     return Response.json({ error: category.message }, { status: 400 });
   }
-  const ask = confirmationNeeded(await categoryWarnings(tenant, category.data.name), form);
+  const ask = await confirmationNeeded(request, form, "/dashboard/menu", () =>
+    categoryWarnings(tenant, category.data.name),
+  );
   if (ask) return ask;
 
   await addCategory(tenant, category.data);

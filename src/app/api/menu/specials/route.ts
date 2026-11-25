@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
-import { confirmationNeeded, zeroPriceWarnings } from "@/lib/confirmation";
+import { confirmationNeeded } from "@/lib/confirm-response";
+import { zeroPriceWarnings } from "@/lib/confirmation";
 import { formSaved } from "@/lib/form-response";
 import {
   alreadyOverMessage,
@@ -27,9 +28,8 @@ export async function POST(request: NextRequest) {
   }
   const tooHigh = await specialPriceProblem(tenant, special.data);
   if (tooHigh) return Response.json({ error: tooHigh }, { status: 400 });
-  const ask = confirmationNeeded(
+  const ask = await confirmationNeeded(request, form, "/dashboard/menu", () =>
     zeroPriceWarnings({ usd: special.data.priceUsd, zig: special.data.priceZig }, "special"),
-    form,
   );
   if (ask) return ask;
 
