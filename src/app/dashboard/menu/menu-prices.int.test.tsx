@@ -150,7 +150,7 @@ describe("a special above the normal price", () => {
     expect(
       (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "9", priceZig: "180" }))).status,
     ).toBe(303);
-    await owner.db.update(specials).set({ active: false });
+    await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
     expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "7.60" }))).status).toBe(303);
   });
 
@@ -182,7 +182,7 @@ describe("a special above the normal price", () => {
       { menuItemId: usdOnly, priceZig: "200" },
     ] as Record<string, string>[]) {
       expect((await addSpecial(post("/api/menu/specials", fields))).status).toBe(303);
-      await owner.db.update(specials).set({ active: false });
+      await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
     }
     // Above the calculated normal price is still above.
     const above = await addSpecial(post("/api/menu/specials", { menuItemId: zigOnly, priceUsd: "8.03" }));
@@ -212,7 +212,7 @@ describe("a special above the normal price", () => {
 
     for (const fields of [{ priceUsd: "15" }, { title: "Chef's pick" }] as Record<string, string>[]) {
       expect((await addSpecial(post("/api/menu/specials", { menuItemId: itemId, ...fields }))).status).toBe(303);
-      await owner.db.update(specials).set({ active: false });
+      await owner.db.update(specials).set({ active: false }).where(eq(specials.restaurantId, tenant.restaurantId));
     }
     expect(
       (await addSpecial(post("/api/menu/specials", { menuItemId: itemId, priceUsd: "19.50" }))).status,
