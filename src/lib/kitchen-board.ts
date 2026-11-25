@@ -132,38 +132,61 @@ export function cardMenuActions(status: ItemStatus): ("back" | "void" | "reject"
 export const itemsOfOrder = (board: ReadonlyMap<string, BoardItem>, orderId: string) =>
   [...board.values()].filter((it) => it.orderId === orderId);
 
-/** How long a new card flashes. */
-/**
- * A finger that lands twice on one spot (#100): the first tap moves a ticket
- * away and the next slides under the finger, so the second tap would start
- * another table's order. A pointer tap is refused when the last one that went
- * through was on a different item, within this long and this far (CSS px).
- * Other spots, or a pause, work as ever; a keyboard or screen-reader click has
- * no position (`detail` 0) and is never refused.
- */
+/** How long a spot stays guarded after its move settles, or after a tap there is refused. */
 export const SAME_SPOT_MS = 600;
+/** How far from a guarded spot still counts as on it, in CSS px. */
 export const SAME_SPOT_PX = 40;
+/** The longest an unanswered move holds its spot, so a hung one can't lock it. */
+export const SAME_SPOT_HOLD_MS = 10_000;
+
+/** Where and when a tap landed (`event.timeStamp`), and on which item. */
 export type Tap = { itemId: string; x: number; y: number; at: number; fromPointer: boolean };
+
+/**
+ * A finger that lands twice on one spot (#100): the first tap's move takes a
+ * ticket away and the next slides under the finger, so the second tap would
+ * start another table's order. A ticket slides when the move is answered, or a
+ * poll shows it, not when it is tapped, so a tap's spot is held while its move is
+ * in flight and for SAME_SPOT_MS after, and a tap there on another item is
+ * refused. Other spots work as ever. A click that isn't a pointer's (`detail` 0,
+ * such as a keyboard's) has no position and is never refused; a touch screen
+ * reader may send a pointer's click, which is guarded like a tap.
+ */
 export function sameSpotGuard() {
-  let last: Tap | undefined;
+  // One per accepted tap. `until` is when it stops guarding. A spot in flight is
+  // kept past that: its late answer still slides a ticket, so it guards again.
+  let spots: (Tap & { until: number; inFlight: boolean })[] = [];
   return {
-    /** True when the tap should act; a pointer tap that does is recorded. */
+    /** True when the tap should act. A pointer's is recorded: call `settled` when its move is over. */
     allow(tap: Tap): boolean {
-      if (
-        tap.fromPointer &&
-        last &&
-        last.itemId !== tap.itemId &&
-        tap.at - last.at < SAME_SPOT_MS &&
-        Math.hypot(tap.x - last.x, tap.y - last.y) < SAME_SPOT_PX
-      ) {
+      if (!tap.fromPointer) return true;
+      spots = spots.filter((spot) => spot.inFlight || tap.at < spot.until);
+      const hit = spots.filter(
+        (spot) =>
+          spot.itemId !== tap.itemId &&
+          tap.at < spot.until &&
+          Math.hypot(tap.x - spot.x, tap.y - spot.y) < SAME_SPOT_PX,
+      );
+      if (hit.length > 0) {
+        // A third tap is as stray as the second. One in flight is held already.
+        for (const spot of hit) if (!spot.inFlight) spot.until = tap.at + SAME_SPOT_MS;
         return false;
       }
-      if (tap.fromPointer) last = tap;
+      spots.push({ ...tap, until: tap.at + SAME_SPOT_HOLD_MS, inFlight: true });
       return true;
+    },
+    /** The item's move was applied, refused or failed, `at` (`performance.now()`, the taps' clock). */
+    settled(itemId: string, at: number) {
+      for (const spot of spots) {
+        if (!spot.inFlight || spot.itemId !== itemId) continue;
+        spot.inFlight = false;
+        spot.until = at + SAME_SPOT_MS;
+      }
     },
   };
 }
 
+/** How long a new card flashes. */
 export const FLASH_MS = 4_000;
 
 /** Two short beeps, made on the spot: no sound file to fetch. */

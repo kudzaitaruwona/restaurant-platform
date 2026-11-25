@@ -9,6 +9,7 @@ import {
   cardMenuActions,
   isMove,
   sameSpotGuard,
+  SAME_SPOT_HOLD_MS,
   SAME_SPOT_MS,
   itemsOfOrder,
   nextStatus,
@@ -412,17 +413,78 @@ describe("a double tap on one spot (#100)", () => {
     expect(guard.allow(tap("b", 1000 + 250, 305, 204))).toBe(false);
   });
 
-  it("lets rapid work on a different spot, or after a moment, through", () => {
+  it("holds the spot while the move is in flight, then for a moment after it settles", () => {
     const guard = sameSpotGuard();
-    expect(guard.allow(tap("a", 1000))).toBe(true);
-    expect(guard.allow(tap("b", 1200, 300, 330))).toBe(true);
-    expect(guard.allow(tap("c", 1200 + SAME_SPOT_MS, 300, 330))).toBe(true);
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    expect(guard.allow(tap("b", 700))).toBe(false); // still in flight: a poll may have moved A already
+    guard.settled("a", 800);
+    expect(guard.allow(tap("b", 850))).toBe(false);
   });
 
-  it("never blocks a keyboard or screen-reader activation", () => {
+  it("lets the next ticket through once the moment after the move has passed", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.settled("a", 800);
+    expect(guard.allow(tap("b", 800 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("lets rapid work on a different spot through while a move is in flight", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    expect(guard.allow(tap("b", 200, 300, 330))).toBe(true);
+    guard.settled("a", 800);
+    expect(guard.allow(tap("c", 850, 900, 200))).toBe(true);
+  });
+
+  it("keeps one spot per move: settling one doesn't release another", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.allow(tap("b", 200, 300, 330));
+    guard.settled("b", 400);
+    expect(guard.allow(tap("c", 1100))).toBe(false);
+    expect(guard.allow(tap("c", 1100, 300, 330))).toBe(true);
+  });
+
+  it("guards the first spot even after a tap somewhere else", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    guard.settled("a", 50);
+    expect(guard.allow(tap("c", 200, 900, 200))).toBe(true);
+    expect(guard.allow(tap("b", 400))).toBe(false);
+  });
+
+  it("keeps the spot guarded through a triple tap", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 0))).toBe(true);
+    guard.settled("a", 10);
+    expect(guard.allow(tap("b", 300))).toBe(false);
+    expect(guard.allow(tap("b", 620))).toBe(false);
+    expect(guard.allow(tap("b", 620 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("lets a failed move's own item be tapped again straight away, and releases the spot", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    guard.settled("a", 300);
+    expect(guard.allow(tap("a", 350))).toBe(true);
+    guard.settled("a", 500);
+    expect(guard.allow(tap("b", 500 + SAME_SPOT_MS))).toBe(true);
+  });
+
+  it("stops holding the spot of a hung move, but guards it again if the answer comes at last", () => {
+    const guard = sameSpotGuard();
+    guard.allow(tap("a", 0));
+    expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS - 1))).toBe(false);
+    expect(guard.allow(tap("b", SAME_SPOT_HOLD_MS))).toBe(true);
+    guard.settled("b", SAME_SPOT_HOLD_MS + 100);
+    guard.settled("a", 67_000);
+    expect(guard.allow(tap("c", 67_050))).toBe(false);
+  });
+
+  it("never blocks an activation that isn't a pointer's", () => {
     const guard = sameSpotGuard();
     expect(guard.allow(tap("a", 1000))).toBe(true);
-    expect(guard.allow(tap("b", 1100, 0, 0, false))).toBe(true);
+    expect(guard.allow(tap("b", 1100, 300, 200, false))).toBe(true);
     expect(guard.allow(tap("c", 1150))).toBe(false);
   });
 });

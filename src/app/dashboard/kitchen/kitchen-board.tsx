@@ -27,11 +27,12 @@ import {
   type ItemStatus,
   itemsOfOrder,
   nextStatus,
-  sameSpotGuard,
   previousStatus,
+  sameSpotGuard,
   sendMove,
   sendReject,
   sendVoid,
+  type Tap,
   VOID_REASON_MAX,
   voidReasonFrom,
 } from "@/lib/kitchen-board";
@@ -72,9 +73,10 @@ const LONG_PRESS_MS = 500;
 const TICK_MS = 15_000;
 /** How long a refused move's message stays up. */
 const MESSAGE_MS = 6_000;
+/** Said for a tap the same-spot guard ignored (#100). */
+const SPOT_MESSAGE = "Second tap in one spot ignored. Tap again in a moment if you meant it.";
 
-/** Where and when a tap landed; a click with no `detail` came from a keyboard or screen reader. */
-type TapPoint = { x: number; y: number; at: number; fromPointer: boolean };
+type TapPoint = Omit<Tap, "itemId">;
 
 type Override = "void" | "reject";
 type Asking = { itemId: string; kind: Override };
@@ -165,6 +167,8 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
         poller: poller.current,
       });
     } finally {
+      // The ticket moves about now, so the spot is guarded from here (#100).
+      spot.current.settled(item.id, performance.now());
       setPending((was) => {
         const next = new Set(was);
         next.delete(item.id);
@@ -282,9 +286,14 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
                   pending={pending}
                   asking={asking}
                   onForward={(item, tap) => {
-                    if (!spot.current.allow({ itemId: item.id, ...tap })) return;
                     const to = nextStatus(item.status);
-                    if (to) void move(item, to);
+                    if (!to) return;
+                    if (!spot.current.allow({ itemId: item.id, ...tap })) {
+                      // Never over a refused move's message, which matters more.
+                      setMessage((was) => was ?? SPOT_MESSAGE);
+                      return;
+                    }
+                    void move(item, to);
                   }}
                   onBack={(item) => {
                     const to = previousStatus(item.status);

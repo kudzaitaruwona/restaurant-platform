@@ -93,6 +93,7 @@ The page must keep the spec 02 performance budget. The cart and tracker are the 
 - [ ] A session with an undelivered item can't close by any path except force-close.
 - [ ] Force-close voids the outstanding items with the staff member and reason recorded.
 - [ ] Force-close refuses, with the new list, if the outstanding items changed since it was shown (#95).
+- [ ] Retrying an order whose response was lost places it once, and shows the original as placed; ordering the same thing again deliberately still places a second order (#84).
 - [ ] Reopen works at 14 minutes and is refused at 16 minutes. It is also refused if a new party has opened the table since, even if that party's session has already closed.
 - [ ] A reopened session is not closed by idle expiry on the next job run.
 - [ ] Changing a menu price after an order doesn't change that order's lines.
