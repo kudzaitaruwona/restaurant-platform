@@ -1495,7 +1495,7 @@ describe("/dashboard/tables/print", () => {
 
     expect(html).toContain("Mama&#x27;s Kitchen");
     expect(html).toContain("Patio 1");
-    expect(html).toContain("Scan to see the menu");
+    expect(html).toContain("Scan to see the menu and order");
     expect(html).toContain("<p>Wi-Fi: Mamas Guest</p><p>Password: sadza-and-stew</p>");
     expect(html).toContain("<svg");
   });
@@ -1637,6 +1637,27 @@ describe("/dashboard/tables/print", () => {
       expect(html).toContain(">Bravo</p>");
       expect(html).not.toContain(">Alpha</p>");
       expect(html).not.toContain(">Charlie</p>");
+    });
+
+    it("ticks come back ticked and pick the 'selected' scope even if the query said all", async () => {
+      await newTable("Alpha");
+      await newTable("Bravo");
+      const html = await render({ scope: "all", table: [await idOf("Bravo")] });
+      expect(html).toMatch(/<input[^>]*name="table"[^>]*checked=""[^>]*value="[^"]*"/);
+    });
+
+    it("hides stale cards from print and prints on white in any theme", async () => {
+      await newTable("Alpha");
+      const html = await render({});
+      expect(html).toContain("[data-print-stale] [aria-label=Preview]{display:none!important}");
+      expect(html).toContain("html,body{background:#fff!important}");
+    });
+
+    it("the generic menu card is menu-only; table cards offer ordering", async () => {
+      await newTable("Alpha");
+      const html = await render({ menu: "1" });
+      expect(html).toContain("Scan to see the menu and order");
+      expect(html).toMatch(/Scan to see the menu<\/p>/);
     });
 
     it("selected with nothing ticked prints no card and says so", async () => {
