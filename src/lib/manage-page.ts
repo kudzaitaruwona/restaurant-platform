@@ -28,6 +28,7 @@ p{margin:0}
 .btn{min-height:48px;font-size:16px}
 .btn-cancel{background:transparent;border-color:var(--danger);color:var(--danger)}
 @media (hover:hover){.btn-cancel:hover{background:var(--danger-soft)}}
+.actions{display:flex;flex-direction:column;gap:8px}
 .contact{font-size:15px}
 .contact a{color:var(--ink);text-underline-offset:3px}
 `;
@@ -93,6 +94,32 @@ const noticeOf = (outcome: CancelOutcome["outcome"] | undefined) => {
   }
 };
 
+const managePath = (token: string) => `/b/${encodeURIComponent(token)}`;
+
+/** The way back after a cancel: this restaurant's own booking page, on this site. */
+const bookAgain = (slug: string) =>
+  html`<a class="btn btn-primary btn-block" href="${`/r/${encodeURIComponent(slug)}/book`}">Book again</a>`;
+
+/**
+ * The step before a guest's cancel (#104): a plain page with the POST form, so it
+ * works without script. Reaching it by GET changes nothing.
+ */
+function confirmPage(booking: ManagedBooking, token: string) {
+  return page(
+    `Cancel your booking at ${booking.restaurantName}`,
+    html`<h1>Cancel this booking?</h1>
+<div class="card">
+<p class="muted">${booking.restaurantName}</p>
+<p class="when">${booking.dateLabel} at <span class="num">${booking.time}</span></p>
+<p class="muted">${booking.guestName}, party of ${booking.party}</p>
+</div>
+<form class="actions" method="post" action="${managePath(token)}">
+<button class="btn btn-cancel btn-block" type="submit">Yes, cancel booking</button>
+<a class="btn btn-secondary btn-block" href="${managePath(token)}">Keep booking</a>
+</form>`,
+  );
+}
+
 function bookingPage(booking: ManagedBooking, token: string, outcome?: CancelOutcome["outcome"]) {
   const state = stateOf(booking);
   const notice = noticeOf(outcome);
@@ -109,11 +136,10 @@ ${booking.note && html`<p class="muted">Your note: ${booking.note}</p>`}
 ${state && !notice && message(state, booking.status === "cancelled" ? "cancelled" : "neutral")}
 ${
   booking.cancellable
-    ? html`<form method="post" action="${`/b/${encodeURIComponent(token)}`}">
-<button class="btn btn-cancel btn-block" type="submit">Cancel booking</button>
-</form>`
+    ? html`<a class="btn btn-cancel btn-block" href="${`${managePath(token)}?cancel=1`}">Cancel booking</a>`
     : booking.status === "confirmed" && message(tooLateMessage, "neutral", icons.phone)
 }
+${booking.status === "cancelled" && bookAgain(booking.slug)}
 ${contactPhone && html`<p class="contact muted">Restaurant: <a class="num" href="${`tel:${contactPhone}`}">${displayPhone(contactPhone)}</a></p>`}`,
   );
 }
@@ -137,6 +163,14 @@ const headers = {
 
 export const notFoundResponse = () =>
   new Response(notFound.toString(), { status: 404, headers });
+
+/** The confirm step for a booking that can still be cancelled; otherwise the usual page. */
+export function confirmCancelResponse(token: string, booking: ManagedBooking) {
+  return new Response((booking.cancellable ? confirmPage(booking, token) : bookingPage(booking, token)).toString(), {
+    status: 200,
+    headers,
+  });
+}
 
 export function bookingResponse(token: string, booking: ManagedBooking, outcome?: CancelOutcome["outcome"]) {
   const refused = outcome === "too_late" || outcome === "not_cancellable";
