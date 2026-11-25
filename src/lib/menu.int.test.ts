@@ -18,6 +18,7 @@ import {
   addMenuItem,
   archiveCategory,
   archiveMenuItem,
+  archiveWarnings,
   getMenu,
   moveMenuItem,
   renameCategory,
@@ -544,6 +545,14 @@ describe("archiving a category", () => {
 
     expect(await shape(tenant)).toEqual({ Mains: ["Stew"] });
     expect(touchedCache()).toBe(0);
+  });
+
+  it("asks nothing when the category is its own move target (archiveCategory answers not_found)", async () => {
+    const tenant = await menuOf({ Mains: ["Stew"] });
+    const mains = await categoryIdOf(tenant, "Mains");
+
+    expect(await archiveWarnings(tenant, mains, mains)).toEqual([]);
+    expect(await archiveCategory(tenant, mains, mains)).toBe("not_found");
   });
 
   it("moves its items to the category chosen, after what is already there", async () => {

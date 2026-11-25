@@ -350,6 +350,8 @@ export function archiveWarnings(
   moveItemsTo: string,
 ): Promise<string[]> {
   if (!isId(categoryId) || !isId(moveItemsTo)) return Promise.resolve([]);
+  // Its own target isn't a move (archiveCategory answers not_found): nothing to ask.
+  if (categoryId === moveItemsTo) return Promise.resolve([]);
   const { restaurantId } = ctx;
   return withTenant(ctx, async (tx) => {
     const target = alias(menuItems, "target");
