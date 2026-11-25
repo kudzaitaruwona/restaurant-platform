@@ -73,6 +73,14 @@ describe("the floor screen", () => {
     expect(html).toContain(`href="/dashboard/floor/${r.tableId}"`);
   });
 
+  it("names a table labelled only a number as a table, on the grid and in detail (#99)", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await owner.db.update(diningTables).set({ label: "12" }).where(eq(diningTables.id, r.tableId));
+    as(r);
+    expect(renderToStaticMarkup(await FloorScreen())).toContain(">Table 12<");
+    expect(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }))).toContain("Table 12<");
+  });
+
   it("shows an open table with its time open on the restaurant's clock and its item counts", async () => {
     const r = await orderingRestaurant(owner.db);
     as(r);
@@ -206,7 +214,7 @@ describe("the table detail screen", () => {
 
     expect(html).toContain("Table 7");
     expect(html).toContain("&lt;i&gt;Tariro&lt;/i&gt;");
-    expect(html).toMatch(/>2x<\/span>.*>Beef stew</);
+    expect(html).toMatch(/>2 ×<\/span>.*>Beef stew</);
     expect(html).toContain("No &lt;b&gt;onions&lt;/b&gt;");
     expect(html).toContain("Cooking");
   });

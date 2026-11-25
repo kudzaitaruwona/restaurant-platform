@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { localTime } from "@/lib/booking-engine";
 import { type ItemCounts, getFloor } from "@/lib/floor";
 import { IDLE_EXPIRY_MINUTES } from "@/lib/session-idle";
+import { tableName } from "@/lib/table-name";
 import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { CallingBell, dismissButtonClassName } from "./waiter-call";
@@ -123,7 +124,7 @@ export async function FloorScreen({ now }: { now?: Date } = {}) {
                   >
                     <span className="flex items-baseline justify-between gap-2">
                       <span className="text-heading leading-none font-semibold tracking-[-0.01em]">
-                        {table.label}
+                        {tableName(table.label)}
                         <span className="ml-2 text-caption font-normal tracking-normal text-ink-2">
                           Seats {table.capacity}
                         </span>

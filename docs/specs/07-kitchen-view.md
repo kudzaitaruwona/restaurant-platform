@@ -15,7 +15,7 @@ Staff pages live under `/dashboard/*` (D-10). Ticket #69 built this path as a pl
 
 - Designed for a tablet in landscape, which staff leave logged in.
 - **Three columns:** Placed · Cooking · Done. Delivered items disappear from the board.
-- Each card is one item: table label (large), quantity × item name, the note **highlighted**, customer name, and how long ago it was ordered ("95 min" reads "1 h 35 min ago", #101).
+- Each card is one item: table label (large; *proposed, #99:* a label that is only a number reads "Table 7"), quantity × item name, the note **highlighted**, customer name, and how long ago it was ordered ("95 min" reads "1 h 35 min ago", #101).
 - Items from the same order and table are grouped visually, so the kitchen can plate a table together.
 - **One tap** moves an item forward. A long press or a menu moves it back (for mis-taps), voids it (with a reason), or rejects its whole order (with a reason, S-36).
   - *(Proposed, #71)* A tap on a Done card marks it delivered, which takes it off the board. A move sends the status the board showed and the one wanted; a move that skips a status, or from a status the item has already left (another tablet moved it first), is refused (409) and the board refreshes. Every move is audited (`order_item.status`, with from and to) and bumps the session's `last_activity_at` in the same transaction, if the session is open.

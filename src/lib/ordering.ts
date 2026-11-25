@@ -19,6 +19,7 @@ import {
   specialUsd,
   specialZig,
 } from "@/lib/pricing";
+import { tableName } from "@/lib/table-name";
 import { resolvePublicToken } from "@/lib/tenant/public";
 import { type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -36,7 +37,7 @@ import { type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 /** The live table a token names, inside its restaurant: none once archived or regenerated. */
 async function tableOf(tx: TenantTransaction, qrToken: string) {
   const [table] = await tx
-    .select({ id: diningTables.id })
+    .select({ id: diningTables.id, label: diningTables.label })
     .from(diningTables)
     .where(and(eq(diningTables.qrToken, qrToken), isNull(diningTables.archivedAt)));
   return table;
@@ -47,7 +48,8 @@ async function tableOf(tx: TenantTransaction, qrToken: string) {
  * and either way marks it active now. One statement, so two phones scanning a
  * free table at once can't open two: the table lock
  * (table_sessions_one_open_per_table) makes the second wait for the first, then
- * join it. Undefined for a token that leads to no live table.
+ * join it. Answers the table's name too, as staff see it (#99). Undefined for a
+ * token that leads to no live table.
  */
 export async function joinTableSession(qrToken: string) {
   const tenant = await resolvePublicToken("table", qrToken);
@@ -64,7 +66,7 @@ export async function joinTableSession(qrToken: string) {
         set: { lastActivityAt: sql`now()` },
       })
       .returning({ id: tableSessions.id });
-    return { sessionId: session.id };
+    return { sessionId: session.id, table: tableName(table.label) };
   });
 }
 
@@ -324,7 +326,8 @@ async function alreadyPlaced(
         eq(orders.requestId, request),
         eq(tableSessions.tableId, tableId),
       ),
-    );
+    )
+    .orderBy(asc(orderItems.id));
   if (original.length === 0) return undefined;
 
   const content = (of: OrderRequest["lines"]) =>
@@ -412,10 +415,14 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
           requestId: request.request,
         })
         .returning({ id: orders.id });
+      // Every list reads an order's lines by id, so ids made here in rising order keep
+      // the cart's order on the tracker, the kitchen and the floor (#99).
+      const ids = request.lines.map(() => crypto.randomUUID()).sort();
       await tx.insert(orderItems).values(
-        request.lines.map((line) => {
+        request.lines.map((line, index) => {
           const priced = pricedById.get(line.item)!;
           return {
+            id: ids[index],
             restaurantId,
             orderId: order.id,
             menuItemId: line.item,
@@ -503,7 +510,7 @@ export async function getTableTracker(qrToken: string) {
         and(eq(orders.restaurantId, orderItems.restaurantId), eq(orders.id, orderItems.orderId)),
       )
       .where(and(eq(orders.restaurantId, tenant.restaurantId), eq(orders.sessionId, table.sessionId)))
-      .orderBy(asc(orders.placedAt), asc(orderItems.id));
+      .orderBy(asc(orders.placedAt), asc(orders.id), asc(orderItems.id));
     return {
       session: table.sessionId,
       items: rows.map(({ placedAt, ...row }) => ({ ...row, time: localTime(placedAt, table.timezone) })),

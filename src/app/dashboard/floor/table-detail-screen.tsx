@@ -12,6 +12,7 @@ import { REOPEN_WINDOW_MINUTES } from "@/lib/closing";
 import { getTableDetail } from "@/lib/floor";
 import { type CurrencyMode, amountsDisplay } from "@/lib/pricing";
 import { VOID_REASON_MAX } from "@/lib/kitchen-board";
+import { tableName } from "@/lib/table-name";
 import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { FlaggedNote, RefreshAction, openFor } from "./floor-screen";
@@ -99,7 +100,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
         <PageHeader
           title={
             <>
-              {table.label}
+              {tableName(table.label)}
               <span className="ml-2 text-lead font-normal tracking-normal text-ink-2">Seats {table.capacity}</span>
             </>
           }
@@ -189,15 +190,15 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                     return (
                       <li
                         key={item.id}
-                        className="grid min-h-18 grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[40px_minmax(0,1fr)_auto_auto]"
+                        className="grid min-h-18 grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[44px_minmax(0,1fr)_auto_auto]"
                       >
                         <span
                           className={cn(
-                            "text-lead text-ink-2 tabular-nums",
+                            "text-lead whitespace-nowrap text-ink-2 tabular-nums",
                             settled ? "font-normal" : "font-semibold",
                           )}
                         >
-                          {item.quantity}x
+                          {item.quantity} ×
                         </span>
                         <span className="flex min-w-0 flex-col gap-0.5">
                           <span
@@ -237,7 +238,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                             <ActionForm
                               action={`/api/order-items/${item.id}/void`}
                               confirmation={{
-                                title: `Void ${item.quantity}x ${item.name}?`,
+                                title: `Void ${item.quantity} × ${item.name}?`,
                                 description: `It comes off ${order.customerName}'s order and the kitchen board.`,
                                 confirmLabel: "Void item",
                                 reason: reasonField("Required. Recorded with the void."),
@@ -277,7 +278,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
             <ActionForm
               action={`/api/floor/${table.id}/force-close`}
               confirmation={{
-                title: `Force-close ${table.label}?`,
+                title: `Force-close ${tableName(table.label)}?`,
                 description:
                   outstanding.length === 0 ? (
                     "Every item is delivered or voided. This closes the table."
@@ -288,7 +289,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                         {outstanding.map((item) => (
                           <li key={item.id} className="flex justify-between gap-3 px-3 py-2.5">
                             <span>
-                              {item.quantity}x {item.name}
+                              {item.quantity} × {item.name}
                             </span>
                             <StatusPill status={item.status} />
                           </li>
