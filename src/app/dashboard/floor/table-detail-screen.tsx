@@ -10,11 +10,19 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { localTime } from "@/lib/booking-engine";
 import { REOPEN_WINDOW_MINUTES } from "@/lib/closing";
 import { getTableDetail } from "@/lib/floor";
+import { type CurrencyMode, amountsDisplay } from "@/lib/pricing";
 import { VOID_REASON_MAX } from "@/lib/kitchen-board";
 import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
-import { RefreshAction, openFor } from "./floor-screen";
+import { FlaggedNote, RefreshAction, openFor } from "./floor-screen";
 import { CallingBell, dismissButtonClassName } from "./waiter-call";
+
+/**
+ * A refusal in the pinned bar sits above it, out of flow, capped and scrolling:
+ * it can't grow the bar or move the buttons (#102).
+ */
+const refusalClassName =
+  "absolute inset-x-0 bottom-full max-h-[30dvh] overflow-y-auto border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:px-8";
 
 type LineStatus = "placed" | "cooking" | "done" | "delivered" | "voided";
 
@@ -29,6 +37,25 @@ const closedWords = {
 
 /** Whether a line can still be voided: not delivered (it was eaten) or voided already. */
 const voidable = (status: LineStatus) => status !== "delivered" && status !== "voided";
+
+/**
+ * What an amount reads as in the restaurant's `currency_mode` (S-10): a
+ * currency that couldn't be worked out falls back to the other, and none at all
+ * is null.
+ */
+const shown = (amounts: { usd: string | null; zig: string | null }, mode: CurrencyMode) =>
+  amounts.usd === null && amounts.zig === null ? null : amountsDisplay(amounts, mode);
+
+function Money({ amounts, mode, className }: { amounts: { usd: string | null; zig: string | null }; mode: CurrencyMode; className?: string }) {
+  const display = shown(amounts, mode);
+  if (!display) return <span className={cn("text-caption text-ink-2", className)}>No price</span>;
+  return (
+    <span className={cn("flex flex-col tabular-nums", className)}>
+      <span>{display.main}</span>
+      {display.sub && <span className="text-caption font-normal text-ink-2">{display.sub}</span>}
+    </span>
+  );
+}
 
 /**
  * The reason a void, reject or force-close asks for in its dialog (#73, #74,
@@ -46,7 +73,10 @@ const reasonField = (hint: string): Confirmation["reason"] => ({
  * name, the note and the status, Mark delivered on lines that are done, Void on
  * lines not yet delivered and Reject on orders with any (#73, S-36), and Clear
  * table and Force-close for the session (#74), pinned to the bottom. Void,
- * Reject and Force-close take their reason in a dialog (S-41). A free table
+ * Reject and Force-close take their reason in a dialog (S-41). Each line shows
+ * the price it froze when ordered, times its quantity (struck through once
+ * voided), and the bill's total leaves voided lines out, in the restaurant's
+ * `currency_mode` (#102). A flagged table says so, as the grid does. A free table
  * whose last session closed within the last 15 minutes offers Reopen (#76),
  * until when on the restaurant's clock; Postgres has the final say when it's
  * pressed. A table that isn't a live one of this restaurant is a 404. React
@@ -59,7 +89,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
   if (!id.success) notFound();
   const detail = await getTableDetail(tenant, id.data);
   if (!detail) notFound();
-  const { table, session, orders, timezone, reopenable } = detail;
+  const { table, session, orders, timezone, reopenable, currencyMode, flagged, total } = detail;
   const at = now ?? new Date();
   const outstanding = orders.flatMap((order) => order.items.filter((item) => voidable(item.status)));
 
@@ -132,6 +162,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               </ActionForm>
             </div>
           )}
+          {flagged && <FlaggedNote />}
           {orders.length === 0 && <p className="text-ink-2">Nothing ordered yet.</p>}
           <div className="flex flex-col gap-3">
             {orders.map((order) => (
@@ -165,7 +196,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                     return (
                       <li
                         key={item.id}
-                        className="grid min-h-18 grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[40px_minmax(0,1fr)_auto]"
+                        className="grid min-h-18 grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 pr-3 pl-4 sm:grid-cols-[40px_minmax(0,1fr)_auto_auto]"
                       >
                         <span
                           className={cn(
@@ -192,7 +223,15 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                             </span>
                           )}
                         </span>
-                        <span className="col-start-2 flex flex-wrap items-center gap-2 sm:col-start-3 sm:justify-end">
+                        <Money
+                          amounts={item.price}
+                          mode={currencyMode}
+                          className={cn(
+                            "text-right font-medium",
+                            item.status === "voided" && "font-normal text-ink-2 line-through",
+                          )}
+                        />
+                        <span className="col-span-3 col-start-2 flex flex-wrap items-center gap-2 sm:col-span-1 sm:col-start-4 sm:justify-end">
                           <StatusPill status={item.status} className={cn(item.status === "delivered" && "px-1")} />
                           {item.status === "done" && (
                             <ActionForm action={`/api/order-items/${item.id}/deliver`}>
@@ -224,9 +263,17 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               </Card>
             ))}
           </div>
+          {orders.length > 0 && total && (
+            <Card as="section" className="flex items-baseline justify-between gap-3 px-4 py-3">
+              <h2 className="text-lead font-semibold">Total</h2>
+              <Money amounts={total} mode={currencyMode} className="items-end text-lead font-semibold" />
+            </Card>
+          )}
           <div className="sticky bottom-0 z-10 -mx-4 mt-auto -mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:-mx-8 md:-mb-8 md:px-8">
             <p className="max-w-[34ch] text-caption text-ink-2">
-              Clear table works once every item is delivered or voided.
+              {outstanding.length === 0
+                ? "Every item is delivered or voided: the table can be cleared."
+                : "Clear table works once every item is delivered or voided."}
             </p>
             <div className="flex flex-1 justify-end gap-2">
               <ActionForm
@@ -252,8 +299,13 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                       </>
                     ),
                   confirmLabel: outstanding.length === 0 ? "Close table" : `Void ${outstanding.length} and close`,
-                  reason: reasonField("Required. Recorded on each voided item."),
+                  reason: reasonField(
+                    outstanding.length === 0
+                      ? "Required. Recorded with the close."
+                      : "Required. Recorded on each voided item.",
+                  ),
                 }}
+                refusalClassName={refusalClassName}
               >
                 <input type="hidden" name="session" value={session.id} />
                 {outstanding.map((item) => (
@@ -263,9 +315,10 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
                   Force-close
                 </Button>
               </ActionForm>
-              <ActionForm action={`/api/floor/${table.id}/clear`}>
+              <ActionForm action={`/api/floor/${table.id}/clear`} refusalClassName={refusalClassName}>
                 <input type="hidden" name="session" value={session.id} />
-                <Button type="submit" size="staff">
+                {/* The page knows it will be refused while a line is outstanding (#102). */}
+                <Button type="submit" size="staff" disabled={outstanding.length > 0}>
                   Clear table
                 </Button>
               </ActionForm>

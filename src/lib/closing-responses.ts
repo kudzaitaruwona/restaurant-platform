@@ -22,14 +22,19 @@ export function shownItemsFrom(form: FormData): string[] | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * `refresh` on a refusal has ActionForm reload the page, keeping the message up
+ * (#95, #102): set wherever the answer is "what you're looking at is out of date".
+ */
 export const reloadToClose = () =>
-  Response.json({ error: "Reload the table and try again." }, { status: 400, headers });
+  Response.json({ error: "Reload the table and try again.", refresh: true }, { status: 400, headers });
 
 export const sessionChanged = () =>
   Response.json(
     {
       error:
         "This table's session has changed since the page loaded: it has closed, or a new party has sat down. Reload the table.",
+      refresh: true,
     },
     { status: 409, headers },
   );
@@ -79,4 +84,4 @@ const reopenWords = {
 
 /** A reopen Postgres or the page's precondition refused (#76): a 409 that says why. */
 export const reopenRefused = (outcome: keyof typeof reopenWords) =>
-  Response.json({ error: reopenWords[outcome] }, { status: 409, headers });
+  Response.json({ error: reopenWords[outcome], refresh: true }, { status: 409, headers });

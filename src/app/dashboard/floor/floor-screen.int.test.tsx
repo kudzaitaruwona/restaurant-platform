@@ -136,6 +136,19 @@ describe("a flagged table", () => {
   });
 });
 
+describe("a reopenable table on the grid (#102)", () => {
+  it("is marked on a free table whose last session can still be reopened", async () => {
+    const r = await orderingRestaurant(owner.db);
+    as(r);
+    expect(renderToStaticMarkup(await FloorScreen())).not.toContain("can be reopened");
+
+    await owner.db.execute(sql`
+      insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason)
+      values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '1 hour', now() - interval '3 minutes', 'staff_clear')`);
+    expect(renderToStaticMarkup(await FloorScreen())).toContain("Last session can be reopened");
+  });
+});
+
 describe("a table calling a waiter", () => {
   const calling = async (r: Restaurant) => {
     await openTable(r, [{ status: "placed" }]);
@@ -287,6 +300,96 @@ describe("the table detail screen", () => {
     expect(force).toContain("Void 1 and close");
     // The outstanding lines it lists, and no others, as the close's precondition (#95).
     expect([...force.matchAll(/name="item" value="([^"]*)"/g)].map((match) => match[1])).toEqual([lineId]);
+  });
+
+  describe("settling the bill (#102)", () => {
+    const priced = [
+      { name: "Stew", quantity: 2, unitPriceUsd: "8", unitPriceZig: "210", zigSource: "calculated" as const, status: "delivered" as const },
+      { name: "Sadza", quantity: 1, unitPriceUsd: "1.5", unitPriceZig: "40", zigSource: "fixed" as const, status: "cooking" as const },
+      { name: "Oops", quantity: 4, unitPriceUsd: "100", unitPriceZig: "2600", zigSource: "fixed" as const, status: "voided" as const },
+    ];
+
+    it("shows each line's frozen price and the total without the voided line, in both currencies", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, priced.map((line) => ({ ...line, voidReason: line.status === "voided" ? "x" : null, voidedBy: line.status === "voided" ? r.staffId : null })));
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+      expect(html).toContain("$16.00 · ZiG 420");
+      expect(html).toContain("$1.50 · ZiG 40");
+      expect(html).toContain("$400.00 · ZiG 10,400"); // shown, struck through, not counted
+      expect(html).toMatch(/Total.*\$17\.50 · ZiG 460</);
+      expect(html).not.toContain("$417.50");
+    });
+
+    it("follows the restaurant's currency mode", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await owner.db.update(restaurants).set({ currencyMode: "zig_only" }).where(eq(restaurants.id, r.restaurantId));
+      await openTable(r, priced.slice(0, 2));
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+      expect(html).toMatch(/Total.*ZiG 460</);
+      expect(html).not.toContain("$17.50");
+    });
+
+    it("says no price for a line that has none in any currency, rather than $0", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, [{ unitPriceUsd: null, unitPriceZig: null, status: "cooking" }]);
+
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+
+      expect(html).toContain("No price");
+      expect(html).not.toContain("$0.00");
+    });
+
+    it("shows the flag on a flagged table, and not on one that isn't", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, [{ status: "cooking" }]);
+      expect(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }))).not.toContain("Flagged.");
+
+      await owner.db
+        .update(tableSessions)
+        .set({ lastActivityAt: new Date(Date.now() - 100 * 60_000) })
+        .where(eq(tableSessions.tableId, r.tableId));
+      expect(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }))).toContain("Flagged.");
+    });
+  });
+
+  describe("the pinned action bar (#102)", () => {
+    it("disables Clear table while an item is outstanding, and enables it once none is", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, [{ status: "cooking" }, { status: "delivered" }]);
+      const clearOf = (html: string) =>
+        html.match(new RegExp(`<form[^>]*action="/api/floor/${r.tableId}/clear"[^>]*>.*?</form>`))?.[0] ?? "";
+
+      expect(clearOf(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId })))).toMatch(/<button[^>]*\sdisabled=""/);
+
+      await owner.db.update(orderItems).set({ status: "delivered" }).where(eq(orderItems.restaurantId, r.restaurantId));
+      expect(clearOf(renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId })))).not.toMatch(/<button[^>]*\sdisabled=""/);
+    });
+
+    it("words a force-close with nothing outstanding without claiming voided items", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, [{ status: "delivered" }]);
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+      expect(html).toContain("Recorded with the close.");
+      expect(html).not.toContain("Recorded on each voided item");
+    });
+
+    it("keeps the voided-items wording when something is outstanding", async () => {
+      const r = await orderingRestaurant(owner.db);
+      as(r);
+      await openTable(r, [{ status: "cooking" }]);
+      const html = renderToStaticMarkup(await TableDetailScreen({ tableId: r.tableId }));
+      expect(html).toContain("Recorded on each voided item");
+    });
   });
 
   it("says so for a free table, with nothing to clear or force-close", async () => {

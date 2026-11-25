@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ActionForm, confirmationOf, refusalFrom } from "./action-form";
+import { ActionForm, RefusalAlert, confirmationOf, refusalFrom } from "./action-form";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
 
@@ -54,5 +54,16 @@ describe("a save the server asks about first (issue #112)", () => {
     const items = [{ id: "1", summary: "1 × Rice for Chipo: placed" }];
     const refusal = await refusalFrom(Response.json({ error: "Changed.", items, refresh: true }, { status: 409 }));
     expect(refusal).toMatchObject({ bookings: items, refresh: true });
+  });
+});
+
+describe("where a refusal sits (#102)", () => {
+  const refusal = { message: "Nope.", bookings: [{ id: "1", summary: "2 x Stew" }], warnings: [], refresh: false };
+
+  it("takes the caller's class, so a pinned bar can keep it out of its flow", () => {
+    const html = renderToStaticMarkup(<RefusalAlert refusal={refusal} className="absolute bottom-full" />);
+    expect(html).toMatch(/<div role="alert" class="[^"]*absolute bottom-full/);
+    expect(html).toContain("Nope.");
+    expect(html).toContain("2 x Stew");
   });
 });

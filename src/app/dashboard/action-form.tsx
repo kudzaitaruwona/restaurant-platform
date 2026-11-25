@@ -5,6 +5,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
+import { cn } from "@/lib/utils";
 import { announceSend, clearOnOtherSend } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
@@ -41,6 +42,7 @@ export function ActionForm({
   confirmation,
   resetOnSuccess = false,
   savedMessage,
+  refusalClassName,
   children,
 }: {
   action: string;
@@ -50,6 +52,8 @@ export function ActionForm({
   confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
   savedMessage?: string;
+  /** Where and how the refusal sits, for a form whose surroundings can't grow (#102). */
+  refusalClassName?: string;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -126,18 +130,7 @@ export function ActionForm({
             {savedMessage}
           </p>
         )}
-        {error && (
-          <div role="alert" className="text-caption text-danger">
-            <p>{error.message}</p>
-            {error.bookings.length > 0 && (
-              <ul className="list-disc pl-5">
-                {error.bookings.map((booking) => (
-                  <li key={booking.id}>{booking.summary}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
+        {error && <RefusalAlert refusal={error} className={refusalClassName} />}
       </fieldset>
       {warnings.length > 0 && (
         <ConfirmDialog
@@ -174,6 +167,22 @@ export function ActionForm({
         />
       )}
     </form>
+  );
+}
+
+/** A refusal in place: its message, and the items or bookings in the way. */
+export function RefusalAlert({ refusal, className }: { refusal: Refusal; className?: string }) {
+  return (
+    <div role="alert" className={cn("text-caption text-danger", className)}>
+      <p>{refusal.message}</p>
+      {refusal.bookings.length > 0 && (
+        <ul className="list-disc pl-5">
+          {refusal.bookings.map((booking) => (
+            <li key={booking.id}>{booking.summary}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

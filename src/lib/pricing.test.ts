@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  amountsDisplay,
   calculatedZigNote,
   effectiveUsd,
   effectiveZig,
@@ -11,6 +12,8 @@ import {
   rateAgeLabel,
   specialUsd,
   specialZig,
+  sumAmounts,
+  timesQuantity,
 } from "./pricing";
 
 const pricing = { rate: "26.2", zigStep: "10", usdStep: "0.01" };
@@ -373,5 +376,25 @@ describe("promotionDisplay", () => {
         sub: { now: "ZiG 250" },
       });
     });
+  });
+});
+
+describe("a bill's amounts (#102)", () => {
+  it("multiplies a unit price by a quantity and sums exactly, with no floating point", () => {
+    expect(timesQuantity("8", 3)).toBe("24");
+    expect(timesQuantity("0.10", 3)).toBe("0.3");
+    expect(sumAmounts(["0.1", "0.2", "8"])).toBe("8.3");
+    expect(sumAmounts(["210", "10.5"])).toBe("220.5");
+    expect(sumAmounts([])).toBe("0");
+  });
+
+  it("shows amounts as a currency mode lays them out, falling back when one is missing", () => {
+    const both = { usd: "8", zig: "210" };
+    expect(amountsDisplay(both, "usd_only")).toEqual({ main: "$8.00" });
+    expect(amountsDisplay(both, "zig_only")).toEqual({ main: "ZiG 210" });
+    expect(amountsDisplay(both, "usd_primary")).toEqual({ main: "$8.00", sub: "ZiG 210" });
+    expect(amountsDisplay(both, "zig_primary")).toEqual({ main: "ZiG 210", sub: "$8.00" });
+    expect(amountsDisplay(both, "both")).toEqual({ main: "$8.00 · ZiG 210" });
+    expect(amountsDisplay({ usd: null, zig: "210" }, "usd_only")).toEqual({ main: "ZiG 210" });
   });
 });
