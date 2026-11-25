@@ -133,6 +133,37 @@ export const itemsOfOrder = (board: ReadonlyMap<string, BoardItem>, orderId: str
   [...board.values()].filter((it) => it.orderId === orderId);
 
 /** How long a new card flashes. */
+/**
+ * A finger that lands twice on one spot (#100): the first tap moves a ticket
+ * away and the next slides under the finger, so the second tap would start
+ * another table's order. A pointer tap is refused when the last one that went
+ * through was on a different item, within this long and this far (CSS px).
+ * Other spots, or a pause, work as ever; a keyboard or screen-reader click has
+ * no position (`detail` 0) and is never refused.
+ */
+export const SAME_SPOT_MS = 600;
+export const SAME_SPOT_PX = 40;
+export type Tap = { itemId: string; x: number; y: number; at: number; fromPointer: boolean };
+export function sameSpotGuard() {
+  let last: Tap | undefined;
+  return {
+    /** True when the tap should act; a pointer tap that does is recorded. */
+    allow(tap: Tap): boolean {
+      if (
+        tap.fromPointer &&
+        last &&
+        last.itemId !== tap.itemId &&
+        tap.at - last.at < SAME_SPOT_MS &&
+        Math.hypot(tap.x - last.x, tap.y - last.y) < SAME_SPOT_PX
+      ) {
+        return false;
+      }
+      if (tap.fromPointer) last = tap;
+      return true;
+    },
+  };
+}
+
 export const FLASH_MS = 4_000;
 
 /** Two short beeps, made on the spot: no sound file to fetch. */

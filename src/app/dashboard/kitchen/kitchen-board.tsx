@@ -27,6 +27,7 @@ import {
   type ItemStatus,
   itemsOfOrder,
   nextStatus,
+  sameSpotGuard,
   previousStatus,
   sendMove,
   sendReject,
@@ -72,6 +73,9 @@ const TICK_MS = 15_000;
 /** How long a refused move's message stays up. */
 const MESSAGE_MS = 6_000;
 
+/** Where and when a tap landed; a click with no `detail` came from a keyboard or screen reader. */
+type TapPoint = { x: number; y: number; at: number; fromPointer: boolean };
+
 type Override = "void" | "reject";
 type Asking = { itemId: string; kind: Override };
 
@@ -104,6 +108,8 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
     arrivals({ makeAudio: () => new AudioContext(), onFlash: setFlashing }),
   );
   const poller = useRef<ReturnType<typeof startPolling> | null>(null);
+  // One per board: a ticket that slides under a double tap isn't advanced (#100).
+  const spot = useRef(sameSpotGuard());
 
   /** Applies changed items, and flashes and sounds for the ones new to the board. */
   function update(items: BoardItem[]) {
@@ -275,7 +281,8 @@ export function KitchenBoard({ initial }: { initial: Changes }) {
                   flashing={flashing}
                   pending={pending}
                   asking={asking}
-                  onForward={(item) => {
+                  onForward={(item, tap) => {
+                    if (!spot.current.allow({ itemId: item.id, ...tap })) return;
                     const to = nextStatus(item.status);
                     if (to) void move(item, to);
                   }}
@@ -322,7 +329,7 @@ function Ticket({
   flashing: ReadonlySet<string>;
   pending: ReadonlySet<string>;
   asking: Asking | undefined;
-  onForward: (item: BoardItem) => void;
+  onForward: (item: BoardItem, tap: TapPoint) => void;
   onBack: (item: BoardItem) => void;
   onAsk: (asking: Asking | undefined) => void;
   onOverride: (item: BoardItem, kind: Override, reason: string) => Promise<void>;
@@ -383,7 +390,7 @@ function Ticket({
           key={item.id}
           item={item}
           pending={pending.has(item.id)}
-          onForward={() => onForward(item)}
+          onForward={(tap) => onForward(item, tap)}
           onBack={() => onBack(item)}
           onAsk={(kind) => onAsk({ itemId: item.id, kind })}
         />
@@ -412,7 +419,7 @@ function ItemRow({
 }: {
   item: BoardItem;
   pending: boolean;
-  onForward: () => void;
+  onForward: (tap: TapPoint) => void;
   onBack: () => void;
   onAsk: (kind: Override) => void;
 }) {
@@ -448,12 +455,12 @@ function ItemRow({
         onPointerLeave={cancelPress}
         onPointerCancel={cancelPress}
         onContextMenu={(event) => event.preventDefault()}
-        onClick={() => {
+        onClick={(event) => {
           if (longPressed.current) {
             longPressed.current = false;
             return;
           }
-          onForward();
+          onForward({ x: event.clientX, y: event.clientY, at: event.timeStamp, fromPointer: event.detail > 0 });
         }}
       >
         <span className="text-[1.5em] leading-[1.07] font-bold tabular-nums">
