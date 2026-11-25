@@ -889,6 +889,24 @@ const routes: TenantRoute[] = [
       ),
   },
   {
+    // Copying adds periods, so it copies a period planted for the purpose; the
+    // copies carry its name, and the harness's clean-up removes them with it.
+    name: "POST /api/bookings/periods/[periodId]/copy",
+    ownerOnly: true,
+    call: async (target) => {
+      const periodId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantPeriod(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/periods/[periodId]/copy/route")).POST(
+        request(`/api/bookings/periods/${periodId}/copy`, {
+          method: "POST",
+          body: form({ weekdays: "4" }),
+        }),
+        periodParams(periodId),
+      );
+    },
+  },
+  {
     // Deleting can't be undone, so it takes a period planted in the target's
     // restaurant for the purpose: the fixture period stays for the rest.
     name: "POST /api/bookings/periods/[periodId]/delete",

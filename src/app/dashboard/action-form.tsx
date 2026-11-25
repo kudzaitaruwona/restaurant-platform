@@ -41,6 +41,7 @@ export function ActionForm({
   confirmation,
   resetOnSuccess = false,
   savedMessage,
+  onSaved,
   children,
 }: {
   action: string;
@@ -50,6 +51,8 @@ export function ActionForm({
   confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
   savedMessage?: string;
+  /** Called after a save, for a form whose own message goes with it (a deleted row). */
+  onSaved?: () => void;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -99,6 +102,7 @@ export function ActionForm({
       if (response.ok) {
         if (resetOnSuccess) form.reset();
         setSaved(true);
+        onSaved?.();
         router.refresh();
       } else {
         const refusal = await refusalFrom(response);
