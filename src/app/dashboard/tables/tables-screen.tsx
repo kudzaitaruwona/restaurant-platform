@@ -102,7 +102,7 @@ export async function TablesScreen() {
                 <li key={table.id} className="flex flex-col px-4 py-3">
                   <ActionForm
                     action={`/api/tables/${table.id}`}
-                    savedMessage="Saved. Capacity changes apply to bookings made from now on. If you made the last bookable table walk-ins only, online booking has switched off."
+                    savedMessage="Saved."
                     className="flex flex-col gap-1"
                   >
                     <div className="flex flex-wrap items-end gap-x-3 gap-y-1 md:flex-nowrap md:items-center">

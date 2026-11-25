@@ -22,9 +22,9 @@ import { getEnv } from "@/lib/env";
 import { bookingPageUrl, qrSvg } from "@/lib/qr-code";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
+import { SavedPlace } from "../../../page-refresh";
 import { ActionForm } from "../../action-form";
 import { CopyLinkButton } from "./copy-link-button";
-import { DayFeedback, DeletePeriodForm } from "./day-feedback";
 
 /**
  * Booking settings: owner only (S-26). Switch online booking on or off, set the
@@ -129,7 +129,7 @@ export async function BookingSettingsScreen() {
           {weekdayOrder.map((weekday) => {
             const today = periods.filter((period) => period.weekday === weekday);
             return (
-              <DayFeedback key={weekday} className="flex flex-col gap-3 py-4 last:pb-0">
+              <SavedPlace key={weekday} className="flex flex-col gap-3 py-4 last:pb-0">
                 <h3 className="text-lead font-semibold">{weekdayNames[weekday]}</h3>
                 {today.length === 0 && <p className="text-caption text-ink-2">No service periods.</p>}
                 {today.map((period) => (
@@ -148,7 +148,7 @@ export async function BookingSettingsScreen() {
                         </ActionForm>
                       </div>
                       <div className="md:w-24">
-                        <DeletePeriodForm
+                        <ActionForm
                           action={`/api/bookings/periods/${period.id}/delete`}
                           confirmation={{
                             title: `Delete ${period.name} on ${weekdayNames[weekday]}?`,
@@ -159,7 +159,7 @@ export async function BookingSettingsScreen() {
                             confirmLabel: "Delete period",
                             cancelLabel: "Keep it",
                           }}
-                          deletedMessage={`Deleted ${period.name} on ${weekdayNames[weekday]}.${
+                          savedMessage={`Deleted ${period.name} on ${weekdayNames[weekday]}.${
                             settings.enabled && periods.length === 1
                               ? " It was the last service period, so online booking is switched off."
                               : ""
@@ -168,7 +168,7 @@ export async function BookingSettingsScreen() {
                           <Button type="submit" variant="danger-ghost" size="staff">
                             Delete
                           </Button>
-                        </DeletePeriodForm>
+                        </ActionForm>
                       </div>
                     </div>
                     <CopyPeriodForm period={period} />
@@ -189,7 +189,7 @@ export async function BookingSettingsScreen() {
                     </Button>
                   </ActionForm>
                 </div>
-              </DayFeedback>
+              </SavedPlace>
             );
           })}
         </div>
@@ -206,31 +206,33 @@ export async function BookingSettingsScreen() {
           closure can&apos;t be saved over a confirmed booking: you&apos;ll see the bookings
           first, and cancel each one on the bookings page. To keep a guest, add them again at another time.
         </p>
-        <div className="mt-3 divide-y divide-line border-y border-line">
-          {closures.length === 0 && <p className="py-3 text-body text-ink-2">No upcoming closures.</p>}
-          {closures.map((closure) => (
-            <ActionForm
-              key={closure.id}
-              action={`/api/bookings/closures/${closure.id}/delete`}
-              confirmation={{
-                title: `Remove the closure on ${closure.label}?`,
-                description: "Guests will be able to book those times again.",
-                confirmLabel: "Remove closure",
-                cancelLabel: "Keep it",
-              }}
-              savedMessage="Removed."
-              className="flex min-h-14 flex-wrap items-center justify-between gap-3 py-2"
-            >
-              <p className="min-w-0">
-                <span className="font-semibold tabular-nums">{closure.label}</span>
-                {closure.reason && <span className="text-ink-2"> · {closure.reason}</span>}
-              </p>
-              <Button type="submit" variant="danger-ghost" size="staff">
-                Remove
-              </Button>
-            </ActionForm>
-          ))}
-        </div>
+        <SavedPlace className="mt-3 flex flex-col gap-3">
+          <div className="divide-y divide-line border-y border-line">
+            {closures.length === 0 && <p className="py-3 text-body text-ink-2">No upcoming closures.</p>}
+            {closures.map((closure) => (
+              <ActionForm
+                key={closure.id}
+                action={`/api/bookings/closures/${closure.id}/delete`}
+                confirmation={{
+                  title: `Remove the closure on ${closure.label}?`,
+                  description: "Guests will be able to book those times again.",
+                  confirmLabel: "Remove closure",
+                  cancelLabel: "Keep it",
+                }}
+                savedMessage="Removed."
+                className="flex min-h-14 flex-wrap items-center justify-between gap-3 py-2"
+              >
+                <p className="min-w-0">
+                  <span className="font-semibold tabular-nums">{closure.label}</span>
+                  {closure.reason && <span className="text-ink-2"> · {closure.reason}</span>}
+                </p>
+                <Button type="submit" variant="danger-ghost" size="staff">
+                  Remove
+                </Button>
+              </ActionForm>
+            ))}
+          </div>
+        </SavedPlace>
         <h3 className="mt-5 text-lead font-semibold">Add a closure</h3>
         <ActionForm
           action="/api/bookings/closures"

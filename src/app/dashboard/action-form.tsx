@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import {
   type FormEvent,
   type ReactNode,
@@ -10,12 +9,14 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  useTransition,
 } from "react";
-import { Notice } from "@/components/ui/notice";
+import { flushSync } from "react-dom";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
+import { type Place, focusLost, giveFocusBack, placeOf } from "@/lib/held-focus";
+import { type Saved, settleSave, withinRefreshLimit } from "@/lib/save-refresh";
+import { SavedMessage, currentPage, useRefresh, useSaySaved } from "../page-refresh";
 import { type Refusal, announceSend, clearOnOtherSend, pageRefusal, refusalPlace } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
@@ -44,6 +45,10 @@ export const confirmationOf = (confirmation: string | Confirmation): Confirmatio
  * what was typed. Without JavaScript it's still a plain post. With a
  * `confirmation`, it asks first in an in-page dialog (S-41), not the browser's
  * confirm(); a reason typed there posts with the form.
+ *
+ * After a save it stays pending until the refreshed page has rendered, then says
+ * what it saved, or leaves that to the page if it is gone by then (#111). Focus
+ * goes back to the control that was used, or close by.
  */
 export function ActionForm({
   action,
@@ -54,7 +59,6 @@ export function ActionForm({
   keepOnReset = [],
   savedMessage,
   refusalOnPage = false,
-  onSaved,
   refreshOnRefusal = false,
   children,
 }: {
@@ -69,19 +73,21 @@ export function ActionForm({
   savedMessage?: string;
   /** Shows its refusals on the page (PageRefusalAlert), for a form whose surroundings can't grow (#102). */
   refusalOnPage?: boolean;
-  /** Called after a save, for a form whose own message goes with it (a deleted row). */
-  onSaved?: () => void;
   /** Reloads the page's data after a refusal too, for a form whose page shows what the refusal found out (a stale list). */
   refreshOnRefusal?: boolean;
   children: ReactNode;
 }) {
-  const router = useRouter();
+  const refresh = useRefresh();
+  const saySaved = useSaySaved();
   const formRef = useRef<HTMLFormElement>(null);
+  const fieldsRef = useRef<HTMLFieldSetElement>(null);
   const [error, setError] = useState<Refusal>();
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState<Saved>();
   const page = useContext(PageRefusalContext);
-  const [detail, setDetail] = useState<SavedDetail>();
   const [pending, setPending] = useState(false);
+  // `pending` as events see it, before it has rendered: a second tap posts nothing.
+  const sending = useRef(false);
+  const sends = useRef(0);
   const [asking, setAsking] = useState(false);
   const [self] = useState(() => Symbol("action-form"));
   // One refusal on the page at a time: sending another form clears this one's. A
@@ -91,103 +97,135 @@ export function ActionForm({
   // Kept after it closes, so the dialog stays mounted and closes itself.
   const [warnings, setWarnings] = useState<string[]>([]);
   const [warned, setWarned] = useState(false);
-  const opener = useRef<HTMLElement | null>(null);
+  // The control it was sent with, and its place on the page while pending.
+  const opener = useRef<Element | null>(null);
+  const place = useRef<Place | undefined>(undefined);
+  const holder = useRef<HTMLSpanElement>(null);
   const ask = confirmation === undefined ? undefined : confirmationOf(confirmation);
 
-  // The dialog opens after the post, whose disabled fieldset has already taken
-  // focus from the button, so closing it has nothing to return to: put it back.
+  // After the dialogs' own effects, so a dialog has closed and returned focus.
   useEffect(() => {
-    if (!warned) opener.current?.focus();
-  }, [warned]);
+    const form = formRef.current;
+    const fields = fieldsRef.current;
+    if (!pending || !form || !fields) return;
+    const active = document.activeElement;
+    // The disabled fieldset drops focus, so it waits in the form, on "Saving".
+    const lost = focusLost(active, document.body);
+    const used = lost ? opener.current : active;
+    place.current = used ? placeOf(used) : undefined;
+    if (lost) holder.current?.focus({ preventScroll: true });
+    // The buttons outside it that send it, and the menu it was sent from: not
+    // disabled, so that they keep focus.
+    const outside = [...form.elements, used].filter(
+      (el): el is HTMLButtonElement =>
+        el instanceof HTMLButtonElement &&
+        !fields.contains(el) &&
+        !el.hasAttribute("aria-disabled") &&
+        el.getAttribute("role") !== "menuitem",
+    );
+    for (const button of outside) button.setAttribute("aria-disabled", "true");
+    return () => {
+      for (const button of outside) button.removeAttribute("aria-disabled");
+    };
+  }, [pending]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sending.current) return;
     // Enter in a field submits too. Safari doesn't focus a clicked button.
     const focused = document.activeElement;
     opener.current =
-      focused instanceof HTMLElement && event.currentTarget.contains(focused)
+      focused && event.currentTarget.contains(focused)
         ? focused
         : (event.nativeEvent as SubmitEvent).submitter;
     if (ask) setAsking(true);
     else void send(event.currentTarget);
   }
 
-  function refuse(refusal: Refusal) {
-    if (page && refusalPlace(refusal, { page: true, onPage: refusalOnPage }) === "page") return page.show(refusal);
-    setError(refusal);
-    if (refusal.refresh) router.refresh();
+  async function refuse(refusal: Refusal) {
+    if (page && refusalPlace(refusal, { page: true, onPage: refusalOnPage }) === "page") await page.show(refusal);
+    else {
+      setError(refusal);
+      if (refusal.refresh) await withinRefreshLimit(refresh());
+    }
+    if (refreshOnRefusal && !refusal.refresh) await withinRefreshLimit(refresh());
+  }
+
+  async function post(form: HTMLFormElement, body: FormData) {
+    const response = await postForm(action, body).catch(() => undefined);
+    if (!response) {
+      await refuse({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
+      return;
+    }
+    if (!response.ok) {
+      const refusal = await refusalFrom(response);
+      if (refusal.warnings.length === 0) await refuse(refusal);
+      return refusal.warnings;
+    }
+    if (resetOnSuccess) {
+      const kept = keepOnReset.flatMap((name) => {
+        const field = form.elements.namedItem(name);
+        return field instanceof HTMLSelectElement || field instanceof HTMLInputElement
+          ? [[field, field.value] as const]
+          : [];
+      });
+      form.reset();
+      for (const [field, value] of kept) field.value = value;
+    }
+    const sent = sends.current;
+    await settleSave({
+      form,
+      saved: (await savedFrom(response)) ?? (savedMessage === undefined ? undefined : { message: savedMessage, plain: true }),
+      refresh,
+      page: currentPage,
+      inForm: setSaved,
+      onPage: saySaved,
+      isLatest: () => sends.current === sent,
+    });
   }
 
   async function send(form: HTMLFormElement, confirmed = false) {
     const body = new FormData(form); // before the fieldset disables its controls
+    const sentFrom = currentPage();
+    sending.current = true;
+    sends.current++;
+    place.current = undefined;
     announceSend(self);
     if (confirmed) body.set(CONFIRMED_FIELD, "1");
     setPending(true);
     setError(undefined);
-    setSaved(false);
-    setDetail(undefined);
+    setSaved(undefined);
+    let asks: string[] | undefined;
     try {
-      const response = await postForm(action, body);
-      if (response.ok) {
-        if (resetOnSuccess) {
-          const kept = keepOnReset.flatMap((name) => {
-            const field = form.elements.namedItem(name);
-            return field instanceof HTMLSelectElement || field instanceof HTMLInputElement
-              ? [[field, field.value] as const]
-              : [];
-          });
-          form.reset();
-          for (const [field, value] of kept) field.value = value;
-        }
-        setDetail(await savedFrom(response));
-        setSaved(true);
-        onSaved?.();
-        router.refresh();
-      } else {
-        const refusal = await refusalFrom(response);
-        if (refusal.warnings.length > 0) {
-          setWarnings(refusal.warnings);
-          setWarned(true);
-        } else {
-          refuse(refusal);
-          if (refreshOnRefusal && !refusal.refresh) router.refresh();
-        }
-      }
-    } catch {
-      refuse({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
+      asks = await post(form, body);
     } finally {
-      setPending(false);
+      sending.current = false;
+      // Enabled at once, so the control can take focus back, before any dialog opens.
+      flushSync(() => setPending(false));
+      if (place.current && currentPage() === sentFrom) giveFocusBack(place.current);
+    }
+    if (asks?.length) {
+      setWarnings(asks);
+      setWarned(true);
     }
   }
 
   return (
     <form ref={formRef} id={id} method="post" action={action} onSubmit={submit}>
-      <fieldset disabled={pending} className={className}>
+      <fieldset ref={fieldsRef} disabled={pending} className={className}>
         {children}
-        {saved && detail && (
-          <div role="status" className="flex flex-col gap-2">
-            <Notice tone="positive">
-              {detail.message}
-              {detail.href && (
-                <>
-                  {" "}
-                  {/* A full load, so the day's row is the page's :target. */}
-                  <a href={detail.href} className="font-semibold underline underline-offset-2">
-                    {detail.linkLabel ?? "View"}
-                  </a>
-                </>
-              )}
-            </Notice>
-            {detail.warning && <Notice tone="attention">{detail.warning}</Notice>}
+        {saved && (
+          <div role="status">
+            <SavedMessage saved={saved} />
           </div>
-        )}
-        {saved && !detail && savedMessage && (
-          <p role="status" className="text-caption text-ink-2">
-            {savedMessage}
-          </p>
         )}
         {error && <RefusalAlert refusal={error} />}
       </fieldset>
+      {pending && (
+        <span ref={holder} tabIndex={-1} className="sr-only">
+          Saving
+        </span>
+      )}
       {warnings.length > 0 && (
         <ConfirmDialog
           open={warned}
@@ -227,7 +265,8 @@ export function ActionForm({
 }
 
 const PageRefusalContext = createContext<
-  { refusal: Refusal | undefined; refreshing: boolean; show: (refusal: Refusal) => void } | undefined
+  | { refusal: Refusal | undefined; refreshing: boolean; show: (refusal: Refusal) => Promise<void> }
+  | undefined
 >(undefined);
 
 /**
@@ -236,13 +275,17 @@ const PageRefusalContext = createContext<
  * `refusalOnPage`. They show where PageRefusalAlert is.
  */
 export function PageRefusals({ className, children }: { className?: string; children: ReactNode }) {
-  const router = useRouter();
+  const refresh = useRefresh();
   const [store] = useState(pageRefusal);
   const refusal = useSyncExternalStore(store.subscribe, store.get, () => undefined);
-  const [refreshing, startRefresh] = useTransition();
-  function show(next: Refusal) {
+  const [refreshing, setRefreshing] = useState(false);
+  /** Settles once the page that a stale refusal reloads has rendered. */
+  async function show(next: Refusal) {
     store.show(next);
-    if (next.refresh) startRefresh(() => router.refresh());
+    if (!next.refresh) return;
+    setRefreshing(true);
+    await withinRefreshLimit(refresh());
+    setRefreshing(false);
   }
   return (
     <PageRefusalContext value={{ refusal, refreshing, show }}>
@@ -295,15 +338,12 @@ export function RefusalAlert({ refusal }: { refusal: Refusal }) {
   );
 }
 
-/** What a save says about itself, when the route answers with more than a 204. */
-type SavedDetail = { message: string; href?: string; linkLabel?: string; warning?: string };
-
 /**
  * A save that answers 200 with `{ saved: { message, href?, linkLabel?, warning? } }`
  * shows that instead of the form's fixed message. The link goes only to the
  * dashboard's own pages, whatever the body says.
  */
-export async function savedFrom(response: Response): Promise<SavedDetail | undefined> {
+export async function savedFrom(response: Response): Promise<Saved | undefined> {
   if (response.status === 204) return undefined;
   const saved = (await response.json().catch(() => undefined))?.saved;
   if (typeof saved?.message !== "string") return undefined;
