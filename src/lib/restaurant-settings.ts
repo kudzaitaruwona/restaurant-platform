@@ -5,7 +5,7 @@ import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
 import { DEFAULT_COUNTRY_CODE } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
-import { type TenantContext, withTenant } from "@/lib/tenant";
+import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
 /**
@@ -143,6 +143,15 @@ export async function getRestaurantSettings(
   return settings;
 }
 
+/** Whether online booking is on, read before and after a save that may switch it off in Postgres. */
+export async function onlineBookingOn(tx: TenantTransaction, restaurantId: string) {
+  const [settings] = await tx
+    .select({ enabled: bookingSettings.enabled })
+    .from(bookingSettings)
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+  return settings?.enabled === true;
+}
+
 /**
  * Saves the settings. A timezone that differs from the stored one has to work
  * in JavaScript and in Postgres, where `AT TIME ZONE` would otherwise fail on
@@ -168,14 +177,7 @@ export async function updateRestaurantSettings(
       );
       if (rows.length === 0) return "invalid_timezone" as const;
     }
-    const bookingOn = async () =>
-      (
-        await tx
-          .select({ enabled: bookingSettings.enabled })
-          .from(bookingSettings)
-          .where(eq(bookingSettings.restaurantId, ctx.restaurantId))
-      )[0]?.enabled === true;
-    const wasOn = await bookingOn();
+    const wasOn = await onlineBookingOn(tx, ctx.restaurantId);
     await tx
       .update(restaurants)
       .set(settings)
@@ -186,7 +188,7 @@ export async function updateRestaurantSettings(
       entityId: ctx.restaurantId,
     });
     // Clearing the contact phone switches online booking off in Postgres.
-    return wasOn && !(await bookingOn()) ? ("saved_booking_off" as const) : ("saved" as const);
+    return wasOn && !(await onlineBookingOn(tx, ctx.restaurantId)) ? ("saved_booking_off" as const) : ("saved" as const);
   });
   const outcome = await saving.catch((error: unknown) => {
     const above = specialsAbove(error);

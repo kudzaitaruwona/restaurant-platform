@@ -1,16 +1,20 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
 import { LoaderCircle } from "lucide-react";
+import { giveFocusBack, placeOf } from "@/lib/held-focus";
+import { settleSave } from "@/lib/save-refresh";
 import { cn } from "@/lib/utils";
+import { announceSend } from "../dashboard/refusals";
 import { pressable, Reveal } from "../motion";
+import { currentPage, useRefresh, useSaySaved } from "../page-refresh";
 
 /**
  * Posts to an admin route and keeps what was typed when the route says no, which
- * is the usual case for a taken slug or email.
+ * is the usual case for a taken slug or email. After a save its button stays
+ * pending, and keeps focus, until the refreshed console has rendered (#111).
  */
 export function AdminForm({
   action,
@@ -32,7 +36,8 @@ export function AdminForm({
   className?: string;
   children: ReactNode;
 }) {
-  const router = useRouter();
+  const refresh = useRefresh();
+  const saySaved = useSaySaved();
   // Kept after it's dismissed, so the closing Reveal still has words in it.
   const [message, setMessage] = useState<string>();
   const [showError, setShowError] = useState(false);
@@ -41,10 +46,15 @@ export function AdminForm({
     setShowError(Boolean(next));
   };
   const [pending, setPending] = useState(false);
+  // `pending` as events see it, before it has rendered: a second press posts nothing.
+  const sending = useRef(false);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sending.current) return;
+    sending.current = true;
     const form = event.currentTarget;
+    announceSend(Symbol("admin-form"));
     setPending(true);
     setError(undefined);
     try {
@@ -56,7 +66,19 @@ export function AdminForm({
         form.reset();
         // Ready for the next one: back to the first field.
         if (!inline) form.querySelector<HTMLElement>("input:not([type=hidden])")?.focus();
-        router.refresh();
+        const sentFrom = currentPage();
+        // Safari doesn't focus a clicked button.
+        const focused = document.activeElement;
+        const used = placeOf(focused && form.contains(focused) ? focused : form);
+        await settleSave({
+          form,
+          saved: undefined,
+          refresh,
+          page: currentPage,
+          inForm: (what) => what && saySaved(what),
+          onPage: saySaved,
+        });
+        if (currentPage() === sentFrom) giveFocusBack(used);
         return;
       }
       const body = await response.json().catch(() => undefined);
@@ -72,6 +94,7 @@ export function AdminForm({
     } catch {
       setError("That didn't work. Try again.");
     } finally {
+      sending.current = false;
       setPending(false);
     }
   }
@@ -81,7 +104,8 @@ export function AdminForm({
       type="submit"
       variant={submitVariant}
       size="compact"
-      disabled={pending}
+      // Not disabled, which would drop focus; a press while pending posts nothing.
+      aria-disabled={pending || undefined}
       aria-busy={pending || undefined}
       className={cn(inline ? undefined : "self-start", pressable)}
     >

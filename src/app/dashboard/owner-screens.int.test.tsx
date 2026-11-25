@@ -54,6 +54,7 @@ import {
 } from "../../../test/integration/database";
 import { aBooking } from "../../../test/integration/bookings";
 import { statusOf } from "../../../test/integration/http";
+import { savedFrom } from "./action-form";
 import { Dashboard } from "./dashboard";
 import { MenuScreen } from "./menu/menu-screen";
 import { TablesScreen } from "./tables/tables-screen";
@@ -89,7 +90,7 @@ vi.mock("@/lib/storage", () => ({
 // A client form's props never reach static markup, so what it would say once
 // clicked is surfaced here beside the real form.
 vi.mock("./action-form", async (original) => {
-  const { ActionForm, confirmationOf } = await original<typeof import("./action-form")>();
+  const { ActionForm, confirmationOf, savedFrom } = await original<typeof import("./action-form")>();
   // The dialog's question, its words and the name of its red button, in one string.
   const said = (confirmation: React.ComponentProps<typeof ActionForm>["confirmation"]) => {
     if (confirmation === undefined) return undefined;
@@ -97,6 +98,7 @@ vi.mock("./action-form", async (original) => {
     return `${title} ${description ?? ""} [${confirmLabel}]`;
   };
   return {
+    savedFrom,
     ActionForm: (props: React.ComponentProps<typeof ActionForm>) => (
       <div data-confirmation={said(props.confirmation)} data-saved-message={props.savedMessage}>
         <ActionForm {...props} />
@@ -357,7 +359,7 @@ describe("how a saved form is answered", () => {
       async (headers) => {
         const id = await newTableId();
         return editTable(
-          post(`/api/tables/${id}`, { label: "Edited", capacity: "2", bookable: "true" }, headers),
+          post(`/api/tables/${id}`, { label: "Edited", capacity: "4", bookable: "true" }, headers),
           tableParams(id),
         );
       },
@@ -1620,13 +1622,27 @@ describe("what the owner is told about booking switching itself off", () => {
     expect(archiveConfirmation(await screen(TablesScreen), seven)).not.toContain("switch off");
   });
 
-  it("says so after a table save, in words that survive the page refreshing", async () => {
+  it("tells the table form, after a save, only what that save did (#111)", async () => {
     const seven = await tableIdOf("7");
+    await turnBookingOn();
+    const save = async (edit: Record<string, string>) => {
+      const response = await editTable(
+        post(`/api/tables/${seven}`, { label: "7", capacity: "4", bookable: "true", ...edit }, { [FORM_FETCH_HEADER]: "1" }),
+        tableParams(seven),
+      );
+      return response.status === 204 ? undefined : (await savedFrom(response))?.message;
+    };
 
-    const saved = savedMessageOf(await screen(TablesScreen), `/api/tables/${seven}`);
-
-    expect(saved).toContain("Capacity changes apply to bookings made from now on");
-    expect(saved).toContain("online booking has switched off");
+    expect(await save({ label: "Seven" })).toBeUndefined();
+    const seats = await save({ capacity: "6" });
+    expect(seats).toContain("bookings made from now on");
+    expect(seats).not.toContain("switched off");
+    const off = await save({ capacity: "6", bookable: "false" });
+    expect(off).toContain("online booking has switched off");
+    expect(off).not.toContain("bookings made from now on");
+    // Booking is off now, so saving it again switches nothing off.
+    expect(await save({ capacity: "6", bookable: "false" })).toBeUndefined();
+    expect(savedMessageOf(await screen(TablesScreen), `/api/tables/${seven}`)).toBe("Saved.");
   });
 
   it("tells the settings form, after a save, only what that save did", async () => {
