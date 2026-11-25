@@ -281,7 +281,7 @@ export function getBookingPage(
 
 // --- the guest's request ----------------------------------------------------
 
-const DEFAULT_COUNTRY_CODE = "+263";
+export const DEFAULT_COUNTRY_CODE = "+263";
 
 const messages = {
   choice: "That booking request wasn't complete. Choose a time again.",

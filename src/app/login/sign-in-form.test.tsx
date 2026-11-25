@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   codeFailureMessage,
+  isWrongTry,
   looksLikeEmail,
   ResendButton,
   sendFailureMessage,
@@ -91,6 +92,19 @@ describe("a send that fails says so (#92)", () => {
     );
   });
 
+  it.each(["link", "code"] as const)("asks for a real address when the %s body is refused", async (way) => {
+    expect(await sendFailureMessage(answer(400, "VALIDATION_ERROR"), way)).toMatch(
+      /valid email/,
+    );
+  });
+
+  it("doesn't blame an address for a Google start, or for a failure of ours", async () => {
+    expect(await sendFailureMessage(answer(400, "VALIDATION_ERROR"), "google")).toMatch(/Google/);
+    expect(await sendFailureMessage(answer(500, "VALIDATION_ERROR"), "link")).toMatch(
+      /couldn.t send/,
+    );
+  });
+
   it("says something for any other failure, in words that name no reason", async () => {
     for (const status of [400, 403, 404, 500, 502]) {
       const message = await sendFailureMessage(answer(status), "link");
@@ -127,6 +141,15 @@ describe("checking the email before a code is asked for (#92)", () => {
 });
 
 describe("a code that didn't work (#92)", () => {
+  it("counts only a code the server says is wrong", async () => {
+    expect(await isWrongTry(answer(400, "INVALID_OTP"))).toBe(true);
+    expect(await isWrongTry(answer(500))).toBe(false);
+    expect(await isWrongTry(answer(429))).toBe(false);
+    expect(await isWrongTry(answer(400, "OTP_EXPIRED"))).toBe(false);
+    expect(await isWrongTry(answer(403, "sign_in_refused"))).toBe(false);
+    expect(await isWrongTry(new Response("Bad gateway", { status: 502 }))).toBe(false);
+  });
+
   it("says to check it while tries remain", async () => {
     const message = await codeFailureMessage(answer(400, "INVALID_OTP"), 1);
     expect(message).toMatch(/check it/i);

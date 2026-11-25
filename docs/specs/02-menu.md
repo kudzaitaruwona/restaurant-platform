@@ -44,7 +44,7 @@ Restaurants keep an accurate menu in USD and ZiG without any help. Customers get
 ### Exchange rate
 - One field, "1 USD = ___ ZiG", with "last updated N days ago" shown on the dashboard.
 - **Warn in the staff UI when the rate is more than 7 days old** *(proposed)*, because a stale rate means every calculated price is wrong.
-- *(proposed, #118)* A `usd_only` restaurant with no rate set sees no "No exchange rate is set" warning, on the dashboard, the menu page or the staff rail: it calculates nothing in ZiG. The warning stays for every other mode, and a rate that was set still shows (and still warns when stale). The platform admin's onboarding checklist is unchanged (spec 01).
+- *(proposed, #118)* A `usd_only` restaurant with no rate set sees no "No exchange rate is set" warning, on the dashboard, the menu page or the staff rail: it shows USD, and needs a rate only for a dish priced in ZiG alone (shown in ZiG until there is one, under Pricing display rules). The menu page says so in a plain note. The warning stays for every other mode, and a rate that was set still shows (and still warns when stale). The platform admin's onboarding checklist is unchanged (spec 01).
 - Every change is a new row in `exchange_rates` (history) and an audit log entry.
 
 ### Specials

@@ -61,7 +61,10 @@ const couldntSend: Record<Way, string> = {
   google: "We couldn't start Google sign-in. Try again, or use a link or code.",
 };
 
-/** Same test the browser's own email field uses, so the code button agrees with the form. */
+/**
+ * Catches what plainly isn't an address before a send is spent on it. Stricter
+ * than the browser's email field, which takes a@b; the server has the last word.
+ */
 export const looksLikeEmail = (value: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
@@ -73,13 +76,23 @@ export const looksLikeEmail = (value: string) =>
 export async function sendFailureMessage(response: Response, way: Way) {
   if (response.status === 429) return tooManyTriesMessage(response);
   const body = await response.clone().json().catch(() => undefined);
-  if (body?.code === "INVALID_EMAIL") return INVALID_EMAIL_MESSAGE;
+  // The link route validates its body, and the address is all a person typed in it.
+  const badBody = response.status === 400 && body?.code === "VALIDATION_ERROR";
+  if (body?.code === "INVALID_EMAIL" || (badBody && way !== "google")) {
+    return INVALID_EMAIL_MESSAGE;
+  }
   return couldntSend[way];
 }
 
 const INVALID_EMAIL_MESSAGE = "Enter a valid email address.";
 
-/** Words for a code that didn't sign anyone in. `wrongTries` counts this one. */
+/** Only these use up a code. A failure of ours, or a limit, says nothing about it. */
+export async function isWrongTry(response: Response) {
+  const body = await response.clone().json().catch(() => undefined);
+  return body?.code === "INVALID_OTP";
+}
+
+/** Words for a code that didn't sign anyone in. `wrongTries` counts this one if it was wrong. */
 export async function codeFailureMessage(response: Response, wrongTries: number) {
   if (response.status === 429) return tooManyTriesMessage(response);
   const body = await response.clone().json().catch(() => undefined);
@@ -241,7 +254,7 @@ export function SignInForm({ audience, destination, page }: Props) {
       return;
     }
     if (response) {
-      const tries = wrongTries + (response.status === 429 ? 0 : 1);
+      const tries = wrongTries + ((await isWrongTry(response)) ? 1 : 0);
       setWrongTries(tries);
       setError(await codeFailureMessage(response, tries));
     }

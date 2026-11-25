@@ -951,7 +951,7 @@ describe("the exchange rate", () => {
     const dashboard = await screen(Dashboard);
 
     expect(menu).toContain('action="/api/menu/exchange-rate"');
-    expect(menu).toContain("no exchange rate is needed");
+    expect(menu).toContain("You only need a rate if a dish is priced in ZiG alone");
     for (const html of [menu, dashboard]) {
       expect(html).not.toContain("No exchange rate is set");
       expect(html).not.toContain("role=\"alert\"");

@@ -2,7 +2,7 @@ import "server-only";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
-import { toE164 } from "@/lib/bookings";
+import { DEFAULT_COUNTRY_CODE, toE164 } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type TenantContext, withTenant } from "@/lib/tenant";
 import { recordAdminAction } from "@/lib/tenant/audit";
@@ -46,19 +46,21 @@ export function isTimeZone(value: string) {
 
 const E164 = /^\+[1-9][0-9]{1,14}$/;
 
-/** Zimbabwe, as the guest booking form assumes. A local number gets this. */
-const DEFAULT_COUNTRY_CODE = "+263";
-
 /**
- * What the owner typed as the E.164 number it means. A local number, with its
- * leading 0, gets the country code; one typed with its code but no + does too.
- * Anything else is left as typed, for the pattern to refuse.
+ * What the owner typed as the E.164 number it means. Only a recognisable local
+ * number gets the country code, or one typed with it but no +. Anything else
+ * without a + could be another country's, so it is left for the pattern to refuse.
  */
 function contactPhoneOf(typed: string) {
-  const digits = typed.replace(/[\s().-]/g, "");
-  if (digits === "") return "";
+  const digits = typed
+    .replace(/[\s.-]/g, "")
+    // "+263 (0)77...": the 0 is only dialled without the country code.
+    .replace(/^(\(?(?:(?:\+|00)[1-9][0-9]{0,2}|263)\)?)\(0\)/, "$1")
+    .replace(/[()]/g, "")
+    .replace(/^00/, "+");
   if (/^263[0-9]{9}$/.test(digits)) return `+${digits}`;
-  return toE164(DEFAULT_COUNTRY_CODE, digits);
+  const local = /^0[1-9][0-9]{7,8}$/.test(digits) || /^[1-9][0-9]{8}$/.test(digits);
+  return local ? toE164(DEFAULT_COUNTRY_CODE, digits) : digits;
 }
 
 export const invalidTimezoneMessage = "Choose a timezone from the list.";
@@ -79,27 +81,27 @@ const blankToNull = (value: string) => value || null;
 // Messages are fixed strings, so a refused value is never echoed back.
 const settingsForm = z
   .object({
-  name: z.string(messages.name).trim().min(1, messages.name).max(200, messages.name),
-  contactPhone: z
-    .string(messages.contactPhone)
-    .transform(contactPhoneOf)
-    .refine((value) => value === "" || E164.test(value), messages.contactPhone)
-    .transform(blankToNull),
-  wifiName: z
-    .string(messages.wifiName)
-    .trim()
-    .max(200, messages.wifiName)
-    .transform(blankToNull),
-  // Not trimmed: spaces can be part of a password.
-  wifiPassword: z
-    .string(messages.wifiPassword)
-    .max(200, messages.wifiPassword)
-    .transform(blankToNull),
-  currencyMode: z.enum(currencyMode.enumValues, messages.currencyMode),
-  // Only its shape here. Whether it is a real zone depends on what is stored, so
-  // updateRestaurantSettings decides.
-  timezone: z.string(messages.timezone).min(1, messages.timezone).max(100, messages.timezone),
-})
+    name: z.string(messages.name).trim().min(1, messages.name).max(200, messages.name),
+    contactPhone: z
+      .string(messages.contactPhone)
+      .transform(contactPhoneOf)
+      .refine((value) => value === "" || E164.test(value), messages.contactPhone)
+      .transform(blankToNull),
+    wifiName: z
+      .string(messages.wifiName)
+      .trim()
+      .max(200, messages.wifiName)
+      .transform(blankToNull),
+    // Not trimmed: spaces can be part of a password.
+    wifiPassword: z
+      .string(messages.wifiPassword)
+      .max(200, messages.wifiPassword)
+      .transform(blankToNull),
+    currencyMode: z.enum(currencyMode.enumValues, messages.currencyMode),
+    // Only its shape here. Whether it is a real zone depends on what is stored, so
+    // updateRestaurantSettings decides.
+    timezone: z.string(messages.timezone).min(1, messages.timezone).max(100, messages.timezone),
+  })
   // A password printed on the cards with no network to join is a mistake.
   .refine(({ wifiName, wifiPassword }) => wifiPassword === null || wifiName !== null, {
     message: messages.wifiPasswordWithoutName,

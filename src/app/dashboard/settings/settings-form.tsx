@@ -3,14 +3,30 @@
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  Fragment,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Notice } from "@/components/ui/notice";
 import { postForm } from "@/lib/form-response";
-import { savedMessage, type SettingsValues, settingsDirty } from "./settings-feedback";
+import { savedMessage, type SettingsValues } from "./settings-feedback";
+import {
+  edited,
+  initialFormState,
+  left,
+  linkTarget,
+  received,
+  saveAccepted,
+} from "./settings-form-state";
 
 type Message = { tone: "positive" | "danger"; text: string };
 
@@ -43,17 +59,26 @@ export function SettingsForm({
 }) {
   const router = useRouter();
   const form = useRef<HTMLFormElement>(null);
-  const [dirty, setDirty] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [state, setState] = useState(() => initialFormState(saved));
+  const [posting, setPosting] = useState(false);
+  const [refreshing, startRefresh] = useTransition();
   const [message, setMessage] = useState<Message>();
   const [badField, setBadField] = useState<string>();
   const [leaving, setLeaving] = useState<string>();
 
-  // What a save returns (a normalised phone number) replaces what was typed.
-  const key = JSON.stringify(saved);
+  // Until the saved values are back, so nothing typed meanwhile is lost to them.
+  const pending = posting || refreshing;
+  const { baseline, dirty, version } = state;
+
+  const next = received(state, saved);
+  if (next !== state) setState(next);
+
+  // A refused field takes focus, once the fieldset around it is enabled again.
   useEffect(() => {
-    form.current?.reset();
-  }, [key]);
+    if (badField === undefined || pending) return;
+    const control = form.current?.elements.namedItem(badField);
+    if (control instanceof HTMLElement) control.focus();
+  }, [badField, pending]);
 
   // Closing or reloading the tab.
   useEffect(() => {
@@ -71,36 +96,38 @@ export function SettingsForm({
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const link = (event.target as Element | null)?.closest?.("a[href]");
       if (!(link instanceof HTMLAnchorElement) || link.target) return;
-      const url = new URL(link.href, window.location.href);
-      if (url.origin !== window.location.origin) return;
+      const to = linkTarget(link.href, window.location.href);
+      if (to === undefined) return;
       event.preventDefault();
-      setLeaving(url.pathname + url.search + url.hash);
+      setLeaving(to);
     };
     document.addEventListener("click", intercept, true);
     return () => document.removeEventListener("click", intercept, true);
   }, [dirty]);
 
-  function edited() {
+  function change() {
     if (!form.current) return;
-    setDirty(settingsDirty(saved, valuesOf(form.current)));
+    const now = valuesOf(form.current);
+    setState((before) => edited(before, now));
     setMessage(undefined);
     setBadField(undefined);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const target = event.currentTarget;
-    const body = new FormData(target); // before the fieldset disables its controls
-    setPending(true);
+    // Read before the fieldset disables its controls.
+    const body = new FormData(event.currentTarget);
+    const posted = valuesOf(event.currentTarget);
+    setPosting(true);
     setMessage(undefined);
     setBadField(undefined);
     try {
       const response = await postForm("/api/restaurant", body);
       if (response.ok) {
         const reply = await response.json().catch(() => undefined);
-        setDirty(false);
+        setState((before) => saveAccepted(before, posted, saved));
         setMessage({ tone: "positive", text: savedMessage(reply?.bookingSwitchedOff === true) });
-        router.refresh();
+        startRefresh(() => router.refresh());
       } else {
         const reply = await response.json().catch(() => undefined);
         const field = typeof reply?.field === "string" ? reply.field : undefined;
@@ -112,16 +139,11 @@ export function SettingsForm({
               : "That didn't work. Reload the page and try again.",
         });
         setBadField(field);
-        // The fieldset is still disabled; focus once it is enabled again.
-        setTimeout(() => {
-          const control = field ? target.elements.namedItem(field) : null;
-          if (control instanceof HTMLElement) control.focus();
-        });
       }
     } catch {
       setMessage({ tone: "danger", text: "That didn't reach the server. Try again." });
     } finally {
-      setPending(false);
+      setPosting(false);
     }
   }
 
@@ -143,96 +165,97 @@ export function SettingsForm({
       method="post"
       action="/api/restaurant"
       onSubmit={submit}
-      onChange={edited}
-      onInput={edited}
+      onChange={change}
     >
       <fieldset disabled={pending} className="flex flex-col gap-6">
-        <Group title="Restaurant" description="Your name and phone, as guests see them.">
-          <Field label="Restaurant name" hint={problem("name")}>
-            <Input
-              name="name"
-              defaultValue={saved.name}
-              required
-              maxLength={200}
-              aria-invalid={invalid("name")}
-            />
-          </Field>
-          <Field
-            label="Contact phone"
-            hint={problem(
-              "contactPhone",
-              "A local number like 0771234567 is fine. Guests see it for large parties and booking changes. Online booking needs it.",
-            )}
-          >
-            <Input
-              name="contactPhone"
-              type="tel"
-              defaultValue={saved.contactPhone}
-              aria-invalid={invalid("contactPhone")}
-            />
-          </Field>
-        </Group>
+        <Fragment key={version}>
+          <Group title="Restaurant" description="Your name and phone, as guests see them.">
+            <Field label="Restaurant name" hint={problem("name")}>
+              <Input
+                name="name"
+                defaultValue={baseline.name}
+                required
+                maxLength={200}
+                aria-invalid={invalid("name")}
+              />
+            </Field>
+            <Field
+              label="Contact phone"
+              hint={problem(
+                "contactPhone",
+                "A local number like 0771234567 is fine. Guests see it for large parties and booking changes. Online booking needs it.",
+              )}
+            >
+              <Input
+                name="contactPhone"
+                type="tel"
+                defaultValue={baseline.contactPhone}
+                aria-invalid={invalid("contactPhone")}
+              />
+            </Field>
+          </Group>
 
-        <Group title="Guest Wi-Fi" description="Printed on the table QR cards.">
-          <Field label="Wi-Fi name" hint={problem("wifiName")}>
-            <Input
-              name="wifiName"
-              defaultValue={saved.wifiName}
-              maxLength={200}
-              aria-invalid={invalid("wifiName")}
-            />
-          </Field>
-          <Field
-            label="Wi-Fi password"
-            hint={problem(
-              "wifiPassword",
-              "Printed on every table QR card, so customers will see it. Use a guest network, not the one your staff or tills use. You can leave it off the sheet when printing.",
-            )}
-          >
-            <Input
-              name="wifiPassword"
-              type="password"
-              autoComplete="off"
-              defaultValue={saved.wifiPassword}
-              maxLength={200}
-              aria-invalid={invalid("wifiPassword")}
-            />
-          </Field>
-        </Group>
+          <Group title="Guest Wi-Fi" description="Printed on the table QR cards.">
+            <Field label="Wi-Fi name" hint={problem("wifiName")}>
+              <Input
+                name="wifiName"
+                defaultValue={baseline.wifiName}
+                maxLength={200}
+                aria-invalid={invalid("wifiName")}
+              />
+            </Field>
+            <Field
+              label="Wi-Fi password"
+              hint={problem(
+                "wifiPassword",
+                "Printed on every table QR card, so customers will see it. Use a guest network, not the one your staff or tills use. You can leave it off the sheet when printing.",
+              )}
+            >
+              <Input
+                name="wifiPassword"
+                type="password"
+                autoComplete="off"
+                defaultValue={baseline.wifiPassword}
+                maxLength={200}
+                aria-invalid={invalid("wifiPassword")}
+              />
+            </Field>
+          </Group>
 
-        <Group title="Prices and time" description="For the menu, bookings and every screen.">
-          <Field label="Currency display" hint={problem("currencyMode")}>
-            <Select name="currencyMode" defaultValue={saved.currencyMode}>
-              {currencies.map(({ value, label }) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Link
-            href="/dashboard/menu"
-            className="-mx-2 flex min-h-12 items-center gap-3 rounded-control px-2 text-body text-ink no-underline outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="font-medium">Exchange rate</span>
-              <span className="text-caption text-ink-2">Set and changed on the Menu page</span>
-            </span>
-            <ChevronRight aria-hidden className="size-5 shrink-0 text-ink-2" strokeWidth={1.75} />
-          </Link>
-          <Field
-            label="Timezone"
-            hint={problem("timezone", "Every time on the site is shown in this zone.")}
-          >
-            <Select name="timezone" defaultValue={saved.timezone}>
-              {zones.map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </Group>
+          <Group title="Prices and time" description="For the menu, bookings and every screen.">
+            <Field label="Currency display" hint={problem("currencyMode")}>
+              <Select name="currencyMode" defaultValue={baseline.currencyMode}>
+                {currencies.map(({ value, label }) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Link
+              href="/dashboard/menu"
+              className="-mx-2 flex min-h-12 items-center gap-3 rounded-control px-2 text-body text-ink no-underline outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="font-medium">Exchange rate</span>
+                <span className="text-caption text-ink-2">Set and changed on the Menu page</span>
+              </span>
+              <ChevronRight aria-hidden className="size-5 shrink-0 text-ink-2" strokeWidth={1.75} />
+            </Link>
+            <Field
+              label="Timezone"
+              hint={problem("timezone", "Every time on the site is shown in this zone.")}
+            >
+              <Select name="timezone" defaultValue={baseline.timezone}>
+                {zones.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </Group>
+        </Fragment>
 
         <div className="flex flex-col gap-3 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-end">
           <div className="min-w-0 sm:flex-1">
@@ -265,7 +288,9 @@ export function SettingsForm({
         onConfirm={() => {
           const to = leaving;
           setLeaving(undefined);
-          setDirty(false);
+          setState(left);
+          setMessage(undefined);
+          setBadField(undefined);
           if (to) router.push(to);
         }}
       />
