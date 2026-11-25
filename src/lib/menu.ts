@@ -1,5 +1,6 @@
 import "server-only";
 import { and, asc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { categories, menuItems, restaurants, specials } from "@/db/schema";
 import { latestRate } from "@/lib/exchange-rate";
@@ -272,7 +273,7 @@ export function getMenu(
   });
 }
 
-const nameKey = (column: typeof menuItems.name | typeof categories.name) =>
+const nameKey = (column: AnyPgColumn) =>
   sql`lower(btrim(${column}))`;
 const keyOf = (name: string) => name.trim().toLowerCase();
 
@@ -333,6 +334,56 @@ export function itemWarnings(
       }
     }
     return warnings;
+  });
+}
+
+/**
+ * What archiving a category into another would leave side by side: a moved item
+ * whose name (any case) is already on a live item of the target. Asked about
+ * rather than refused, like an add or a move of one item (itemWarnings): "Soup"
+ * in two categories being merged can be real. Items already sharing a name in the
+ * archived category aren't new, so they aren't asked about.
+ */
+export function archiveWarnings(
+  ctx: Tenant,
+  categoryId: string,
+  moveItemsTo: string,
+): Promise<string[]> {
+  if (!isId(categoryId) || !isId(moveItemsTo)) return Promise.resolve([]);
+  const { restaurantId } = ctx;
+  return withTenant(ctx, async (tx) => {
+    const target = alias(menuItems, "target");
+    const twins = await tx
+      .selectDistinctOn([sql`${nameKey(menuItems.name)}`], {
+        name: menuItems.name,
+        category: categories.name,
+      })
+      .from(menuItems)
+      .innerJoin(
+        target,
+        and(
+          eq(target.restaurantId, menuItems.restaurantId),
+          eq(target.categoryId, moveItemsTo),
+          isNull(target.archivedAt),
+          sql`${nameKey(target.name)} = ${nameKey(menuItems.name)}`,
+        ),
+      )
+      .innerJoin(
+        categories,
+        and(eq(categories.restaurantId, target.restaurantId), eq(categories.id, target.categoryId)),
+      )
+      .where(
+        and(
+          eq(menuItems.restaurantId, restaurantId),
+          eq(menuItems.categoryId, categoryId),
+          isNull(menuItems.archivedAt),
+        ),
+      )
+      .orderBy(sql`${nameKey(menuItems.name)}`, asc(menuItems.name));
+    return twins.map(
+      ({ name, category }) =>
+        `Moving "${name}" into ${category} would leave two items with that name. Two with one name are hard to tell apart.`,
+    );
   });
 }
 
@@ -698,7 +749,11 @@ export async function updateMenuItem(
   try {
     const result = await withTenant(ctx, async (tx) => {
       const [current] = await tx
-        .select({ id: menuItems.id, visibility: menuItems.visibility })
+        .select({
+          id: menuItems.id,
+          visibility: menuItems.visibility,
+          categoryId: menuItems.categoryId,
+        })
         .from(menuItems)
         .where(liveItem(restaurantId, itemId));
       if (!current) return "not_found";
@@ -709,9 +764,38 @@ export async function updateMenuItem(
       if (!(await hasLiveCategory(tx, restaurantId, categoryId))) {
         return "no_such_category";
       }
+      // A sort order sent with the edit (the editor sends none) is kept as sent.
+      const moved = current.categoryId !== categoryId && fields.sortOrder === undefined;
+      if (moved) {
+        // A moved item goes to the end of its new category, as an added one
+        // does. Both categories' live items are locked in id order first, as
+        // moveMenuItem locks one, so two moves (or a move and a Move up) queue
+        // instead of taking the same place or waiting on each other.
+        await tx
+          .select({ id: menuItems.id })
+          .from(menuItems)
+          .where(
+            and(
+              eq(menuItems.restaurantId, restaurantId),
+              inArray(menuItems.categoryId, [current.categoryId, categoryId]),
+              isNull(menuItems.archivedAt),
+            ),
+          )
+          .orderBy(asc(menuItems.id))
+          .for("no key update");
+      }
       await tx
         .update(menuItems)
-        .set({ ...fields, categoryId })
+        .set({
+          ...fields,
+          categoryId,
+          ...(moved && {
+            sortOrder: sql`(
+              select coalesce(max(m.sort_order), -1) + 1 from ${menuItems} m
+              where m.restaurant_id = ${restaurantId} and m.category_id = ${categoryId}
+            )`,
+          }),
+        })
         .where(liveItem(restaurantId, itemId));
       await recordAdminAction(tx, ctx, {
         action: "menu_item.update",

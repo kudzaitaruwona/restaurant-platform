@@ -658,6 +658,34 @@ describe("editing an item", () => {
     expect(touchedCache()).toBe(1);
   });
 
+  it("puts an item moved to another category at the end of it, whatever its old position", async () => {
+    const tenant = await menuOf({ Mains: ["A", "B", "C"], Sides: ["Rice", "Peas"] });
+    const sides = await categoryIdOf(tenant, "Sides");
+
+    expect(await updateMenuItem(tenant, await itemIdOf(tenant, "C"), edit(sides, { name: "C", sortOrder: undefined }))).toBe("saved");
+
+    expect(await shape(tenant)).toEqual({ Mains: ["A", "B"], Sides: ["Rice", "Peas", "C"] });
+    // Saved again in the same category, it stays where it is.
+    await updateMenuItem(tenant, await itemIdOf(tenant, "Rice"), edit(sides, { name: "Rice" }));
+    expect((await shape(tenant)).Sides).toEqual(["Rice", "Peas", "C"]);
+  });
+
+  it("gives items moved at once different places, and the next Move down works on them", async () => {
+    const tenant = await menuOf({ Mains: ["A", "B", "C"], Sides: ["Rice"] });
+    const sides = await categoryIdOf(tenant, "Sides");
+
+    await Promise.all(
+      ["A", "B", "C"].map(async (name) =>
+        updateMenuItem(tenant, await itemIdOf(tenant, name), edit(sides, { name, sortOrder: undefined })),
+      ),
+    );
+
+    const places = (await getMenu(tenant)).categories.find((c) => c.name === "Sides")!.items.map((i) => i.sortOrder);
+    expect(new Set(places).size).toBe(4);
+    await moveMenuItem(tenant, await itemIdOf(tenant, "Rice"), "down");
+    expect((await shape(tenant)).Sides.indexOf("Rice")).toBe(1);
+  });
+
   it("orders items by their sort order", async () => {
     const tenant = await menuOf({ Mains: ["First", "Second"] });
     const mains = await categoryIdOf(tenant, "Mains");
