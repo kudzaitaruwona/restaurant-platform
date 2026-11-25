@@ -94,6 +94,20 @@ describe("the kitchen's poll", () => {
     poller.stop();
   });
 
+  it("says when stopped where the board got to, so it can go on from there and miss nothing (#135)", async () => {
+    let slow = false;
+    const { poller, changes } = polling(async () => {
+      if (slow) await new Promise((resolve) => setTimeout(resolve, 1_000));
+      return answer(slow ? "102" : "101");
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    slow = true;
+    await vi.advanceTimersByTimeAsync(5_500);
+    expect(poller.stop()).toBe("101"); // the poll on its way is never shown
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(changes).toHaveLength(1);
+  });
+
   it("stops asking once stopped", async () => {
     const { poller, urls } = polling(async () => answer("101"));
     poller.stop();

@@ -76,9 +76,11 @@ export function startPolling(options: {
   return {
     /** Poll now, as after a move another tablet beat this one to. */
     refresh: () => void poll(),
+    /** The cursor of the last answer shown: where to go on from (#135). */
     stop: () => {
       stopped = true;
       clearTimeout(timer);
+      return cursor;
     },
   };
 }
