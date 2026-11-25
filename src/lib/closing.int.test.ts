@@ -182,7 +182,7 @@ describe("force-close", () => {
     const first = await ordered(r, ["placed", "delivered", "voided"]);
     const second = await ordered(r, ["cooking", "done"]);
 
-    const result = await forceCloseTable(ctx(r), r.tableId, first.sessionId, "Party walked out");
+    const result = await forceCloseTable(ctx(r), r.tableId, first.sessionId, [first.ids[0], ...second.ids], "Party walked out");
 
     expect(result).toEqual({ outcome: "done", voided: [first.ids[0], ...second.ids].sort() });
     const after = await lines([...first.ids, ...second.ids]);
@@ -203,7 +203,7 @@ describe("force-close", () => {
     const r = await orderingRestaurant(owner.db);
     const { sessionId, orderId, ids } = await ordered(r, ["placed", "delivered"]);
 
-    await forceCloseTable(ctx(r), r.tableId, sessionId, "Party walked out");
+    await forceCloseTable(ctx(r), r.tableId, sessionId, [ids[0]], "Party walked out");
 
     const entries = await auditOf(r);
     expect(entries).toHaveLength(2);
@@ -233,7 +233,7 @@ describe("force-close", () => {
     const { sessionId, ids } = await ordered(r, ["placed"]);
     const platformAdminId = crypto.randomUUID();
 
-    await forceCloseTable({ ...ctx(r), platformAdminId }, r.tableId, sessionId, "Test order");
+    await forceCloseTable({ ...ctx(r), platformAdminId }, r.tableId, sessionId, ids, "Test order");
 
     expect((await lines(ids))[0].voidedBy).toBe(r.staffId);
     expect((await sessionRow(sessionId)).closedBy).toBe(r.staffId);
@@ -248,7 +248,7 @@ describe("force-close", () => {
     const r = await orderingRestaurant(owner.db);
     const { sessionId } = await ordered(r, ["delivered"]);
 
-    expect(await forceCloseTable(ctx(r), r.tableId, sessionId, "End of night")).toEqual({
+    expect(await forceCloseTable(ctx(r), r.tableId, sessionId, [], "End of night")).toEqual({
       outcome: "done",
       voided: [],
     });
@@ -261,7 +261,7 @@ describe("force-close", () => {
 
     // audit_log.actor_id is a uuid, so this actor's entries fail after the items were updated.
     await expect(
-      forceCloseTable({ ...ctx(r), platformAdminId: "not-a-uuid" }, r.tableId, sessionId, "Walked out"),
+      forceCloseTable({ ...ctx(r), platformAdminId: "not-a-uuid" }, r.tableId, sessionId, ids, "Walked out"),
     ).rejects.toThrow();
 
     expect((await lines(ids)).map((line) => line.status)).toEqual(["placed", "cooking"]);
@@ -270,12 +270,13 @@ describe("force-close", () => {
 
   it("doesn't put the reason in a thrown error's message", async () => {
     const r = await orderingRestaurant(owner.db);
-    const { sessionId } = await ordered(r, ["placed"]);
+    const { sessionId, ids } = await ordered(r, ["placed"]);
 
     const error = await forceCloseTable(
       { ...ctx(r), platformAdminId: "not-a-uuid" },
       r.tableId,
       sessionId,
+      ids,
       "Secret reason",
     ).catch((e: Error) => e);
 
@@ -285,13 +286,13 @@ describe("force-close", () => {
   it("is refused for a changed session, and not found for another restaurant's table, changing nothing", async () => {
     const r = await orderingRestaurant(owner.db);
     const { ids } = await ordered(r, ["placed"]);
-    expect(await forceCloseTable(ctx(r), r.tableId, crypto.randomUUID(), "Stale")).toEqual({
+    expect(await forceCloseTable(ctx(r), r.tableId, crypto.randomUUID(), ids, "Stale")).toEqual({
       outcome: "session_changed",
     });
 
     const theirs = await orderingRestaurant(owner.db);
     const theirOrder = await ordered(theirs, ["placed"]);
-    expect(await forceCloseTable(ctx(r), theirs.tableId, theirOrder.sessionId, "Not mine")).toEqual({
+    expect(await forceCloseTable(ctx(r), theirs.tableId, theirOrder.sessionId, theirOrder.ids, "Not mine")).toEqual({
       outcome: "not_found",
     });
     expect((await lines([...ids, ...theirOrder.ids])).map((line) => line.status)).toEqual(["placed", "placed"]);
@@ -301,15 +302,125 @@ describe("force-close", () => {
 
   it("two force-closes at once: one closes, the other finds the session gone", async () => {
     const r = await orderingRestaurant(owner.db);
-    const { sessionId } = await ordered(r, ["placed", "cooking"]);
+    const { sessionId, ids } = await ordered(r, ["placed", "cooking"]);
 
     const outcomes = await Promise.all([
-      forceCloseTable(ctx(r), r.tableId, sessionId, "Reason one"),
-      forceCloseTable(ctx(r), r.tableId, sessionId, "Reason two"),
+      forceCloseTable(ctx(r), r.tableId, sessionId, ids, "Reason one"),
+      forceCloseTable(ctx(r), r.tableId, sessionId, ids, "Reason two"),
     ]);
 
     expect(outcomes.map((o) => o.outcome).sort()).toEqual(["done", "session_changed"]);
     expect((await auditOf(r)).filter((entry) => entry.action === "session.force_close")).toHaveLength(1);
+  });
+
+  describe("when the outstanding items aren't the ones it was shown (#95)", () => {
+    /** Refused with the items now outstanding, and nothing voided, closed or audited. */
+    async function expectRefused(r: Restaurant, sessionId: string, shown: string[], nowOutstanding: string[]) {
+      const before = await allLines(r);
+      const result = await forceCloseTable(ctx(r), r.tableId, sessionId, shown, "Walked out");
+      expect(result).toMatchObject({ outcome: "items_changed" });
+      expect(result.outcome === "items_changed" && result.items.map((item) => item.id).sort()).toEqual(
+        [...nowOutstanding].sort(),
+      );
+      expect(await allLines(r)).toEqual(before);
+      expect((await sessionRow(sessionId)).status).toBe("open");
+      expect(await auditOf(r)).toEqual([]);
+    }
+    const allLines = (r: Restaurant) =>
+      owner.db
+        .select({ id: orderItems.id, status: orderItems.status })
+        .from(orderItems)
+        .where(eq(orderItems.restaurantId, r.restaurantId))
+        .orderBy(orderItems.id);
+
+    it("is refused with the new list when a guest has ordered more, and goes through on the new list", async () => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId, ids: shown } = await ordered(r, ["placed"]);
+      const { ids: more } = await ordered(r, ["placed"], "Chipo");
+
+      await expectRefused(r, sessionId, shown, [...shown, ...more]);
+
+      expect(
+        await forceCloseTable(ctx(r), r.tableId, sessionId, [...more, ...shown], "Walked out"),
+      ).toMatchObject({ outcome: "done" });
+    });
+
+    it.each(["delivered", "voided"] as const)(
+      "is refused when one of the items has been %s meanwhile, even with none left",
+      async (status) => {
+        const r = await orderingRestaurant(owner.db);
+        const { sessionId, ids } = await ordered(r, ["placed", status]);
+        await expectRefused(r, sessionId, ids, [ids[0]]);
+
+        const none = await orderingRestaurant(owner.db);
+        const last = await ordered(none, [status]);
+        await expectRefused(none, last.sessionId, last.ids, []);
+      },
+    );
+
+    it("is refused when one item was served and another ordered, though the count is the same", async () => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId, ids } = await ordered(r, ["delivered", "placed"]);
+      await expectRefused(r, sessionId, [ids[0]], [ids[1]]);
+    });
+
+    it("is refused when it was shown nothing outstanding, or names another session's item", async () => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId, ids } = await ordered(r, ["placed"]);
+      const theirs = await ordered(await orderingRestaurant(owner.db), ["placed"]);
+      await expectRefused(r, sessionId, [], ids);
+      await expectRefused(r, sessionId, [...ids, ...theirs.ids], ids);
+      await expectRefused(r, sessionId, [ids[0], ids[0], ...theirs.ids], ids);
+    });
+
+    it("goes through when the kitchen has only moved an item on: staff saw it", async () => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId, ids } = await ordered(r, ["placed"]);
+      await owner.db.update(orderItems).set({ status: "cooking" }).where(eq(orderItems.id, ids[0]));
+
+      expect(await forceCloseTable(ctx(r), r.tableId, sessionId, ids, "Walked out")).toEqual({
+        outcome: "done",
+        voided: ids,
+      });
+    });
+
+    it("waits for a guest's order going in at the same time, then is refused with it on the list", async () => {
+      const r = await orderingRestaurant(owner.db);
+      const { sessionId, orderId, ids } = await ordered(r, ["placed"]);
+      const guest = await owner.pool.connect();
+      try {
+        const { rows: [{ pid }] } = await guest.query("select pg_backend_pid() as pid");
+        await guest.query("begin");
+        const { rows: [{ id: added }] } = await guest.query(
+          `insert into order_items (restaurant_id, order_id, menu_item_id, name_snapshot, quantity, unit_price_usd)
+           values ($1, $2, $3, 'Rice', 1, 4) returning id`,
+          [r.restaurantId, orderId, r.itemId],
+        );
+
+        const closing = forceCloseTable(ctx(r), r.tableId, sessionId, ids, "Walked out");
+        await vi.waitFor(
+          async () => {
+            const { rows } = await owner.db.execute(
+              sql`select pid from pg_stat_activity where ${pid}::int = any(pg_blocking_pids(pid))`,
+            );
+            expect(rows).toHaveLength(1);
+          },
+          { timeout: 5_000 },
+        );
+        await guest.query("commit");
+
+        const result = await closing;
+        expect(result).toMatchObject({ outcome: "items_changed" });
+        expect(result.outcome === "items_changed" && result.items.map((item) => item.id).sort()).toEqual(
+          [...ids, added].sort(),
+        );
+        expect((await lines([...ids, added])).map((line) => line.status)).toEqual(["placed", "placed"]);
+        expect((await sessionRow(sessionId)).status).toBe("open");
+      } finally {
+        // Destroyed, not returned: a failure above may leave its transaction open.
+        guest.release(true);
+      }
+    });
   });
 });
 
@@ -326,13 +437,13 @@ describe("after a close", () => {
     async (how) => {
       const r = await orderingRestaurant(owner.db);
       const joined = await join(r.qrToken);
-      await ordered(r, [how === "clear" ? "delivered" : "cooking"]);
+      const { ids } = await ordered(r, [how === "clear" ? "delivered" : "cooking"]);
       expect((await tracker(r.qrToken)).session).toBe(joined);
 
       const result =
         how === "clear"
           ? await clearTable(ctx(r), r.tableId, joined)
-          : await forceCloseTable(ctx(r), r.tableId, joined, "Walked out");
+          : await forceCloseTable(ctx(r), r.tableId, joined, ids, "Walked out");
       expect(result.outcome).toBe("done");
 
       expect(await tracker(r.qrToken)).toEqual({ session: null, items: [] });

@@ -13,6 +13,15 @@ export function shownSessionFrom(form: FormData): string | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * The outstanding items the table's detail listed, which a force-close voids
+ * (#95): none when it listed none, or null when one is malformed.
+ */
+export function shownItemsFrom(form: FormData): string[] | null {
+  const parsed = z.array(z.uuid()).safeParse(form.getAll("item"));
+  return parsed.success ? parsed.data : null;
+}
+
 export const reloadToClose = () =>
   Response.json({ error: "Reload the table and try again." }, { status: 400, headers });
 
@@ -27,16 +36,36 @@ export const sessionChanged = () =>
 
 const statusWords = { placed: "placed", cooking: "cooking", done: "done", delivered: "delivered", voided: "voided" };
 
+const listed = (items: OutstandingItem[]) =>
+  items.map((item) => ({
+    id: item.id,
+    summary: `${item.quantity} × ${item.name} for ${item.customerName}: ${statusWords[item.status]}`,
+  }));
+
 /** Clear table refused: the items in the way, each as ActionForm lists it, and the way out. */
 export const blockedBy = (items: OutstandingItem[]) =>
   Response.json(
     {
       error:
         "This table has items that aren't delivered or voided yet. Deliver or void them, or force-close the table with a reason.",
-      items: items.map((item) => ({
-        id: item.id,
-        summary: `${item.quantity} × ${item.name} for ${item.customerName}: ${statusWords[item.status]}`,
-      })),
+      items: listed(items),
+    },
+    { status: 409, headers },
+  );
+
+/**
+ * Force-close refused (#95): the items not yet delivered as they are now.
+ * `refresh` has ActionForm reload the page, so its dialog lists them too.
+ */
+export const itemsChanged = (items: OutstandingItem[]) =>
+  Response.json(
+    {
+      error:
+        items.length > 0
+          ? "The items not yet delivered have changed, so nothing was voided or closed. Check them, then force-close again:"
+          : "The items have changed: every one is now delivered or voided, so nothing was voided or closed. You can clear the table.",
+      items: listed(items),
+      refresh: true,
     },
     { status: 409, headers },
   );

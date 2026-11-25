@@ -44,7 +44,9 @@ export type ClearOutcome =
 export type ForceCloseOutcome =
   | { outcome: "done"; voided: string[] }
   | { outcome: "not_found" }
-  | { outcome: "session_changed" };
+  | { outcome: "session_changed" }
+  /** The outstanding items aren't the ones the page showed: what they are now, maybe none (#95). */
+  | { outcome: "items_changed"; items: OutstandingItem[] };
 
 /**
  * The table's open session, locked for the close, found on
@@ -172,16 +174,29 @@ export function clearTable(actor: Actor, tableId: string, shown: string): Promis
  * and audits `session.force_close` with the reason and the items it voided. All
  * in one transaction, so the closure gate sees the voids. A session with nothing
  * outstanding is closed all the same, voiding nothing.
+ *
+ * `shownItems` are the outstanding items the page listed, a precondition like
+ * the session (#95): if the set has changed (one ordered, delivered or voided
+ * since), it is refused with the items now outstanding and nothing changes. An
+ * item the kitchen only moved on is still the one staff saw. Checked with the
+ * session's row held, which a line's insert, a kitchen move and a void all take
+ * first, so the set can't change between the check and the void.
  */
 export function forceCloseTable(
   actor: Actor,
   tableId: string,
   shown: string,
+  shownItems: string[],
   reason: string,
 ): Promise<ForceCloseOutcome> {
   return attempt(actor, async (tx) => {
     const sessionId = await shownSession(tx, actor, tableId, shown);
-    const outstanding = (await outstandingLines(tx, actor, sessionId)).map((line) => line.id);
+    const items = await outstandingLines(tx, actor, sessionId);
+    const outstanding = items.map((line) => line.id);
+    const listed = new Set(shownItems);
+    if (listed.size !== outstanding.length || !outstanding.every((id) => listed.has(id))) {
+      throw new Refused<ForceCloseOutcome>({ outcome: "items_changed", items });
+    }
     const voided =
       outstanding.length === 0
         ? []
