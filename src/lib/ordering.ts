@@ -458,7 +458,8 @@ export async function placeOrder(qrToken: string, request: OrderRequest): Promis
  * Each poll is the token's lookup, then one read joining the table, its open
  * session and the restaurant's timezone, then one read of the items by session
  * (an indexed read, orders_restaurant_id_session_id_placed_at_index). It carries
- * only what the customer sees: never a void reason or who voided, nor an id.
+ * only what the customer sees: never a void reason or who voided, nor an id. Of a
+ * waiter call (#97) it carries only whether one is pending on that session.
  * Times are on the restaurant's clock. No session is `{ session: null }`: the
  * page says the table's session has ended. Undefined for a token that leads to
  * no live table.
@@ -468,7 +469,11 @@ export async function getTableTracker(qrToken: string) {
   if (!tenant) return undefined;
   return withTenant(tenant, async (tx) => {
     const [table] = await tx
-      .select({ sessionId: tableSessions.id, timezone: restaurants.timezone })
+      .select({
+        sessionId: tableSessions.id,
+        timezone: restaurants.timezone,
+        waiter: sql<boolean>`${tableSessions.waiterRequestedAt} is not null`,
+      })
       .from(diningTables)
       .innerJoin(restaurants, eq(restaurants.id, diningTables.restaurantId))
       .leftJoin(
@@ -481,7 +486,7 @@ export async function getTableTracker(qrToken: string) {
       )
       .where(and(eq(diningTables.qrToken, qrToken), isNull(diningTables.archivedAt)));
     if (!table) return undefined;
-    if (!table.sessionId) return { session: null, items: [] };
+    if (!table.sessionId) return { session: null, items: [], waiter: false };
 
     const rows = await tx
       .select({
@@ -502,6 +507,7 @@ export async function getTableTracker(qrToken: string) {
     return {
       session: table.sessionId,
       items: rows.map(({ placedAt, ...row }) => ({ ...row, time: localTime(placedAt, table.timezone) })),
+      waiter: table.waiter,
     };
   });
 }

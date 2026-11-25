@@ -446,10 +446,10 @@ describe("after a close", () => {
           : await forceCloseTable(ctx(r), r.tableId, joined, ids, "Walked out");
       expect(result.outcome).toBe("done");
 
-      expect(await tracker(r.qrToken)).toEqual({ session: null, items: [] });
+      expect(await tracker(r.qrToken)).toEqual({ session: null, items: [], waiter: false });
       const fresh = await join(r.qrToken);
       expect(fresh).not.toBe(joined);
-      expect(await tracker(r.qrToken)).toEqual({ session: fresh, items: [] });
+      expect(await tracker(r.qrToken)).toEqual({ session: fresh, items: [], waiter: false });
     },
   );
 });

@@ -190,8 +190,11 @@ body:has(.order:not([hidden])){overflow:hidden}
  * seconds, so a slow line can't pile them up or land an older answer over a newer
  * one: a tick during a poll is skipped, and a poll asked for after an order runs
  * once the one in flight is done. "Call a waiter" *(proposed, #77)* posts to its own
- * endpoint, one call at a time, and says on the page that it went through; the
- * page keeps nothing of it, since the floor view owns when a call ends. A session the table has left behind (staff
+ * endpoint, one call at a time. The call itself is the server's (#97): the tracker
+ * says whether one is pending, so the page shows it from then (after a reload, or on
+ * another phone, too) until staff dismiss it or the session ends. What it says goes
+ * in the status line it shares with the join (#98) and a failed order, and replaces
+ * or clears only its own words there. A session the table has left behind (staff
  * cleared it, or another party opened a new one) is said to have ended, and the
  * next Add or Place order joins the table's fresh one and clears the name. Each line
  * remembers the session it was added in: lines from another one are sent only after
@@ -243,6 +246,23 @@ export const ORDER_SCRIPT = `(() => {
     waiterSaid.dataset.tone = "error";
     waiterSaid.textContent = text;
   };
+  // The waiter call (#97): whether it is pending, and the words it last put in the
+  // status line, which it changes only while they are still there.
+  let called = false;
+  let own = "";
+  const say = (text, tone) => {
+    own = text;
+    waiterSaid.textContent = text;
+    if (tone) waiterSaid.dataset.tone = tone; else delete waiterSaid.dataset.tone;
+  };
+  const showCall = (pending, text) => {
+    called = pending;
+    if (pending) waiter.dataset.called = ""; else delete waiter.dataset.called;
+    if (waiterSaid.textContent === own) say(text);
+  };
+  const sent = "Your table's call has been sent to the staff.";
+  // A poll asked before this moved on is out of date: its answer is dropped.
+  let epoch = 0;
   const times = (quantity, name) => quantity + " \\u00d7 " + name;
   let session = null;
   let ended = false;
@@ -256,7 +276,7 @@ export const ORDER_SCRIPT = `(() => {
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
   // The session the page is now in. A new one asks for the name again.
   const enter = (next) => {
-    if (session && next !== session) { fields.name.value = ""; last = ""; }
+    if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; showCall(false, ""); }
     session = next;
     ended = false;
     for (const line of cart) line.from = line.from || next;
@@ -338,16 +358,19 @@ export const ORDER_SCRIPT = `(() => {
     if (!session) return;
     if (polling) { again = again || fresh; return; }
     polling = true;
+    const at = epoch;
     try {
       const response = await fetch(api("/tracker"), AbortSignal.timeout ? { signal: AbortSignal.timeout(4000) } : {});
       if (!response.ok) return;
       const feed = await response.json();
       const text = JSON.stringify(feed);
-      if (text === last) return;
+      if (at !== epoch || text === last) return;
       last = text;
       ended = feed.session !== session;
       // Reopened: a line added meanwhile, whose own join failed, is this session's.
       if (!ended) for (const line of cart) line.from = line.from || session;
+      if (ended) { if (called || own) showCall(false, ""); }
+      else if (!!feed.waiter !== called) showCall(!called, called ? "The staff have seen your table's call." : sent);
       const items = ended ? [] : feed.items;
       if (!ended) shown = items.length > 0;
       if (!ended) keep = false;
@@ -426,16 +449,14 @@ export const ORDER_SCRIPT = `(() => {
       const response = await fetch(api("/waiter"), { method: "POST" });
       if (!response.ok) throw new Error(String(response.status));
       const next = (await response.json()).session;
-      if (next !== session) {
-        enter(next);
-        poll(true);
-      }
-      waiter.dataset.called = "";
-      delete waiterSaid.dataset.tone;
-      waiterSaid.textContent = "A waiter is on the way.";
+      if (next !== session) enter(next);
+      say(sent);
+      showCall(true, sent);
+      epoch++;
+      last = "";
+      poll(true);
     } catch {
-      waiterSaid.dataset.tone = "error";
-      waiterSaid.textContent = "That didn't go through. Check your connection and try again.";
+      say("That didn't go through. Check your connection and try again.", "error");
     } finally {
       waiter.disabled = false;
     }
