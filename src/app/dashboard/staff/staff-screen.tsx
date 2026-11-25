@@ -18,6 +18,7 @@ import { getTenantContext, requireOwner } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { ActionForm } from "../action-form";
 import { initialsOf } from "../shell/nav";
+import { deactivateConfirmation, roleConfirmation } from "./confirmations";
 import { InviteStatusLabel } from "./invite-status";
 
 /** The hidden forms take no room until one has a refusal (or a "sent") to show. */
@@ -158,6 +159,11 @@ export async function StaffScreen() {
                         id={`role-${member.id}`}
                         action={`/api/staff/${member.id}/role`}
                         className={refusalSpace}
+                        confirmation={roleConfirmation({
+                          displayName: member.displayName,
+                          role: member.role,
+                          you,
+                        })}
                       >
                         <input type="hidden" name="role" value={makeOwner ? "owner" : "staff"} />
                       </ActionForm>
@@ -165,12 +171,7 @@ export async function StaffScreen() {
                         id={`deactivate-${member.id}`}
                         action={`/api/staff/${member.id}/deactivate`}
                         className={refusalSpace}
-                        confirmation={{
-                          title: `Deactivate ${member.displayName}?`,
-                          description: "They won't be able to sign in.",
-                          confirmLabel: "Deactivate",
-                          cancelLabel: "Keep",
-                        }}
+                        confirmation={deactivateConfirmation({ displayName: member.displayName, you })}
                       >
                         {null}
                       </ActionForm>

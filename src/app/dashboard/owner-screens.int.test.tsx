@@ -1804,6 +1804,20 @@ describe("/dashboard/staff", () => {
     expect(html).toContain(`/api/staff/${tenant.staffId}/role`);
   });
 
+  it("asks before changing anyone's role, and warns you when it's your own", async () => {
+    await addStaff(post("/api/staff", newPerson("staff")));
+
+    const html = await screen(StaffScreen);
+
+    expect(html).toContain("Make yourself staff?");
+    expect(html).toContain("You&#x27;ll lose access");
+    expect(html).toContain("Make New staff an owner?");
+    expect(html).toContain("Deactivate yourself?");
+    expect(html).toContain("You won&#x27;t be able to sign in.");
+    expect(html).toContain("Deactivate New staff?");
+    expect(html).toContain("They won&#x27;t be able to sign in.");
+  });
+
   it("marks a deactivated member and offers nothing further", async () => {
     const person = newPerson("staff");
     await addStaff(post("/api/staff", person));

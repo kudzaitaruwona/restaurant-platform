@@ -1,9 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { postForm } from "@/lib/form-response";
+import { announceSend, clearOnOtherSend } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
 export type Confirmation = {
@@ -56,6 +57,9 @@ export function ActionForm({
   const [saved, setSaved] = useState(false);
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [self] = useState(() => Symbol("action-form"));
+  // One refusal on the page at a time: sending another form clears this one's.
+  useEffect(() => clearOnOtherSend(self, () => setError(undefined)), [self]);
   const ask = confirmation === undefined ? undefined : confirmationOf(confirmation);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -66,6 +70,7 @@ export function ActionForm({
 
   async function send(form: HTMLFormElement) {
     const body = new FormData(form); // before the fieldset disables its controls
+    announceSend(self);
     setPending(true);
     setError(undefined);
     setSaved(false);
