@@ -437,3 +437,138 @@ describe("the bot check", () => {
     expect(response.status).toBe(403);
   });
 });
+
+describe("a retry after a lost answer (#134)", () => {
+  const usedKeys: string[] = [];
+  const from = (ip: string) => {
+    usedKeys.push(limitKey(ipBucket(ip), process.env.AUTH_SECRET || undefined));
+    return { "x-forwarded-for": ip };
+  };
+  const attemptsFrom = async (ip: string) => {
+    const [row] = await owner.db
+      .select({ attempts: bookingRateLimit.attempts })
+      .from(bookingRateLimit)
+      .where(eq(bookingRateLimit.key, limitKey(ipBucket(ip), process.env.AUTH_SECRET || undefined)));
+    return row?.attempts;
+  };
+  afterEach(async () => {
+    for (const key of usedKeys.splice(0)) await owner.db.delete(bookingRateLimit).where(eq(bookingRateLimit.key, key));
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.stubEnv("DATABASE_URL", testDatabaseSettings().connectionString);
+  });
+  const manageTokenIn = async (response: Response) => (await response.json()).confirmation.manageToken;
+
+  it("answers as the first did, with the same booking", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+
+    const first = await postWith(slug, { fields });
+    const again = await postWith(slug, { fields });
+
+    expect([first.status, again.status]).toEqual([201, 201]);
+    expect(await again.json()).toEqual(await first.json());
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("with other details is a 409 that says what was booked, with the contacts and no token", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db, { tables: [{ capacity: 2 }, { capacity: 2 }] });
+    const request = crypto.randomUUID();
+    const token = await manageTokenIn(await postWith(slug, { fields: { request } }));
+
+    const changed = await postWith(slug, { fields: { request, time: "20:30" } });
+
+    expect(changed.status).toBe(409);
+    const answer = await changed.json();
+    expect(answer).toEqual({
+      error: expect.stringMatching(/^Your earlier try did go through: it booked a table for 2 on .+ at 19:00\./),
+      alreadyBooked: true,
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
+    });
+    expect(JSON.stringify(answer)).not.toContain(token);
+    const stranger = await (await postWith(slug, { fields: { request, phone: "0772000000" } })).json();
+    expect(stranger.error).toMatch(/^An earlier try from this page did go through, with other details\./);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("opens nothing at another restaurant", async () => {
+    const theirs = await bookableRestaurant(owner.db);
+    const mine = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+    const token = await manageTokenIn(await postWith(theirs.slug, { fields }));
+
+    const here = await postWith(mine.slug, { fields });
+
+    expect(here.status).toBe(201);
+    expect(await manageTokenIn(here)).not.toBe(token);
+  });
+
+  it("is a 400 for an id that isn't one", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+
+    expect((await postWith(slug, { fields: { request: "1" } })).status).toBe(400);
+  });
+
+  it("doesn't count against the rate limit again, at any number of retries", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.60";
+    const headers = from(ip);
+    const request = crypto.randomUUID();
+    await postWith(slug, { headers, fields: { request } });
+
+    for (let retry = 0; retry < 7; retry++) {
+      expect((await postWith(slug, { headers, fields: { request } })).status).toBe(201);
+    }
+    expect((await postWith(slug, { headers, fields: { request, time: "20:30" } })).status).toBe(409);
+
+    expect(await attemptsFrom(ip)).toBe(1);
+  });
+
+  it("lands on its booking with the rate limit already reached, and leaves it reached", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.61";
+    const headers = from(ip);
+    const fields = { request: crypto.randomUUID() };
+    for (let attempt = 0; attempt < 4; attempt++) await postWith(slug, { headers, fields: { consent: "" } });
+    const token = await manageTokenIn(await postWith(slug, { headers, fields })); // the fifth
+
+    for (let retry = 0; retry < 3; retry++) {
+      const again = await postWith(slug, { headers, fields });
+      expect(again.status).toBe(201);
+      expect(await manageTokenIn(again)).toBe(token);
+    }
+    // Anything that would be a new booking is still refused, whatever id it makes up.
+    expect((await postWith(slug, { headers, fields: { request: crypto.randomUUID(), time: "20:30" } })).status).toBe(429);
+    expect((await postWith(slug, { headers })).status).toBe(429);
+    expect((await postWith("no-such-restaurant", { headers, fields })).status).toBe(429);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+
+  it("gives back only what it spent: attempts refused by the limit aren't returned", async () => {
+    const { slug } = await bookableRestaurant(owner.db);
+    const ip = "198.51.100.62";
+    const headers = from(ip);
+    const fields = { request: crypto.randomUUID() };
+    await postWith(slug, { headers, fields });
+    for (let attempt = 0; attempt < 4; attempt++) await postWith(slug, { headers, fields: { consent: "" } });
+
+    await Promise.all(Array.from({ length: 4 }, () => postWith(slug, { headers, fields })));
+
+    expect((await postWith(slug, { headers, fields: { consent: "" } })).status).toBe(429);
+  });
+
+  it("needs no bot check, because it books nothing, but a new booking still does", async () => {
+    const { slug, restaurantId } = await bookableRestaurant(owner.db);
+    const fields = { request: crypto.randomUUID() };
+    const token = await manageTokenIn(await postWith(slug, { fields }));
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret"); // and no token in the post
+
+    const again = await postWith(slug, { fields });
+
+    expect(again.status).toBe(201);
+    expect(await manageTokenIn(again)).toBe(token);
+    expect((await postWith(slug, { fields: { request: crypto.randomUUID(), time: "20:30" } })).status).toBe(403);
+    expect(await bookingsOf(owner.db, restaurantId)).toHaveLength(1);
+  });
+});

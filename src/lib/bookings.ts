@@ -419,6 +419,9 @@ const guestRequest = z
       .refine(noNul, messages.note)
       .optional(),
     consent: z.literal("on", messages.consent),
+    // The page's id for this submission (#134), the same on every retry of it. A page
+    // loaded before there was one sends none.
+    request: z.uuid(messages.choice).optional(),
   })
   .transform(({ countryCode, phone, note, consent, ...rest }) => ({
     ...rest,
@@ -503,6 +506,14 @@ export const phoneLimitMessage = (held: number) =>
 export const largePartyMessage = (threshold: number) =>
   `For groups of ${threshold}+, contact the restaurant`;
 
+/** Names what was booked only to a retry with the phone it was booked under (#134). */
+export const alreadyBookedMessage = (booked: Booked | undefined) =>
+  booked
+    ? `Your earlier try did go through: it booked a table for ${booked.party} on ${booked.dateLabel} at ${booked.time}. To see or cancel that booking, use the link in its WhatsApp confirmation, or contact the restaurant. Confirm again only to make another booking.`
+    : "An earlier try from this page did go through, with other details. To see or cancel that booking, use the link in its WhatsApp confirmation, or contact the restaurant. Confirm again only to make another booking.";
+
+type Booked = { party: number; dateLabel: string; time: string };
+
 export type Confirmation = {
   restaurantName: string;
   dateLabel: string;
@@ -515,6 +526,7 @@ export type Confirmation = {
 /** `times` are the nearest few to offer; `available` is every time left that day, for the grid. */
 export type ConfirmOutcome =
   | { outcome: "confirmed"; confirmation: Confirmation }
+  | EarlierBooking
   | { outcome: "race_lost"; times: TimeChoice[]; available: TimeChoice[] }
   | { outcome: "lead_time"; times: TimeChoice[]; available: TimeChoice[] }
   | { outcome: "phone_limit"; held: number; contactPhone: string | null; whatsappLink: string | null }
@@ -526,6 +538,19 @@ export type ConfirmOutcome =
       whatsappLink: string | null;
     }
   | { outcome: "closed" };
+
+/**
+ * This submission has booked already (#134): `replayed` is a retry of it, answered
+ * with the booking it made; `already_booked` has its id but other details.
+ */
+export type EarlierBooking =
+  | { outcome: "replayed"; confirmation: Confirmation }
+  | {
+      outcome: "already_booked";
+      booked: Booked | undefined;
+      contactPhone: string | null;
+      whatsappLink: string | null;
+    };
 
 /** The trigger in migration 0026 saying a closure now covers the time. */
 export const isInsideClosure = (error: unknown) => {
@@ -561,6 +586,67 @@ async function upcomingFor(tx: TenantTransaction, { restaurantId }: Tenant, phon
 }
 
 /**
+ * The booking this submission has already made, if any (#134): found by the page's id
+ * for it, at this restaurant only. The manage token comes back only for the very
+ * submission that made it, every detail the same, whatever has become of the booking
+ * since. The same id with other details is not what was booked, so it is refused,
+ * and told what was only under the phone that booked it.
+ *
+ * Takes the submission's lock before it looks, for the rest of the transaction, so a
+ * retry racing the first try waits for it and then sees its booking. A confirm takes
+ * it before any other lock, and nobody waiting for it holds one, so it can't be part
+ * of a deadlock. The unique key bookings_request_once is what holds, whoever writes.
+ */
+async function earlierBooking(
+  tx: TenantTransaction,
+  { restaurantId }: Tenant,
+  { request, ...guest }: GuestRequest,
+): Promise<EarlierBooking | undefined> {
+  if (!request) return undefined;
+  await tx.execute(sql`select pg_advisory_xact_lock(
+    hashtextextended('booking_request:' || ${restaurantId}::text || ':' || ${request}::uuid::text, 0))`);
+  const [row] = await tx
+    .select({
+      name: bookings.guestName,
+      phone: bookings.guestPhone,
+      note: bookings.guestNote,
+      party: bookings.partySize,
+      startsAt: bookings.startsAt,
+      manageToken: bookings.manageToken,
+      restaurantName: restaurants.name,
+      timezone: restaurants.timezone,
+      contactPhone: restaurants.contactPhone,
+    })
+    .from(bookings)
+    .innerJoin(restaurants, eq(restaurants.id, bookings.restaurantId))
+    .where(and(eq(bookings.restaurantId, restaurantId), eq(bookings.requestId, request)));
+  if (!row) return undefined;
+
+  const { party, contactPhone, restaurantName, manageToken } = row;
+  const date = localToday(row.startsAt, row.timezone);
+  const booked = { party, dateLabel: dateLabel(date), time: localTime(row.startsAt, row.timezone) };
+  const same =
+    row.phone === guest.phone &&
+    row.name === guest.name &&
+    row.note === guest.note &&
+    party === guest.party &&
+    date === guest.date &&
+    booked.time === guest.time;
+  return same
+    ? { outcome: "replayed", confirmation: { restaurantName, ...booked, manageToken, contactPhone } }
+    : {
+        outcome: "already_booked",
+        booked: row.phone === guest.phone ? booked : undefined,
+        ...contactOf(contactPhone),
+      };
+}
+
+/** For a retry refused before the confirm (the rate limit, the bot check): reads, and writes nothing. */
+export function findEarlierBooking(tenant: Tenant, guest: GuestRequest) {
+  return withTenant(tenant, (tx) => earlierBooking(tx, tenant, guest)).catch(failed("finding a booking"));
+}
+
+/**
  * Confirms a booking, or says why not. Runs the same engine as the guest's list,
  * at the same instant, so a time the list would hide is refused here and one it
  * would show gets its tables tried. Whatever the list said a moment ago, Postgres
@@ -584,6 +670,10 @@ export async function confirmBooking(
   const { party, date, time } = guest;
   try {
     return await withTenant(tenant, async (tx) => {
+      // First: nothing that has changed since may refuse a retry of a booking made.
+      const earlier = await earlierBooking(tx, tenant, guest);
+      if (earlier) return earlier;
+
       const read = await readRules(tx, tenant);
       const { restaurant, rules } = read;
       const { timezone } = restaurant;
@@ -634,6 +724,7 @@ export async function confirmBooking(
                 source: "online",
                 guestNote: guest.note,
                 manageToken,
+                requestId: guest.request,
               })
               .returning({ id: bookings.id }),
           ));

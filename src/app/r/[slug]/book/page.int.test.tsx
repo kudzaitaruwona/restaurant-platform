@@ -316,7 +316,7 @@ describe("the choices and the times under them (#103)", () => {
 
 describe("a refusal (#103)", () => {
   const notice = (refusal: Parameters<typeof RefusalNotice>[0]["refusal"]) =>
-    renderToStaticMarkup(<RefusalNotice refusal={refusal} choose={() => {}} />);
+    renderToStaticMarkup(<RefusalNotice refusal={refusal} choose={() => {}} open={() => {}} />);
 
   it("can take focus and is announced", () => {
     const html = notice({ error: "That number looks too short." });
@@ -356,6 +356,26 @@ describe("a refusal (#103)", () => {
     const tenant = await resolvePublicToken("slug", slug);
 
     expect(await getBookingPage(tenant!, {})).toMatchObject(contact);
+  });
+});
+
+describe("a retry refused because it had other details (#134)", () => {
+  const refusal = { error: "Your earlier try did go through", alreadyBooked: true };
+
+  it("offers the booking a lost try made, without its token in the page", () => {
+    const html = renderToStaticMarkup(
+      <RefusalNotice refusal={{ ...refusal, booked: "/b/AbC?booked=1" }} choose={() => {}} open={() => {}} />,
+    );
+
+    expect(html).toContain("Your earlier try did go through");
+    expect(html).toContain("Open that booking");
+    expect(html).not.toContain("/b/");
+  });
+
+  it("offers none when the page can't say which it is", () => {
+    const html = renderToStaticMarkup(<RefusalNotice refusal={refusal} choose={() => {}} open={() => {}} />);
+
+    expect(html).not.toContain("Open that booking");
   });
 });
 
