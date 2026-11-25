@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
 import { createBundle, parseNewBundle } from "@/lib/bundles";
+import { confirmationNeeded } from "@/lib/confirmation";
 import { formSaved } from "@/lib/form-response";
+import { itemWarnings } from "@/lib/menu";
 import { alreadyOverMessage, overlapMessage } from "@/lib/specials";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
@@ -15,10 +17,13 @@ export async function POST(request: NextRequest) {
   const tenant = await getTenantContext();
   requireOwner(tenant);
 
-  const bundle = parseNewBundle(await request.formData().catch(() => new FormData()));
+  const form = await request.formData().catch(() => new FormData());
+  const bundle = parseNewBundle(form);
   if (!bundle.success) {
     return Response.json({ error: bundle.message }, { status: 400 });
   }
+  const ask = confirmationNeeded(await itemWarnings(tenant, bundle.data), form);
+  if (ask) return ask;
 
   const result = await createBundle(tenant, bundle.data);
   if (result === "no_such_category") notFound();

@@ -7,6 +7,7 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Notice } from "@/components/ui/notice";
 import { postForm } from "@/lib/form-response";
 import { CategoryCard } from "./category-card";
+import { categoryAnchor } from "./menu-filter";
 
 type Entry = { id: string; name: string; head: ReactNode; foot?: ReactNode; content: ReactNode };
 
@@ -77,6 +78,7 @@ export function SortableCategories({ entries }: { entries: Entry[] }) {
             }}
           >
             <CategoryCard
+              id={categoryAnchor(id)}
               dragging={dragging === id}
               head={entry.head}
               foot={entry.foot}

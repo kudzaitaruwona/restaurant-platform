@@ -658,6 +658,8 @@ const routes: TenantRoute[] = [
             description: "",
             priceUsd: "8.50",
             categoryId: target.categoryId,
+            // The harness adds this name over and over: that's not what is tested here.
+            confirmed: "1",
           }),
         }),
       ),
@@ -755,6 +757,18 @@ const routes: TenantRoute[] = [
             sortOrder: "0",
             categoryId: target.categoryId,
           }),
+        }),
+        { params: Promise.resolve({ itemId: target.itemId }) },
+      ),
+  },
+  {
+    name: "POST /api/menu/items/[itemId]/move",
+    ownerOnly: true,
+    call: async (target) =>
+      (await import("@/app/api/menu/items/[itemId]/move/route")).POST(
+        request(`/api/menu/items/${target.itemId}/move`, {
+          method: "POST",
+          body: form({ direction: "down" }),
         }),
         { params: Promise.resolve({ itemId: target.itemId }) },
       ),
@@ -1112,7 +1126,7 @@ const sessionRoutes: SessionRoute[] = [
         request(init?.path ?? "/api/menu/categories", {
           method: "POST",
           headers: init?.headers,
-          body: form({ name: harnessCategory, ...fields }),
+          body: form({ name: harnessCategory, confirmed: "1", ...fields }),
         }),
       ),
   },
@@ -2450,16 +2464,19 @@ describe("the menu routes", () => {
     expect(await harnessRates(fixtures.a.restaurantId)).toHaveLength(before + 1);
   });
 
-  it.each(["0", "-1", "abc", ""])("a rate of %j is a 400 the form can show", async (usdToZig) => {
+  it.each([
+    ["0", "The rate must be above 0, like 26.2."],
+    ["-1", "The rate can't be negative. Enter it like 26.2."],
+    ["abc", "The rate must be digits only, like 26.2: no currency sign, letters or spaces."],
+    ["", "Enter the rate as a number above 0, like 26.2."],
+  ])("a rate of %j is a 400 the form can show", async (usdToZig, error) => {
     session.identity = aOwner.key;
     const before = (await harnessRates(fixtures.a.restaurantId)).length;
 
     const response = await sessionRoutes[3].call({ usdToZig });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "Enter the rate as a number above 0, like 26.2.",
-    });
+    expect(await response.json()).toEqual({ error });
     expect(await harnessRates(fixtures.a.restaurantId)).toHaveLength(before);
   });
 

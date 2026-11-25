@@ -1,7 +1,7 @@
 import "server-only";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { categories, menuItems, restaurants } from "@/db/schema";
-import { readCsvTable, yesNo } from "@/lib/csv";
+import { csvDelimiter, readCsvTable, yesNo } from "@/lib/csv";
 import {
   type ImportReport,
   type ImportValues,
@@ -10,6 +10,7 @@ import {
   reportRow,
   unique,
 } from "@/lib/csv-import";
+import { isZero } from "@/lib/confirmation";
 import { hasAPrice, itemFields, newCategory, noPrice } from "@/lib/menu";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { recordAudit } from "@/lib/tenant/audit";
@@ -59,7 +60,12 @@ const unshownPrice = {
  * live categories are held with a share lock, as adding one item holds its
  * category, so none is archived under an import.
  */
-async function plan(tx: TenantTransaction, restaurantId: string, rows: Row[]) {
+async function plan(
+  tx: TenantTransaction,
+  restaurantId: string,
+  rows: Row[],
+  decimalComma: boolean,
+) {
   const [{ currencyMode }] = await tx
     .select({ currencyMode: restaurants.currencyMode })
     .from(restaurants)
@@ -89,11 +95,18 @@ async function plan(tx: TenantTransaction, restaurantId: string, rows: Row[]) {
 
     const category = newCategory.safeParse({ name: values.category });
     if (!category.success) problems.push(category.error.issues[0].message);
+    // A semicolon file is how a spreadsheet saves where the decimal mark is a
+    // comma, so 8,50 there is 8.50. In a comma file it stays a mistake.
+    const priceOf = (value: string) =>
+      decimalComma && /^[0-9]+,[0-9]+$/.test(value) ? value.replace(",", ".") : value;
+    if ([values.priceUsd, values.priceZig].some((value) => priceOf(value) !== value)) {
+      notes.push("A decimal comma in a price was read as a decimal point.");
+    }
     const item = rowItem.safeParse({
       name: values.name,
       description: values.description,
-      priceUsd: values.priceUsd,
-      priceZig: values.priceZig,
+      priceUsd: priceOf(values.priceUsd),
+      priceZig: priceOf(values.priceZig),
     });
     if (!item.success) problems.push(...item.error.issues.map((issue) => issue.message));
     const available = yesNo(values.available, true);
@@ -108,6 +121,9 @@ async function plan(tx: TenantTransaction, restaurantId: string, rows: Row[]) {
         problems.push(`"${item.data.name}" is already in this file, on line ${inFile.get(key)}.`);
       } else if (!row.extraCells) {
         inFile.set(key, row.line);
+      }
+      if (isZero(item.data.priceUsd) || isZero(item.data.priceZig)) {
+        notes.push("A price is 0, so this item would be free. Check it before importing.");
       }
       if (currencyMode === "usd_only" && item.data.priceZig !== null) notes.push(unshownPrice.usd_only);
       if (currencyMode === "zig_only" && item.data.priceUsd !== null) notes.push(unshownPrice.zig_only);
@@ -148,7 +164,9 @@ export async function previewMenuImport(
 ): Promise<ImportReport | { error: string }> {
   const table = read(csv);
   if (!table.ok) return { error: table.error };
-  const planned = await withTenant(ctx, (tx) => plan(tx, ctx.restaurantId, table.rows));
+  const planned = await withTenant(ctx, (tx) =>
+    plan(tx, ctx.restaurantId, table.rows, csvDelimiter(csv) === ";"),
+  );
   return toReport(planned, null);
 }
 
@@ -168,7 +186,7 @@ export async function importMenu(
 
   const { restaurantId } = ctx;
   const { planned, imported } = await withTenant(ctx, async (tx) => {
-    const planned = await plan(tx, restaurantId, table.rows);
+    const planned = await plan(tx, restaurantId, table.rows, csvDelimiter(csv) === ";");
     const ready = planned.flatMap((entry) => (entry.item ? [entry.item] : []));
     if (ready.length === 0) return { planned, imported: 0 };
 

@@ -1,4 +1,4 @@
-import { BookOpen, Ban, ChevronUp, ExternalLink, ImageIcon, Info, Package, Pencil, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Ban, ChevronUp, ExternalLink, ImageIcon, Info, Package, Pencil, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
@@ -25,7 +25,9 @@ import { ExchangeRateStatus } from "../exchange-rate-status";
 import { CategoryCard } from "./category-card";
 import { Disclosure } from "./disclosure";
 import { ItemPriceFields } from "./item-price-fields";
+import { FilterRow, ItemsBody, MenuFinder, categoryAnchor } from "./menu-filter";
 import { Pill } from "./pill";
+import { RememberedCategorySelect } from "./remembered-category-select";
 import { SpecialsSection } from "./specials-section";
 import { PhotoForm } from "./photo-form";
 import { QuickPicks } from "./quick-picks";
@@ -76,10 +78,13 @@ export async function MenuScreen() {
             {/* Not a Link: it's a plain HTML response, not a page of this app. */}
             <a
               href={`/m/${menu.menuToken}`}
+              target="_blank"
+              rel="noopener"
               className={cn(buttonVariants({ variant: "secondary", size: "staff" }))}
             >
               <ExternalLink aria-hidden />
               See what customers see
+              <span className="sr-only"> (opens in a new tab)</span>
             </a>
             {isOwner && (
               <CsvImportDialog
@@ -122,24 +127,29 @@ export async function MenuScreen() {
         )}
       >
         <div className="flex min-w-0 flex-col gap-4">
-          {sections.length === 0 ? (
-            isOwner ? (
-              <FirstCategory />
+          <MenuFinder
+            categories={menu.categories.map(({ id, name }) => ({ id, name }))}
+            itemNames={menu.categories.flatMap((category) => category.items.map((item) => item.name))}
+          >
+            {sections.length === 0 ? (
+              isOwner ? (
+                <FirstCategory />
+              ) : (
+                <Card className="flex flex-col items-start gap-1 px-5 py-8">
+                  <p className="text-lead font-semibold">No categories yet</p>
+                  <p className="text-ink-2">The owner hasn&apos;t added anything to the menu.</p>
+                </Card>
+              )
+            ) : isOwner ? (
+              <SortableCategories entries={sections} />
             ) : (
-              <Card className="flex flex-col items-start gap-1 px-5 py-8">
-                <p className="text-lead font-semibold">No categories yet</p>
-                <p className="text-ink-2">The owner hasn&apos;t added anything to the menu.</p>
-              </Card>
-            )
-          ) : isOwner ? (
-            <SortableCategories entries={sections} />
-          ) : (
-            sections.map((section) => (
-              <CategoryCard key={section.id} head={section.head}>
-                {section.content}
-              </CategoryCard>
-            ))
-          )}
+              sections.map((section) => (
+                <CategoryCard key={section.id} id={categoryAnchor(section.id)} head={section.head}>
+                  {section.content}
+                </CategoryCard>
+              ))
+            )}
+          </MenuFinder>
         </div>
 
         {isOwner && (
@@ -203,7 +213,7 @@ export async function MenuScreen() {
                       </Field>
                       <ItemPriceFields pricing={menu.pricing} />
                       <Field label="Category">
-                        <CategorySelect categories={menu.categories} />
+                        <RememberedCategorySelect categories={menu.categories} />
                       </Field>
                       <Button type="submit" size="staff" className="self-start">
                         Add item
@@ -234,7 +244,17 @@ export async function MenuScreen() {
 
                 <SpecialsSection
                   specials={specials}
-                  items={menu.categories.flatMap((category) => category.items)}
+                  items={menu.categories.flatMap((category) =>
+                    category.items.map((item) => ({
+                      id: item.id,
+                      name: item.name,
+                      category: category.name,
+                      priceUsd: item.priceUsd,
+                      priceZig: item.priceZig,
+                      bundle: item.visibility === "special_only",
+                    })),
+                  )}
+                  pricing={menu.pricing}
                   timezone={menu.timezone}
                 />
 
@@ -353,7 +373,7 @@ function BundleForm({
             </Field>
             <ItemPriceFields pricing={pricing} />
             <Field label="Category" hint="Where it sits in this editor. Customers don't see it there.">
-              <CategorySelect categories={categories} />
+              <RememberedCategorySelect categories={categories} />
             </Field>
             <Field label="Badge" hint={`Optional. Shows as "Bundle" if blank.`}>
               <input name="title" maxLength={80} className={inputClassName} />
@@ -461,11 +481,12 @@ function CategoryItems({
     return <p className="px-4 py-5 text-ink-2">Nothing here yet.</p>;
   }
   return (
+    <ItemsBody categoryId={category.id} names={category.items.map((item) => item.name)}>
     <ul className="@container divide-y divide-line">
-      {category.items.map((item) => {
+      {category.items.map((item, index) => {
         const thumb = item.photoKey ? photoUrls(item.photoKey).thumb : null;
         return (
-          <li key={item.id} className="relative px-4 py-3">
+          <FilterRow key={item.id} name={item.name} className="relative px-4 py-3">
             <div
               className={cn(
                 "grid grid-cols-[48px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 @lg:grid-cols-[48px_minmax(0,1fr)_auto_auto] @lg:gap-x-4",
@@ -536,11 +557,20 @@ function CategoryItems({
                 </Button>
               </ActionForm>
             </div>
-            {isOwner && <ItemEditor item={item} categories={all} pricing={pricing} />}
-          </li>
+            {isOwner && (
+              <ItemEditor
+                item={item}
+                categories={all}
+                pricing={pricing}
+                first={index === 0}
+                last={index === category.items.length - 1}
+              />
+            )}
+          </FilterRow>
         );
       })}
     </ul>
+    </ItemsBody>
   );
 }
 
@@ -553,10 +583,14 @@ function ItemEditor({
   item,
   categories,
   pricing,
+  first,
+  last,
 }: {
   item: Category["items"][number];
   categories: Category[];
   pricing: Pricing;
+  first: boolean;
+  last: boolean;
 }) {
   return (
     <details className="group">
@@ -603,23 +637,41 @@ function ItemEditor({
             />
           </Field>
           <ItemPriceFields pricing={pricing} saved={item} />
-          <Field label="Sort order" hint="Lower numbers come first." className="max-w-48">
-            <input
-              name="sortOrder"
-              defaultValue={item.sortOrder}
-              inputMode="numeric"
-              required
-              className={`${inputClassName} tabular-nums`}
-            />
-          </Field>
           <Button type="submit" size="staff" className="self-start">
             Save item
           </Button>
         </ActionForm>
-        <div className="border-t border-line pt-4">
+        <div className="flex flex-col gap-3 border-t border-line pt-4">
+          <div role="group" aria-label="Position in its category" className="flex flex-wrap gap-2">
+            {(
+              [
+                ["up", "Move up", ArrowUp, first],
+                ["down", "Move down", ArrowDown, last],
+              ] as const
+            ).map(([direction, label, Icon, atEnd]) => (
+              <ActionForm
+                key={direction}
+                action={`/api/menu/items/${item.id}/move`}
+                className="flex flex-col items-start gap-1"
+              >
+                <input type="hidden" name="direction" value={direction} />
+                <Button type="submit" variant="secondary" size="compact" disabled={atEnd}>
+                  <Icon aria-hidden />
+                  {label}
+                  <span className="sr-only"> {item.name}</span>
+                </Button>
+              </ActionForm>
+            ))}
+          </div>
           <ActionForm
             action={`/api/menu/items/${item.id}/archive`}
-            confirmation={`Archive ${item.name}? Customers will stop seeing it.`}
+            confirmation={{
+              title: `Archive ${item.name}?`,
+              description:
+                "Customers will stop seeing it. Archiving can't be undone: an archived item can't be brought back.",
+              confirmLabel: "Archive item",
+              cancelLabel: "Keep item",
+            }}
             className="flex flex-col items-start gap-1"
           >
             <Button type="submit" variant="danger-secondary" size="compact">
@@ -645,7 +697,12 @@ function ArchiveCategory({ category, others }: { category: Category; others: Cat
   return (
     <ActionForm
       action={`/api/menu/categories/${category.id}/archive`}
-      confirmation={`Archive ${category.name}? Customers will stop seeing it.`}
+      confirmation={{
+        title: `Archive ${category.name}?`,
+        description: `Customers will stop seeing it.${hasItems ? " Its items move to the category you chose." : ""} Archiving can't be undone: an archived category can't be brought back.`,
+        confirmLabel: "Archive category",
+        cancelLabel: "Keep category",
+      }}
       className="flex flex-col gap-1"
     >
       <div className="flex flex-wrap items-end gap-2">

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ActionForm, confirmationOf } from "./action-form";
+import { ActionForm, confirmationOf, refusalFrom } from "./action-form";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {} }) }));
 
@@ -33,5 +33,20 @@ describe("an action form's confirmation (S-41)", () => {
       confirmLabel: "Confirm",
       cancelLabel: "Go back",
     });
+  });
+});
+
+describe("a save the server asks about first (issue #112)", () => {
+  it("reads a 409's warnings, so the form can ask and post again", async () => {
+    const response = Response.json(
+      { error: "The USD price is 0.", confirm: { warnings: ["The USD price is 0.", 7] } },
+      { status: 409 },
+    );
+    expect(await refusalFrom(response)).toMatchObject({ warnings: ["The USD price is 0."] });
+  });
+
+  it("is an ordinary refusal when there is nothing to confirm", async () => {
+    const refusal = await refusalFrom(Response.json({ error: "No." }, { status: 409 }));
+    expect(refusal).toEqual({ message: "No.", bookings: [], warnings: [] });
   });
 });
