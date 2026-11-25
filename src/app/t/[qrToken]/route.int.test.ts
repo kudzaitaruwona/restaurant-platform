@@ -187,6 +187,18 @@ describe("/t/{qr_token}", () => {
     expect(body).toContain('"/api/t/"');
   });
 
+  it("keeps the waiter status in the accessibility tree while it is empty (#142)", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    // Present before it is filled, so a screen reader that watches it announces the first message.
+    expect(body).toMatch(/<p id="waiter-status" class="said" role="status"><\/p>/);
+    // display:none would take it out of that tree; the empty one collapses instead.
+    expect(body).not.toMatch(/\.said:empty[^{}]*[,{][^}]*display:none/);
+    expect(body).toMatch(/\.said:empty\{[^}]*height:0/);
+  });
+
   it("hides the cart bar while the cart is open, so it can't cover Keep browsing or Place order", async () => {
     const { qrToken } = await newRestaurant("Ordering", "Beef stew");
 

@@ -117,7 +117,8 @@ main{padding-bottom:104px}
 @media (prefers-reduced-motion:no-preference){.waiter[data-called] .ring{animation:ring 2.4s ease-out 3}}
 @keyframes ring{0%,60%,100%{transform:rotate(0)}10%{transform:rotate(-14deg)}20%{transform:rotate(12deg)}30%{transform:rotate(-8deg)}40%{transform:rotate(4deg)}}
 .said{margin:-4px 16px 16px;padding:10px 12px;border-radius:10px;background:var(--attention-soft);color:var(--attention-ink);font-size:15px;font-weight:600}
-.said:empty,.confirm:empty,.err:empty,.tstate:empty,.inorder:empty{display:none}
+.said:empty{margin:0;padding:0;height:0;overflow:hidden}
+.confirm:empty,.err:empty,.tstate:empty,.inorder:empty{display:none}
 .tracker{margin:0 16px 16px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface)}
 .tracker h2{margin:0;font-size:17px;font-weight:600}
 .tstate{margin:8px 0 0;color:var(--ink-2);font-size:15px}
@@ -208,6 +209,14 @@ body:has(.order:not([hidden])){overflow:hidden}
  * so a retry is the same submission and the server places it once. While the last
  * answer was lost, a retry goes to the session it was first sent to, even one that
  * has ended, where the server can say whether it was placed.
+ * A reload doesn't lose that submission (#136): while its answer is unknown, the
+ * cart as it stands, the id, the session it went to and the voids counted at the
+ * start are kept in sessionStorage (this tab only, so a new tab starts clean), under
+ * a key of the table's token. Any answer ends that, a refusal included: a refused
+ * cart is the page's only. They are read back once the first join has answered, and
+ * only if they name this table and the very session just joined, in a shape the page
+ * would have made; anything else is deleted unread. A page that can't use storage
+ * works as before.
  */
 export const ORDER_SCRIPT = `(() => {
   const api = (path) => "/api/t/" + encodeURIComponent(location.pathname.split("/")[2]) + path;
@@ -284,6 +293,43 @@ export const ORDER_SCRIPT = `(() => {
   let keep = false;
   // Not crypto.randomUUID: older phones, and plain http, don't have it.
   const newId = () => "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+  // The submission kept across a reload (#136), while its answer is unknown: the whole
+  // cart goes back to the session it was sent to. An answered one isn't kept, so its
+  // lines can't come back as another session's. Storage can be refused or full: then
+  // there is only memory, as before.
+  const token = decodeURIComponent(location.pathname.split("/")[2] || "");
+  const slot = "order-pending:" + token;
+  const persist = () => {
+    try {
+      if (!asked || cart.length === 0) return sessionStorage.removeItem(slot);
+      sessionStorage.setItem(slot, JSON.stringify({
+        token,
+        session: asked,
+        request,
+        name: fields.name.value.trim(),
+        voids: voidsBefore,
+        lines: cart.map((line) => ({ id: line.id, name: line.name, price: line.price, quantity: line.quantity, note: line.note })),
+      }));
+    } catch {}
+  };
+  const text = (value, most) => typeof value === "string" && value.length <= most;
+  // Read back only what this page could have written for this table and session.
+  const saved = () => {
+    let value = null;
+    try {
+      const stored = sessionStorage.getItem(slot);
+      sessionStorage.removeItem(slot);
+      value = stored && JSON.parse(stored);
+    } catch { return null; }
+    const ok = value && typeof value === "object" && value.token === token && value.session === session
+      && text(value.request, 64) && value.request && text(value.name, 100)
+      && Array.isArray(value.lines) && value.lines.length > 0 && value.lines.length <= 20
+      && value.lines.every((line) => line && text(line.id, 64) && text(line.name, 200) && text(line.price, 40) && text(line.note, 200)
+        && Number.isInteger(line.quantity) && line.quantity >= 1 && line.quantity <= 20)
+      && new Set(value.lines.map((line) => line.id)).size === value.lines.length
+      && value.voids && typeof value.voids === "object" && Object.values(value.voids).every((n) => Number.isInteger(n) && n >= 0);
+    return ok ? value : null;
+  };
   // The session the page is now in. A new one asks for the name again.
   const enter = (next) => {
     if (session && next !== session) { fields.name.value = ""; last = ""; epoch++; items = []; showCall(false, ""); clearRefusal(); }
@@ -309,6 +355,7 @@ export const ORDER_SCRIPT = `(() => {
   };
 
   const draw = () => {
+    persist();
     const total = cart.reduce((sum, line) => sum + line.quantity, 0);
     bar.hidden = cart.length === 0;
     count.textContent = String(total);
@@ -363,6 +410,7 @@ export const ORDER_SCRIPT = `(() => {
       note.addEventListener("input", () => {
         if (note.value.includes("\\n")) note.value = note.value.replace(/\\s*\\n\\s*/g, " ");
         line.note = note.value;
+        persist();
         showUsed();
       });
       showUsed();
@@ -439,12 +487,34 @@ export const ORDER_SCRIPT = `(() => {
   let tries = 0;
   let waiting = null;
   let connecting = false;
+  let first = true;
+  // A reload after a lost answer (#136): the cart and its id come back, to be sent
+  // again to the session they first went to (this one, or it isn't read). Its dishes
+  // show today's name and price where the menu still has them, and stay in it
+  // where it doesn't: the server finds a placed order by its id before it looks at
+  // availability, and a dish that can't be ordered now is refused there, by name.
+  const restore = () => {
+    const value = saved();
+    if (!value || request || cart.length > 0) return;
+    cart = value.lines.map((line) => {
+      const button = adds.find((other) => other.dataset.item === line.id);
+      return Object.assign(line, button ? { name: button.dataset.name, price: button.dataset.price || "" } : {}, { from: session });
+    });
+    request = value.request;
+    asked = session;
+    voidsBefore = value.voids;
+    if (!fields.name.value) fields.name.value = value.name;
+    persist();
+    draw();
+    fail("Your last order may not have gone through. Check it, then place it again: if it was placed, you'll see it confirmed.");
+  };
   // Never disabled or moved while it is up: either would drop a keyboard's focus.
   const connect = () => {
     if (connecting) return;
     connecting = true;
     clearTimeout(waiting);
     join().then(() => {
+      if (first) { first = false; restore(); }
       waiterSaid.replaceChildren();
       delete waiterSaid.dataset.tone;
       for (const button of adds) button.hidden = false;
@@ -524,6 +594,7 @@ export const ORDER_SCRIPT = `(() => {
       const to = asked;
       if (!request) voidsBefore = voids();
       request = request || newId();
+      persist();
       const body = new URLSearchParams();
       for (const line of cart) {
         body.append("item", line.id);
@@ -535,7 +606,7 @@ export const ORDER_SCRIPT = `(() => {
       body.set("request", request);
       const response = await fetch(api("/orders"), { method: "POST", body });
       const answer = await response.json().catch(() => ({}));
-      if (answer.placed || (answer.error && response.status < 500)) asked = null;
+      if (answer.placed || (answer.error && response.status < 500)) { asked = null; persist(); }
       if (response.status === 201 && answer.placed) {
         request = null;
         keep = !!retrying;
@@ -562,7 +633,7 @@ export const ORDER_SCRIPT = `(() => {
         const named = cart.find((line) => line.id === answer.item) || (gone[0] && gone[0].dataset);
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
-        for (const button of gone) { button.disabled = true; button.textContent = "Sold out"; }
+        for (const button of gone) { button.disabled = true; button.textContent = "Not available"; }
         fail("Sorry, " + (named ? named.name : "that item") + " isn't available right now. It was taken out of your order.");
         // With the cart empty the message is on the page, not in the sheet: bring it into view.
         if (cart.length === 0 && waiterSaid.scrollIntoView) waiterSaid.scrollIntoView({ block: "center" });

@@ -84,6 +84,13 @@ async function loadPage(
   {
     feed = { session: sessionId, items: [] } as Feed,
     joinReplies = [] as (Reply | "abort" | "hang")[],
+    /** This tab's sessionStorage: a reload keeps it, a new tab starts empty. */
+    tab = new Map<string, string>(),
+    /** A browser that refuses sessionStorage (private modes, blocked site data). */
+    blocked = false,
+    /** What the menu now charges for the stew, and whether it still lists it. */
+    stewPrice = "$8.00",
+    stewListed = true,
   } = {},
 ) {
   const state = {
@@ -157,6 +164,20 @@ async function loadPage(
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => void storage.set(key, String(value)),
   };
+  const sessionStorage = {
+    getItem: (key: string) => {
+      if (blocked) throw new Error("SecurityError");
+      return tab.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => {
+      if (blocked) throw new Error("SecurityError");
+      tab.set(key, String(value));
+    },
+    removeItem: (key: string) => {
+      if (blocked) throw new Error("SecurityError");
+      tab.delete(key);
+    },
+  };
   const fetch = async (
     url: string,
     init: { method?: string; body?: URLSearchParams; signal?: unknown } = {},
@@ -210,12 +231,15 @@ async function loadPage(
     return { ok: reply.status < 400, status: reply.status, json: async () => reply.json };
   };
   let timer: (() => unknown) | undefined;
-  const stew = addButton("item-stew", "Beef stew");
+  const stew = addButton("item-stew", "Beef stew", stewPrice);
+  if (!stewListed) addButtons.splice(addButtons.indexOf(stew), 1);
   const rice = addButton("item-rice", "Rice", "$3.00");
+  const soup = addButton("item-soup", "Soup", "$4.00");
 
   runInNewContext(ORDER_SCRIPT, {
     document,
     localStorage,
+    sessionStorage,
     fetch,
     URLSearchParams,
     crypto,
@@ -247,6 +271,7 @@ async function loadPage(
     state,
     stew,
     rice,
+    soup,
     name: fields.name,
     form,
     /** Where a problem with the order shows: inside the sheet, above its buttons. */
@@ -808,7 +833,8 @@ describe("placing the order", () => {
     await page.placeAs("Tariro");
 
     expect(page.rice.disabled).toBe(true);
-    expect(page.rice.textContent).toBe("Sold out");
+    // The server can't say sold out from archived or outside a bundle's window, so the button doesn't claim it (#142).
+    expect(page.rice.textContent).toBe("Not available");
     expect(page.stew.disabled).toBe(false);
     await page.add(page.rice);
     expect(page.cartText()).not.toContain("Rice");
@@ -1717,5 +1743,369 @@ describe("a waiter call follows the server (#97)", () => {
     await tickWith(page, { session: "session-1", items: [item], waiter: true });
     // A status region written again is read out again.
     expect(page.waiterStatus.textContent).toBe("");
+  });
+});
+
+describe("a reload after a lost order response keeps the cart and its request id (#136)", () => {
+  const bodies = (page: Awaited<ReturnType<typeof loadPage>>) =>
+    page.state.requests.filter((request) => request.path === "/orders").map((request) => request.body!);
+  const key = "order-pending:some-token";
+
+  /** One stew ordered, its answer lost; the tab's storage is what a reload finds. */
+  async function lostThenStored() {
+    const tab = new Map<string, string>();
+    const first = await loadPage(new Map(), "session-1", { tab });
+    first.state.loseOrderReply = true;
+    await first.orderOne("Tariro");
+    return { tab, first };
+  }
+
+  it("brings the cart back and sends the same submission, which is then placed once", async () => {
+    const { tab, first } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+
+    expect(reloaded.quantities()).toEqual({ "Beef stew": 1 });
+    expect(reloaded.error.textContent).toMatch(/may not have gone through/i);
+    await reloaded.placeAs("Tariro");
+
+    const [lost] = bodies(first);
+    const [retry] = bodies(reloaded);
+    expect(retry.toString()).toBe(lost.toString());
+    expect(reloaded.confirmation.textContent).toContain("1 × Dish 1");
+    expect(reloaded.cart.children).toHaveLength(0);
+    expect(tab.has(key)).toBe(false);
+  });
+
+  it("is gone for the next reload once the order is known to be placed", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+    await reloaded.placeAs("Tariro");
+
+    const again = await loadPage(new Map(), "session-1", { tab });
+
+    expect(again.cart.children).toHaveLength(0);
+    expect(again.open.hidden).toBe(true);
+  });
+
+  it("is kept across another reload while the answer is still lost", async () => {
+    const { tab } = await lostThenStored();
+    const second = await loadPage(new Map(), "session-1", { tab });
+    second.state.loseOrderReply = true;
+    await second.placeAs("Tariro");
+
+    const third = await loadPage(new Map(), "session-1", { tab });
+    await third.placeAs("Tariro");
+
+    expect(bodies(third)[0].get("request")).toBe(bodies(second)[0].get("request"));
+  });
+
+  it("is dropped when the server says it was never placed in a session that has moved on", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+    reloaded.state.sessionId = "session-2";
+    reloaded.state.orderReply = { status: 409, json: { error: "reset", code: "session_changed" } };
+    await reloaded.placeAs("Tariro");
+
+    expect(tab.has(key)).toBe(false);
+  });
+
+  it("keeps a cart changed since under the same id, and the server's refusal ends the id", async () => {
+    const { tab, first } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+    await reloaded.add(reloaded.rice);
+    // Another reload before sending: the change is what comes back.
+    const again = await loadPage(new Map(), "session-1", { tab });
+    expect(again.quantities()).toEqual({ "Beef stew": 1, Rice: 1 });
+
+    again.state.orderReply = { status: 409, json: { error: "Your earlier order went through.", code: "already_placed" } };
+    await again.placeAs("Tariro");
+    expect(bodies(again)[0].get("request")).toBe(bodies(first)[0].get("request"));
+    expect(tab.has(key)).toBe(false);
+    again.state.orderReply = undefined;
+    await again.placeAs("Tariro");
+    expect(bodies(again)[1].get("request")).not.toBe(bodies(first)[0].get("request"));
+  });
+
+  it("keeps a note typed after the lost answer", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+    const [note] = reloaded.noteInputs();
+    note.value = "no onions";
+    note.dispatch("input");
+
+    const again = await loadPage(new Map(), "session-1", { tab });
+    await again.placeAs("Tariro");
+
+    expect(bodies(again)[0].get("note")).toBe("no onions");
+  });
+
+  it("works as before, in memory, when the browser blocks storage", async () => {
+    const first = await loadPage(new Map(), "session-1", { blocked: true });
+    first.state.loseOrderReply = true;
+    await first.orderOne("Tariro");
+    first.state.loseOrderReply = false;
+    await first.placeAs("Tariro");
+    expect(bodies(first)[1].get("request")).toBe(bodies(first)[0].get("request"));
+    expect(first.confirmation.textContent).toContain("1 × Dish 1");
+
+    const reloaded = await loadPage(new Map(), "session-1", { blocked: true });
+    expect(reloaded.cart.children).toHaveLength(0);
+  });
+
+  it("never shows or sends a cart saved in another session", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-2", { tab });
+
+    expect(reloaded.cart.children).toHaveLength(0);
+    expect(reloaded.open.hidden).toBe(true);
+    expect(reloaded.error.textContent).toBe("");
+    expect(bodies(reloaded)).toHaveLength(0);
+    expect(tab.has(key)).toBe(false);
+  });
+
+  it("never reads a cart saved for another table", async () => {
+    const { tab } = await lostThenStored();
+    const other = new Map([["order-pending:other-token", tab.get(key)!]]);
+    expect((await loadPage(new Map(), "session-1", { tab: other })).cart.children).toHaveLength(0);
+
+    // Even moved under this table's key, it names its own.
+    const moved = new Map([[key, tab.get(key)!.replace("some-token", "other-token")]]);
+    const page = await loadPage(new Map(), "session-1", { tab: moved });
+    expect(page.cart.children).toHaveLength(0);
+    expect(moved.has(key)).toBe(false);
+  });
+
+  /** A stored value the page would have written, and what each row below breaks in it. */
+  const line = { id: "item-stew", name: "Beef stew", price: "$8.00", quantity: 1, note: "no onions" };
+  const valid = {
+    token: "some-token",
+    session: "session-1",
+    request: "6f1f0f3e-5d0a-4d8b-9c55-0c4c1f6c8a11",
+    name: "Tariro",
+    voids: { "Dish 1": 1 },
+    lines: [line, { ...line, id: "item-rice", name: "Rice", price: "$3.00", quantity: 20, note: "" }],
+  };
+  const manyLines = (count: number) => Array.from({ length: count }, (_, index) => ({ ...line, id: `item-${index}` }));
+  const load = async (value: unknown) => {
+    const tab = new Map([[key, typeof value === "string" ? value : JSON.stringify(value)]]);
+    return { tab, page: await loadPage(new Map(), "session-1", { tab }) };
+  };
+
+  it.each([
+    ["as the page writes it", valid],
+    ["with as many lines as an order can have", { ...valid, lines: manyLines(20) }],
+    ["with a note as long as one can be", { ...valid, lines: [{ ...line, note: "x".repeat(200) }] }],
+    ["with nothing voided", { ...valid, voids: {} }],
+  ])("restores a stored value %s", async (_what, value) => {
+    const { tab, page } = await load(value);
+
+    expect(page.cart.children).toHaveLength(value.lines.length);
+    expect(page.noteInputs()[0].value).toBe(value.lines[0].note);
+    expect(tab.has(key)).toBe(true);
+    await page.placeAs("Tariro");
+    expect(bodies(page)[0].get("request")).toBe(value.request);
+  });
+
+  it.each<[string, unknown]>([
+    ["not JSON", `${JSON.stringify(valid)}}`],
+    ["not an object", 5],
+    ["null", null],
+    ["without a request", { ...valid, request: undefined }],
+    ["a request that isn't text", { ...valid, request: { a: 1 } }],
+    ["an empty request", { ...valid, request: "" }],
+    ["an over-long request", { ...valid, request: "r".repeat(65) }],
+    ["without a name", { ...valid, name: undefined }],
+    ["an over-long name", { ...valid, name: "n".repeat(101) }],
+    ["without lines", { ...valid, lines: undefined }],
+    ["lines that aren't a list", { ...valid, lines: "x" }],
+    ["no lines", { ...valid, lines: [] }],
+    ["21 lines", { ...valid, lines: manyLines(21) }],
+    ["an empty line", { ...valid, lines: [line, null] }],
+    ["a duplicate id", { ...valid, lines: [line, { ...line }] }],
+    ["an id that isn't text", { ...valid, lines: [{ ...line, id: 7 }] }],
+    ["an over-long id", { ...valid, lines: [{ ...line, id: "i".repeat(65) }] }],
+    ["a dish name that isn't text", { ...valid, lines: [{ ...line, name: 7 }] }],
+    ["an over-long dish name", { ...valid, lines: [{ ...line, name: "n".repeat(201) }] }],
+    ["a price that isn't text", { ...valid, lines: [{ ...line, price: 7 }] }],
+    ["an over-long price", { ...valid, lines: [{ ...line, price: "9".repeat(41) }] }],
+    ["a note that isn't text", { ...valid, lines: [{ ...line, note: null }] }],
+    ["an over-long note", { ...valid, lines: [{ ...line, note: "x".repeat(201) }] }],
+    ["a quantity of none", { ...valid, lines: [{ ...line, quantity: 0 }] }],
+    ["a quantity over 20", { ...valid, lines: [{ ...line, quantity: 21 }] }],
+    ["a quantity that isn't whole", { ...valid, lines: [{ ...line, quantity: 1.5 }] }],
+    ["without voids", { ...valid, voids: undefined }],
+    ["null voids", { ...valid, voids: null }],
+    ["voids that aren't counts by dish", { ...valid, voids: 5 }],
+    ["a negative void count", { ...valid, voids: { "Dish 1": -1 } }],
+    ["a void count that isn't a number", { ...valid, voids: { "Dish 1": "1" } }],
+  ])("ignores a stored value that is %s", async (_what, value) => {
+    const { tab, page } = await load(value);
+
+    expect(page.cart.children).toHaveLength(0);
+    expect(page.error.textContent).toBe("");
+    expect(tab.has(key)).toBe(false);
+    // Nothing of it is left in the page either: the next order is one of its own.
+    await page.orderOne("Tariro");
+    expect(bodies(page)[0].getAll("item")).toEqual(["item-stew"]);
+    expect(bodies(page)[0].get("request")).not.toBe(valid.request);
+  });
+
+  describe("only while its answer is unknown: a refused cart is the page's only", () => {
+    const refusals: [string, Reply][] = [
+      ["unavailable", { status: 409, json: { error: "Sold out.", code: "unavailable", item: "item-rice" } }],
+      ["rate limited", { status: 429, json: { error: "Wait." } }],
+      ["not valid", { status: 400, json: { error: "Not valid." } }],
+    ];
+    const reload = (tab: Map<string, string>, session: string) => loadPage(new Map(), session, { tab });
+    const expectNothingBack = async (page: Awaited<ReturnType<typeof loadPage>>) => {
+      expect(page.cart.children).toHaveLength(0);
+      expect(page.open.hidden).toBe(true);
+      expect(page.error.textContent).toBe("");
+      expect(page.waiterStatus.textContent).not.toMatch(/may not have gone through/i);
+      await page.placeAs("Rudo");
+      expect(bodies(page)).toHaveLength(0);
+    };
+
+    /** Stew and rice, refused in session 1: a rice that sold out, say, leaves the stew. */
+    async function refused(reply: Reply) {
+      const tab = new Map<string, string>();
+      const page = await loadPage(new Map(), "session-1", { tab });
+      await page.add(page.stew);
+      await page.add(page.rice);
+      page.state.orderReply = reply;
+      await page.placeAs("Tariro");
+      page.state.orderReply = undefined;
+      return { tab, page };
+    }
+
+    it.each(refusals)("doesn't keep a cart that was %s", async (_what, reply) => {
+      const { tab, page } = await refused(reply);
+      await page.buttonLabelled("+").dispatch("click");
+
+      expect(tab.has(key)).toBe(false);
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it.each(refusals)(
+      "never brings a cart that was %s in a session that has ended into the next party's",
+      async (_what, reply) => {
+        const { tab, page } = await refused(reply);
+        page.state.feed = { session: null, items: [] };
+        await page.tick();
+        page.state.sessionId = "session-2";
+        await page.add(page.soup);
+        await page.buttonLabelled("+").dispatch("click");
+        const [note] = page.noteInputs();
+        note.value = "no onions";
+        note.dispatch("input");
+
+        await expectNothingBack(await reload(tab, "session-2"));
+      },
+    );
+
+    it("doesn't call a dish added after a refusal emptied the cart an order that may not have gone through", async () => {
+      const tab = new Map<string, string>();
+      const page = await loadPage(new Map(), "session-1", { tab });
+      await page.add(page.rice);
+      page.state.orderReply = refusals[0][1];
+      await page.placeAs("Tariro");
+      expect(page.cart.children).toHaveLength(0);
+      await page.add(page.stew);
+
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it("lets go of a restored cart once its retry is refused", async () => {
+      const { tab } = await lostThenStored();
+      const page = await reload(tab, "session-1");
+      page.state.orderReply = refusals[1][1];
+      await page.placeAs("Tariro");
+
+      expect(page.quantities()).toEqual({ "Beef stew": 1 });
+      await expectNothingBack(await reload(tab, "session-1"));
+    });
+
+    it.each(refusals)("keeps the id in the page after one that was %s, and the next lost answer is kept", async (_what, reply) => {
+      const { tab, page } = await refused(reply);
+      page.state.loseOrderReply = true;
+      await page.placeAs("Tariro");
+      const reloaded = await reload(tab, "session-1");
+
+      expect(reloaded.error.textContent).toMatch(/may not have gone through/i);
+      await reloaded.placeAs("Tariro");
+      expect(bodies(page)[1].get("request")).toBe(bodies(page)[0].get("request"));
+      expect(bodies(reloaded)[0].toString()).toBe(bodies(page)[1].toString());
+    });
+
+    it("keeps a lost answer's session, not the one an Add has joined since", async () => {
+      const { tab, first } = await lostThenStored();
+      first.state.feed = { session: null, items: [] };
+      await first.tick();
+      first.state.sessionId = "session-2";
+      await first.add(first.soup);
+      await first.buttonLabelled("+").dispatch("click");
+
+      expect(JSON.parse(tab.get(key)!).session).toBe("session-1");
+      await expectNothingBack(await reload(tab, "session-2"));
+    });
+  });
+
+  it("shows today's price for a repriced dish, and still sends what was sent", async () => {
+    const { tab, first } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab, stewPrice: "$9.50" });
+
+    expect(reloaded.cartText()).toContain("$9.50");
+    await reloaded.placeAs("Tariro");
+    expect(bodies(reloaded)[0].toString()).toBe(bodies(first)[0].toString());
+  });
+
+  it("keeps a dish no longer on the menu in the cart, so a replay still matches what was placed", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab, stewListed: false });
+
+    expect(reloaded.quantities()).toEqual({ "Beef stew": 1 });
+    await reloaded.placeAs("Tariro");
+    expect(bodies(reloaded)[0].getAll("item")).toEqual(["item-stew"]);
+  });
+
+  it("takes a dish the server calls unavailable out of the cart and out of storage", async () => {
+    const { tab } = await lostThenStored();
+    const reloaded = await loadPage(new Map(), "session-1", { tab });
+    reloaded.state.orderReply = {
+      status: 409,
+      json: { error: "Sold out.", code: "unavailable", item: "item-stew" },
+    };
+    await reloaded.placeAs("Tariro");
+
+    expect(reloaded.cart.children).toHaveLength(0);
+    expect(tab.has(key)).toBe(false);
+  });
+
+  it("is per tab: a new tab has nothing, a duplicated one sends the same id and so the same order", async () => {
+    const { tab, first } = await lostThenStored();
+    const fresh = await loadPage(new Map(), "session-1");
+    expect(fresh.cart.children).toHaveLength(0);
+
+    const duplicate = await loadPage(new Map(), "session-1", { tab: new Map(tab) });
+    const original = await loadPage(new Map(), "session-1", { tab });
+    await duplicate.placeAs("Tariro");
+    await original.placeAs("Tariro");
+    expect(bodies(duplicate)[0].get("request")).toBe(bodies(first)[0].get("request"));
+    expect(bodies(original)[0].get("request")).toBe(bodies(first)[0].get("request"));
+  });
+
+  it("doesn't take a dish voided before the lost order for one voided after it (#99)", async () => {
+    const tab = new Map<string, string>();
+    const voided = { quantity: 1, name: "Dish 1", note: null, customer: "Farai", status: "voided", time: "12:00" };
+    const feed = { session: "session-1", items: [voided] };
+    const first = await loadPage(new Map(), "session-1", { tab, feed });
+    first.state.loseOrderReply = true;
+    await first.orderOne("Tariro");
+
+    const reloaded = await loadPage(new Map(), "session-1", { tab, feed });
+    await reloaded.placeAs("Tariro");
+    await reloaded.tick();
+
+    expect(reloaded.confirmation.textContent).toContain("1 × Dish 1");
   });
 });
