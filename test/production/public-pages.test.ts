@@ -415,7 +415,7 @@ describe("the manage page", () => {
     for (const response of [await visit(`/b/${token}`), await visit(`/b/${token}`)]) {
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("referrer-policy")).toBe("same-origin");
+      expect(response.headers.get("referrer-policy")).toBe("origin");
       expect(response.headers.get("x-nextjs-cache")).not.toBe("HIT");
       expect(response.headers.get("x-robots-tag")).toContain("noindex");
     }
@@ -440,7 +440,7 @@ describe("the manage page", () => {
       const response = await visit(`/b/${token}`);
       expect(response.status).toBe(404);
       expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("referrer-policy")).toBe("same-origin");
+      expect(response.headers.get("referrer-policy")).toBe("origin");
     }
   });
 

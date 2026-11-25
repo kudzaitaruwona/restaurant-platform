@@ -1,10 +1,11 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as savePeriod } from "@/app/api/bookings/periods/[periodId]/route";
 import { POST as removeClosure } from "@/app/api/bookings/closures/[closureId]/delete/route";
 import { POST as addClosure } from "@/app/api/bookings/closures/route";
+import { POST as copyPeriod } from "@/app/api/bookings/periods/[periodId]/copy/route";
 import { POST as addPeriod } from "@/app/api/bookings/periods/route";
 import { POST as saveRules } from "@/app/api/bookings/settings/route";
 import { POST as setEnabled } from "@/app/api/bookings/settings/enabled/route";
@@ -31,6 +32,22 @@ vi.mock("@/lib/tenant", async (original) => ({
   ...(await original<typeof import("@/lib/tenant")>()),
   getTenantContext: async () => session.tenant as TenantContext,
 }));
+
+/** Each audited write, as the platform admin's log would have it; or a deadlock, with a real SQLSTATE. */
+const audit = vi.hoisted(() => ({ deadlocks: false, entities: [] as unknown[] }));
+vi.mock("@/lib/tenant/audit", async (original) => {
+  const actual = await original<typeof import("@/lib/tenant/audit")>();
+  return {
+    ...actual,
+    recordAdminAction: async (...args: Parameters<typeof actual.recordAdminAction>) => {
+      if (audit.deadlocks) {
+        await args[0].execute(sql`do $$ begin raise exception 'deadlock detected' using errcode = '40P01'; end $$`);
+      }
+      audit.entities.push(args[2].entityId);
+      return actual.recordAdminAction(...args);
+    },
+  };
+});
 
 vi.mock("next/cache", () => ({ revalidateTag: () => {} }));
 
@@ -275,6 +292,203 @@ describe("/dashboard/bookings/settings", () => {
 
     expect(html).toContain("Online booking is on");
     expect(html).toContain("Turn online booking off");
+  });
+});
+
+describe("the settings screen's guidance (#109)", () => {
+  it("links each missing gate item to where it is fixed", async () => {
+    const html = await screen();
+
+    expect(html).toContain('href="#service-periods"');
+    expect(html).toContain('href="/dashboard/tables"');
+    expect(html).toContain('href="/dashboard/settings"');
+    expect(html).toContain("Go to Restaurant settings");
+  });
+
+  it("explains each rule beside its field, and says what a save changes", async () => {
+    const html = await screen();
+
+    expect(html).toContain("Guests can cancel online until this long before the booking");
+    expect(html).toContain("Time kept free after each sitting");
+    expect(html).not.toContain("Changes apply to bookings made from now on.");
+  });
+
+  it("keeps the enable button from stretching: the refusal sits under it, not beside", async () => {
+    expect(await screen()).toMatch(/action="\/api\/bookings\/settings\/enabled"[\s\S]*?<fieldset[^>]*items-start/);
+  });
+
+  it("offers to copy each period to the other six days, never its own", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+
+    const html = await screen();
+
+    expect(html).toContain(`action="/api/bookings/periods/${id}/copy"`);
+    const form = html.slice(html.indexOf(`/periods/${id}/copy`));
+    const boxes = form.slice(0, form.indexOf("</form>")).match(/name="weekdays" value="\d"/g);
+    expect(boxes).toHaveLength(6);
+    expect(boxes).not.toContain('name="weekdays" value="1"');
+    expect(html).toContain("nothing is copied");
+  });
+});
+
+describe("saving rules that ask first (#109)", () => {
+  const rules = {
+    slotIntervalMinutes: "15",
+    sittingMinutes: "90",
+    largePartySize: "6",
+    largePartySittingMinutes: "60",
+    bufferMinutes: "15",
+    minLeadMinutes: "60",
+    maxDaysAhead: "30",
+    maxOnlinePartySize: "8",
+    guestCancelCutoffMinutes: "120",
+    maxActiveBookingsPerPhone: "2",
+  };
+
+  it("answers 409 with the warning and saves nothing, then saves once confirmed", async () => {
+    const asked = await saveRules(post("/api/bookings/settings", rules));
+
+    expect(asked.status).toBe(409);
+    const body = await asked.json();
+    expect(body.confirm.warnings).toHaveLength(1);
+    expect(body.confirm.warnings[0]).toContain("60 minutes");
+    expect((await settingsRow()).largePartySize).toBe(5);
+
+    const saved = await saveRules(post("/api/bookings/settings", { ...rules, confirmed: "1" }));
+    expect(saved.status).toBe(303);
+    expect(await settingsRow()).toMatchObject({ largePartySize: 6, largePartySittingMinutes: 60 });
+  });
+
+  it("saves a sensible pair without asking", async () => {
+    const saved = await saveRules(
+      post("/api/bookings/settings", { ...rules, largePartySittingMinutes: "120" }),
+    );
+
+    expect(saved.status).toBe(303);
+  });
+});
+
+describe("copying a period to other days (#109)", () => {
+  const copy = (id: string, days: string[]) => {
+    const body = new FormData();
+    for (const day of days) body.append("weekdays", day);
+    return copyPeriod(
+      new NextRequest(new URL(`/api/bookings/periods/${id}/copy`, "http://localhost:3000"), {
+        method: "POST",
+        body,
+        headers: { [FORM_FETCH_HEADER]: "1" },
+      }),
+      periodParams(id),
+    );
+  };
+  const onDays = async () => (await periods()).map((p) => p.weekday).sort();
+
+  it("adds the same name and times on each chosen day", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+
+    const response = await copy(id, ["2", "3", "5"]);
+
+    expect(response.status).toBe(204);
+    expect(await onDays()).toEqual([1, 2, 3, 5]);
+    expect((await periods()).filter((p) => p.weekday === 5)[0]).toMatchObject({
+      name: "Lunch",
+      opensAt: "12:00:00",
+      lastBookingAt: "14:00:00",
+      closesAt: "15:00:00",
+    });
+  });
+
+  it("adds the days in one order, however they were ticked, so two copies can't cross", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+    audit.entities = [];
+
+    await copy(id, ["5", "2", "0"]);
+
+    const weekdays = new Map((await periods()).map((p) => [p.id as unknown, p.weekday]));
+    expect(audit.entities.map((entity) => weekdays.get(entity))).toEqual([0, 2, 5]);
+  });
+
+  it("answers a deadlock between two copies with the 409, and copies nothing", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+    audit.deadlocks = true;
+    try {
+      const response = await copy(id, ["2"]);
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain("Nothing was copied");
+    } finally {
+      audit.deadlocks = false;
+    }
+    expect(await onDays()).toEqual([1]);
+  });
+
+  it("copies nothing at all if one chosen day overlaps, and names the day", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    await addPeriod(
+      post("/api/bookings/periods", { ...lunch, weekday: "3", name: "Brunch", opensAt: "11:00", lastBookingAt: "12:00", closesAt: "13:00" }),
+    );
+    const source = (await periods()).find((p) => p.weekday === 1)!;
+
+    const response = await copy(source.id, ["2", "3", "4"]);
+
+    expect(response.status).toBe(409);
+    const { error } = await response.json();
+    expect(error).toContain("Nothing was copied");
+    expect(error).toContain("Wednesday (Brunch)");
+    expect(await onDays()).toEqual([1, 3]);
+  });
+
+  it("lets a period that only touches another be copied", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    await addPeriod(
+      post("/api/bookings/periods", { ...lunch, weekday: "2", name: "Dinner", opensAt: "15:00", lastBookingAt: "20:00", closesAt: "22:00" }),
+    );
+    const source = (await periods()).find((p) => p.weekday === 1)!;
+
+    expect((await copy(source.id, ["2"])).status).toBe(204);
+    expect(await onDays()).toEqual([1, 2, 2]);
+  });
+
+  it("refuses no days, a bad day, and only the period's own day", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+
+    expect((await copy(id, [])).status).toBe(400);
+    expect((await copy(id, ["9"])).status).toBe(400);
+    expect((await copy(id, ["1"])).status).toBe(400);
+    expect(await onDays()).toEqual([1]);
+  });
+
+  it("can't copy another restaurant's period, or copy into it", async () => {
+    await addPeriod(post("/api/bookings/periods", lunch));
+    const [{ id }] = await periods();
+    const other = crypto.randomUUID();
+    await owner.db.insert(restaurants).values({
+      id: other,
+      name: "Somewhere else",
+      slug: `booking-screen-${other}`,
+      menuToken: other,
+      currencyMode: "usd_only",
+    });
+    created.push(other);
+    session.tenant = { restaurantId: other, staffId: tenant.staffId, role: "owner" };
+
+    expect(await statusOf(() => copy(id, ["2"]))).toBe(404);
+    expect(await onDays()).toEqual([1]);
+    expect(
+      await owner.db.select().from(servicePeriods).where(eq(servicePeriods.restaurantId, other)),
+    ).toHaveLength(0);
+  });
+
+  it("is for owners, and a malformed id is a 404", async () => {
+    session.tenant = { ...tenant, role: "staff" };
+    expect(await statusOf(() => copy(crypto.randomUUID(), ["2"]))).toBe(403);
+    session.tenant = tenant;
+    expect(await statusOf(() => copy("nope", ["2"]))).toBe(404);
   });
 });
 

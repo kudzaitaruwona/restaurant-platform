@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { bookings, diningTables, notifications } from "@/db/schema";
-import { addDays, localToday } from "@/lib/booking-engine";
+import { bookings, closures, diningTables, notifications } from "@/db/schema";
+import { addDays, instantOf, localToday } from "@/lib/booking-engine";
 import type { TenantContext } from "@/lib/tenant";
 import { aBooking, bookableRestaurant } from "../../../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../../../test/integration/database";
@@ -92,6 +92,26 @@ describe("the day view", () => {
       expect(id).toBeDefined();
       expect(menu).toMatch(new RegExp(`role="menuitem" type="submit" form="${id}"`));
     }
+  });
+
+  it("warns in the Cancel dialog that the guest is messaged, only when they will be", async () => {
+    await dayWith([
+      { guestName: "Reachable", guestPhone: "+263771234567", whatsappOptIn: true },
+      { guestName: "Optedout", guestPhone: "+263771234568", whatsappOptIn: false },
+      { guestName: "Numberless", guestPhone: null, whatsappOptIn: true },
+    ]);
+
+    const html = await render(day);
+    const dialogOf = (name: string, action: string) => {
+      const row = html.split(/<li[\s>]/).find((part) => part.includes(name)) ?? "";
+      const form = row.slice(row.indexOf(`/${action}"`));
+      return form.slice(0, form.indexOf("</dialog>"));
+    };
+
+    expect(dialogOf("Reachable", "cancel")).toContain("message them on WhatsApp to say it");
+    expect(dialogOf("Reachable", "no-show")).not.toContain("WhatsApp");
+    expect(dialogOf("Optedout", "cancel")).not.toContain("WhatsApp");
+    expect(dialogOf("Numberless", "cancel")).not.toContain("WhatsApp");
   });
 
   it("says where each booking came from: online, or added by staff", async () => {
@@ -225,9 +245,35 @@ describe("seat walk-in on the day view", () => {
     expect(html).toContain("Seat a walk-in");
     expect(html).toContain('action="/api/bookings/walk-in"');
     expect(html).toContain('method="post"');
-    expect(html).toContain("Table 7 (seats 2)");
-    expect(html).toContain("Bar (seats 4)");
+    expect(html).toContain("Table 7 (seats 2), free");
+    expect(html).toContain("Bar (seats 4), free");
     expect(html).toContain('name="party"');
+  });
+
+  it("says which tables are free, in use, being reset or have a booking too soon, leaves every one to the server and chooses none for staff", async () => {
+    const { restaurantId, tableIds } = await bookableRestaurant(owner.db, {
+      tables: [{ capacity: 2, label: "Free" }, { capacity: 2, label: "Busy" }, { capacity: 2, label: "Reset" }, { capacity: 2, label: "Soon" }],
+    });
+    session.tenant = { restaurantId, staffId: crypto.randomUUID(), role: "staff" };
+    const minutes = (n: number) => new Date(Date.now() + n * 60_000).toISOString();
+    await owner.db.insert(bookings).values([
+      { ...aBooking(restaurantId, tableIds[1], minutes(-30), minutes(75)), status: "seated" },
+      { ...aBooking(restaurantId, tableIds[2], minutes(-60), minutes(45)), status: "completed", endsAt: new Date(minutes(-5)) },
+      aBooking(restaurantId, tableIds[3], minutes(20), minutes(125)),
+    ]);
+
+    const html = await render();
+
+    expect(html).toContain("Choose a table");
+    expect(html.match(/<option[^>]*selected[^>]*>[^<]*/g)).toEqual([expect.stringContaining("Choose a table")]);
+    // A list gone stale never overrules the server: a disabled option would post no table,
+    // and the placeholder is what the select falls back to if the chosen table goes.
+    const select = html.match(/<select[^>]*name="tableId"[^>]*required.*?<\/select>/)?.[0] ?? "";
+    expect(select).not.toContain('disabled=""');
+    expect(select).toMatch(/>Free \(seats 2\), free</);
+    expect(select).toMatch(/>Busy \(seats 2\), in use until \d\d:\d\d</);
+    expect(select).toMatch(/>Reset \(seats 2\), being reset until \d\d:\d\d</);
+    expect(select).toMatch(/>Soon \(seats 2\), booking at \d\d:\d\d, too soon</);
   });
 
   it("is not offered on another day: a walk-in sits down now", async () => {
@@ -280,5 +326,95 @@ describe("seat walk-in on the day view", () => {
     expect(html).toContain("12:00");
     expect(html).toContain("Finish");
     expect(html).not.toContain("tel:");
+  });
+});
+
+describe("closed and past days (#108)", () => {
+  const today = localToday(new Date(), "Africa/Harare");
+  const wholeDay = (restaurantId: string, date: string, reason: string | null) =>
+    owner.db.insert(closures).values({
+      restaurantId,
+      startsAt: instantOf(date, "00:00", "Africa/Harare"),
+      endsAt: instantOf(addDays(date, 1), "00:00", "Africa/Harare"),
+      reason,
+    });
+
+  it("shows a closed day's closure and reason, and offers no Add booking", async () => {
+    await dayWith([]);
+    await wholeDay((session.tenant as TenantContext).restaurantId, day, "Independence Day <b>");
+
+    const html = await render(day);
+
+    expect(html).toContain("The restaurant is closed on this day.");
+    expect(html).toContain("Independence Day &lt;b&gt;");
+    expect(html).not.toContain("Add booking");
+    expect(html).not.toContain("/dashboard/bookings/new");
+  });
+
+  it("shows part of a day's closure with its times, and still offers Add booking", async () => {
+    await dayWith([]);
+    await owner.db.insert(closures).values({
+      restaurantId: (session.tenant as TenantContext).restaurantId,
+      startsAt: instantOf(day, "19:00", "Africa/Harare"),
+      endsAt: instantOf(day, "22:00", "Africa/Harare"),
+      reason: "Private event",
+    });
+
+    const html = await render(day);
+
+    expect(html).toContain("closed for part of this day");
+    expect(html).toContain("19:00 to 22:00");
+    expect(html).toContain("Private event");
+    expect(html).toContain("Add booking");
+  });
+
+  it("shows a closure only on the days it touches", async () => {
+    await dayWith([]);
+    await wholeDay((session.tenant as TenantContext).restaurantId, day, "Away");
+
+    expect(await render(addDays(day, 1))).not.toContain("closed");
+    expect(await render(addDays(day, 1))).toContain("Add booking");
+  });
+
+  it("offers no Add booking on a past day, and says why; today and later days do", async () => {
+    await dayWith([]);
+
+    const past = await render(addDays(today, -2));
+
+    expect(past).toContain("This day has passed, so bookings can&#x27;t be added to it.");
+    expect(past).not.toContain("Add booking");
+    expect(past).not.toContain("/dashboard/bookings/new");
+    expect(await render()).toContain("Add booking");
+    expect(await render(addDays(today, 1))).toContain("Add booking");
+    expect(await render()).not.toContain("has passed");
+  });
+
+  it("gives each booking row an anchor the conflict list links to", async () => {
+    await dayWith([{ guestName: "Tariro" }]);
+    const [{ id }] = await owner.db
+      .select({ id: bookings.id })
+      .from(bookings)
+      .where(eq(bookings.restaurantId, (session.tenant as TenantContext).restaurantId));
+
+    expect(await render(day)).toContain(`id="booking-${id}"`);
+  });
+
+  it("names the year unless it is this year's, in the heading", async () => {
+    await dayWith([]);
+    const heading = async (date?: string) => /<h2[^>]*>([^<]*)<\/h2>/.exec(await render(date))?.[1];
+    const thisYear = today.slice(0, 4);
+
+    expect(await heading(today)).not.toMatch(/\d{4}/);
+    expect(await heading(day)).toMatch(day.startsWith(thisYear) ? /^[A-Za-z]+ \d+ [A-Za-z]+$/ : /\d{4}$/);
+    for (const date of [addDays(today, 366), addDays(today, -366)]) {
+      expect(await heading(date)).toContain(date.slice(0, 4));
+    }
+  });
+
+  it("lets the heading wrap rather than cut it off", async () => {
+    await dayWith([]);
+    const html = await render(day);
+    const h2 = /<h2[^>]*>/.exec(html)?.[0] ?? "";
+    expect(h2).not.toContain("truncate");
   });
 });

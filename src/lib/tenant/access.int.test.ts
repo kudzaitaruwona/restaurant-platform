@@ -222,6 +222,7 @@ const plantedClosureReason = "Harness planted closure";
 const addedClosureReason = "Harness added closure";
 const farDate = (extraDays: number) =>
   addDays(localToday(new Date(), "Africa/Harare"), 600 + extraDays);
+let addedClosures = 0;
 const plantedClosures: { id: string; restaurantId: string }[] = [];
 const plantClosure = async (restaurantId: string) => {
   const id = crypto.randomUUID();
@@ -229,9 +230,10 @@ const plantClosure = async (restaurantId: string) => {
   await owner.db.insert(closures).values({
     id,
     restaurantId,
-    // 03:00 to 03:30 in Harare, which is UTC+2.
-    startsAt: new Date(`${day}T01:00:00Z`),
-    endsAt: new Date(`${day}T01:30:00Z`),
+    // 03:00 to 03:30 in Harare, which is UTC+2, a second later for each one planted:
+    // the same window can't be saved twice in a restaurant (#108).
+    startsAt: new Date(Date.parse(`${day}T01:00:00Z`) + plantedClosures.length * 1000),
+    endsAt: new Date(Date.parse(`${day}T01:30:00Z`) + plantedClosures.length * 1000),
     reason: plantedClosureReason,
   });
   plantedClosures.push({ id, restaurantId });
@@ -887,6 +889,24 @@ const routes: TenantRoute[] = [
       ),
   },
   {
+    // Copying adds periods, so it copies a period planted for the purpose; the
+    // copies carry its name, and the harness's clean-up removes them with it.
+    name: "POST /api/bookings/periods/[periodId]/copy",
+    ownerOnly: true,
+    call: async (target) => {
+      const periodId = [fixtures.a.periodId, fixtures.b.periodId].includes(target.periodId)
+        ? await plantPeriod(target.restaurantId)
+        : target.periodId;
+      return (await import("@/app/api/bookings/periods/[periodId]/copy/route")).POST(
+        request(`/api/bookings/periods/${periodId}/copy`, {
+          method: "POST",
+          body: form({ weekdays: "4" }),
+        }),
+        periodParams(periodId),
+      );
+    },
+  },
+  {
     // Deleting can't be undone, so it takes a period planted in the target's
     // restaurant for the purpose: the fixture period stays for the rest.
     name: "POST /api/bookings/periods/[periodId]/delete",
@@ -1216,7 +1236,7 @@ const sessionRoutes: SessionRoute[] = [
     },
   },
   {
-    // Each call adds a closure of its own, far ahead and at 03:00 (see plantClosure).
+    // Each call adds a closure of its own, far ahead and from about 03:00 (see plantClosure).
     name: "POST /api/bookings/closures",
     call: async (fields, init) =>
       (await import("@/app/api/bookings/closures/route")).POST(
@@ -1225,8 +1245,9 @@ const sessionRoutes: SessionRoute[] = [
           headers: init?.headers,
           body: form({
             startDate: farDate(2),
-            startTime: "03:00",
-            endTime: "03:30",
+            // A minute later each call: the same window can't be saved twice (#108).
+            startTime: `03:${String(addedClosures++ % 60).padStart(2, "0")}`,
+            endTime: "04:30",
             reason: addedClosureReason,
             ...fields,
           }),

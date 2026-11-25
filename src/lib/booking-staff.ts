@@ -17,9 +17,15 @@ import {
   tablesFor,
   type EngineTable,
 } from "@/lib/booking-engine";
+import { closuresOnDay } from "@/lib/booking-closures";
 import {
   dbErrorOf,
-  E164,
+  countryCodeMessage,
+  bareNumber,
+  carriesCountry,
+  DEFAULT_COUNTRY_CODE,
+  isCountryCode,
+  refinePhone,
   firstTableToTake,
   isInsideClosure,
   MAX_HOLD_MS,
@@ -69,15 +75,20 @@ const staffRequest = z
       .min(1, messages.name)
       .max(100, messages.name)
       .refine(noNul, messages.name),
-    countryCode: z.string(messages.phone).max(8, messages.phone).default("+263"),
+    countryCode: z.string(messages.phone).max(8, messages.phone).default(DEFAULT_COUNTRY_CODE),
     // Optional: a booking taken in person or for a walk-up has none.
     phone: z.string(messages.phone).max(40, messages.phone).default(""),
     note: z.string(messages.note).trim().max(200, messages.note).refine(noNul, messages.note).optional(),
     whatsapp: z.string().optional(),
   })
+  // The code box matters only to a number that doesn't say its own country.
+  .superRefine(({ countryCode, phone }, ctx) => {
+    const number = bareNumber(phone);
+    if (number === "" || carriesCountry(number) || isCountryCode(countryCode)) return;
+    ctx.addIssue({ code: "custom", path: ["countryCode"], message: countryCodeMessage });
+  })
   .transform(({ countryCode, phone, note, whatsapp, tableId, ...rest }) => {
-    const number = phone.replace(/[\s().-]/g, "");
-    const e164 = number === "" ? null : toE164(countryCode, phone);
+    const e164 = bareNumber(phone) === "" ? null : toE164(countryCode, phone);
     return {
       ...rest,
       tableId: tableId || undefined,
@@ -87,14 +98,19 @@ const staffRequest = z
       whatsappOptIn: e164 !== null && whatsapp === "on",
     };
   })
-  .refine(({ phone }) => phone === null || E164.test(phone), messages.phone);
+  .superRefine(({ phone }, ctx) => refinePhone(phone, ctx));
 
 export type StaffRequest = z.output<typeof staffRequest>;
 
 export function parseStaffRequest(form: FormData) {
   const parsed = staffRequest.safeParse(Object.fromEntries(form));
   return parsed.success
-    ? ({ success: true, data: parsed.data } as const)
+    ? ({
+        success: true,
+        data: parsed.data,
+        // Ticked, but there is no number to message: the tick is dropped (decided), and staff are told.
+        consentDropped: form.get("whatsapp") === "on" && parsed.data.phone === null,
+      } as const)
     : ({ success: false, message: parsed.error.issues[0].message } as const);
 }
 
@@ -259,6 +275,12 @@ export function getStaffBookingForm(
       .where(and(eq(diningTables.restaurantId, tenant.restaurantId), isNull(diningTables.archivedAt)))
       .orderBy(asc(diningTables.sortOrder), asc(diningTables.label));
 
+    // Why a chosen date offers nothing, said before the form is: a day gone by
+    // (the date field's `min` is today, but a URL isn't bound by it), or a closure.
+    const chosen = choice.date && isLocalDate(choice.date) ? choice.date : undefined;
+    const pastDate = chosen !== undefined && chosen < today ? chosen : undefined;
+    const closed = date ? await closuresOnDay(tx, tenant.restaurantId, date, timezone) : undefined;
+
     let times: { time: string; period: string; open: boolean }[] | undefined;
     if (party && date) {
       const staffView = staffRules(rules);
@@ -280,7 +302,7 @@ export function getStaffBookingForm(
         open: free.has(time),
       }));
     }
-    return { today, last, party, date, tables, times };
+    return { today, last, party, date, tables, times, pastDate, closures: closed?.closures ?? [], closedAllDay: closed?.wholeDay ?? false };
   });
 }
 

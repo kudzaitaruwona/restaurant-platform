@@ -14,5 +14,5 @@ export async function POST(request: NextRequest) {
   const parsed = parseStaffRequest(await request.formData().catch(() => new FormData()));
   if (!parsed.success) return Response.json({ error: parsed.message }, { status: 400 });
 
-  return addBookingResponse(await addStaffBooking(tenant, parsed.data), request);
+  return addBookingResponse(await addStaffBooking(tenant, parsed.data), request, parsed.consentDropped);
 }

@@ -86,7 +86,22 @@ describe("POST /api/r/[slug]/book", () => {
     expect(await response.json()).toEqual({
       error: "That time was just booked. Here are the nearest available times.",
       times: [{ period: "Dinner", time: "20:00" }, { period: "Dinner", time: "20:30" }, { period: "Dinner", time: "21:00" }],
+      available: [{ period: "Dinner", time: "20:00" }, { period: "Dinner", time: "20:30" }, { period: "Dinner", time: "21:00" }],
     });
+  });
+
+  it("gives every time left that day with the nearest few, for the grid (#103)", async () => {
+    const { slug, restaurantId, tableIds } = await bookableRestaurant(owner.db);
+    const day = tomorrow();
+    await owner.db
+      .insert(bookings)
+      .values(aBooking(restaurantId, tableIds[0], `${day}T16:00:00Z`, `${day}T16:30:00Z`));
+
+    const answer = await (await post(slug, { time: "18:00", party: "2" })).json();
+
+    expect(answer.times).toHaveLength(4);
+    expect(answer.available.map(({ time }: { time: string }) => time)).toEqual(["18:30", "19:00", "19:30", "20:00", "20:30", "21:00"]);
+    expect(answer.available.every(({ period }: { period: string }) => period === "Dinner")).toBe(true);
   });
 
   it("refuses while online booking is off, and saves nothing", async () => {
@@ -198,10 +213,11 @@ describe("the refusals, each with its own message", () => {
     const answer = await response.json();
     expect(answer.error).toBe("That time is now too soon to book online. Here are the next available times.");
     expect(answer.times).toEqual([]);
+    expect(answer.available).toEqual([]);
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });
 
-  it("the phone's limit, with the count", async () => {
+  it("the phone's limit, with the count and the restaurant's contacts, but no link to anyone's booking", async () => {
     const { slug, tableIds, restaurantId } = await bookableRestaurant(owner.db, {
       tables: [{ capacity: 2 }, { capacity: 2 }],
     });
@@ -216,7 +232,9 @@ describe("the refusals, each with its own message", () => {
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
-      error: "You already have 2 upcoming bookings here. Cancel one or contact the restaurant.",
+      error: "You already have 2 upcoming bookings here. Cancel one with the link in its WhatsApp confirmation, or contact the restaurant.",
+      contactPhone: "+263771234567",
+      whatsappLink: "https://wa.me/263771234567",
     });
   });
 
@@ -298,6 +316,9 @@ describe("the rate limit", () => {
     const sixth = await postWith(slug, { headers });
 
     expect(sixth.status).toBe(429);
+    expect((await sixth.json()).error).toBe(
+      "Too many booking attempts. Wait a few minutes, then try again, or contact the restaurant.",
+    );
     expect(Number(sixth.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(await bookingsOf(owner.db, restaurantId)).toEqual([]);
   });

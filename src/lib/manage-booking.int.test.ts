@@ -100,6 +100,7 @@ describe("what the guest sees", () => {
       "note",
       "party",
       "restaurantName",
+      "slug",
       "status",
       "time",
     ]);

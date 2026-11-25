@@ -1,6 +1,7 @@
 import {
   Ban,
   CalendarDays,
+  CalendarOff,
   ChevronLeft,
   ChevronRight,
   MessageCircle,
@@ -33,13 +34,17 @@ import { WalkInForm } from "./walk-in-form";
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
-/** "Thursday 12 November": a calendar date, so it is formatted as one, in no zone. */
-const longDate = (date: string) =>
+/**
+ * "Thursday 12 November", or "Thursday 12 November 2027" in any year but the
+ * restaurant's current one: a calendar date, so it is formatted as one, in no zone.
+ */
+const longDate = (date: string, today: string) =>
   new Intl.DateTimeFormat("en-GB", {
     timeZone: "UTC",
     weekday: "long",
     day: "numeric",
     month: "long",
+    year: date.slice(0, 4) === today.slice(0, 4) ? undefined : "numeric",
   }).format(new Date(`${date}T00:00:00Z`));
 
 const sourceLabel = { online: "Online", staff: "Added by staff" } as const;
@@ -68,6 +73,9 @@ export async function BookingsScreen({
   const tables = day.isToday ? await walkInTables(tenant) : [];
   const addHref = `/dashboard/bookings/new?date=${day.date}`;
   const empty = day.groups.every((group) => group.rows.length === 0);
+  // Staff's bookings keep to closures (spec 04), so a day closed from end to end,
+  // like a day gone by, can't take one: no Add booking, and the reason instead.
+  const canAdd = !day.isPast && !day.closedAllDay;
 
   return (
     <>
@@ -76,18 +84,22 @@ export async function BookingsScreen({
         title="Bookings"
         className="max-md:sr-only"
         actions={
-          <Link
-            href={addHref}
-            className={cn(buttonVariants({ variant: "primary", size: "staff" }), "hidden md:inline-flex")}
-          >
-            <Plus aria-hidden />
-            Add booking
-          </Link>
+          canAdd ? (
+            <Link
+              href={addHref}
+              className={cn(buttonVariants({ variant: "primary", size: "staff" }), "hidden md:inline-flex")}
+            >
+              <Plus aria-hidden />
+              Add booking
+            </Link>
+          ) : undefined
         }
       />
-      <StaffTopBarAction>
-        <IconButton label="Add booking" icon={<Plus />} href={addHref} variant="ghost" />
-      </StaffTopBarAction>
+      {canAdd && (
+        <StaffTopBarAction>
+          <IconButton label="Add booking" icon={<Plus />} href={addHref} variant="ghost" />
+        </StaffTopBarAction>
+      )}
 
       <nav
         aria-label="Choose a day"
@@ -101,8 +113,8 @@ export async function BookingsScreen({
             variant="ghost"
           />
           <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5 px-1 sm:flex-row sm:items-center sm:gap-3">
-            <h2 className="max-w-full truncate text-lead font-semibold tracking-[-0.01em] md:text-title">
-              {longDate(day.date)}
+            <h2 className="max-w-full text-lead leading-snug font-semibold tracking-[-0.01em] text-balance md:text-title">
+              {longDate(day.date, day.today)}
             </h2>
             {day.isToday && (
               <span className="inline-flex h-6 items-center rounded-full bg-brand-soft px-2.5 text-caption font-semibold text-ink md:h-7 md:px-3">
@@ -146,16 +158,41 @@ export async function BookingsScreen({
 
       {day.refused && <Notice role="status">That date wasn&apos;t usable, so this is today.</Notice>}
 
+      {day.isPast && (
+        <Notice role="status">
+          This day has passed, so bookings can&apos;t be added to it. Choose today or a later day to add one.
+        </Notice>
+      )}
+      {day.closures.length > 0 && (
+        <Notice
+          role="status"
+          tone="attention"
+          icon={<CalendarOff />}
+          title={day.closedAllDay ? "The restaurant is closed on this day." : "The restaurant is closed for part of this day."}
+        >
+          <ul className="flex flex-col gap-0.5">
+            {day.closures.map((closure) => (
+              <li key={`${closure.label}-${closure.reason}`}>
+                <span className="font-semibold tabular-nums">{closure.label}</span>
+                {closure.reason && <span> · {closure.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </Notice>
+      )}
+
       <WalkInForm tables={tables} />
 
       {empty ? (
         <div className="flex flex-col items-start gap-3 px-2 pt-8 pb-6">
           <CalendarDays aria-hidden className="size-8 text-ink-2" />
           <p className="text-lead font-semibold">No bookings on this day.</p>
-          <Link href={addHref} className={buttonVariants({ variant: "soft", size: "staff" })}>
-            <Plus aria-hidden />
-            Add booking
-          </Link>
+          {canAdd && (
+            <Link href={addHref} className={buttonVariants({ variant: "soft", size: "staff" })}>
+              <Plus aria-hidden />
+              Add booking
+            </Link>
+          )}
         </div>
       ) : (
         day.groups.map((group) => (
@@ -209,8 +246,10 @@ function BookingRow({ row, moves }: { row: DayRow; moves: MoveTarget[] }) {
 
   return (
     <li
+      id={`booking-${row.id}`}
       className={cn(
         rowGrid,
+        "scroll-mt-20 target:bg-brand-soft",
         "items-start px-4 py-3.5 md:min-h-20 md:items-center md:py-3 md:pr-4 md:pl-5",
         row.confirmationFailed && "bg-[color-mix(in_srgb,var(--attention-soft)_35%,var(--surface))]",
       )}
@@ -340,7 +379,7 @@ function BookingRow({ row, moves }: { row: DayRow; moves: MoveTarget[] }) {
             className="pt-2 empty:hidden"
             confirmation={{
               title: "Cancel this booking?",
-              description: freed,
+              description: row.willMessage ? `${freed} We'll message them on WhatsApp to say it's cancelled.` : freed,
               confirmLabel: "Cancel booking",
               cancelLabel: "Keep booking",
             }}
