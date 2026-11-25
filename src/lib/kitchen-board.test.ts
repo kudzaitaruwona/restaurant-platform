@@ -8,6 +8,8 @@ import {
   FLASH_MS,
   cardMenuActions,
   isMove,
+  sameSpotGuard,
+  SAME_SPOT_MS,
   itemsOfOrder,
   nextStatus,
   previousStatus,
@@ -398,5 +400,29 @@ describe("the card menu (#73)", () => {
 
     expect(itemsOfOrder(board, "order-1")).toEqual([first, second]);
     expect(itemsOfOrder(board, "order-3")).toEqual([]);
+  });
+});
+
+describe("a double tap on one spot (#100)", () => {
+  const tap = (itemId: string, at: number, x = 300, y = 200, fromPointer = true) => ({ itemId, x, y, at, fromPointer });
+
+  it("refuses a second ticket's tap on the same spot straight after", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 1000))).toBe(true);
+    expect(guard.allow(tap("b", 1000 + 250, 305, 204))).toBe(false);
+  });
+
+  it("lets rapid work on a different spot, or after a moment, through", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 1000))).toBe(true);
+    expect(guard.allow(tap("b", 1200, 300, 330))).toBe(true);
+    expect(guard.allow(tap("c", 1200 + SAME_SPOT_MS, 300, 330))).toBe(true);
+  });
+
+  it("never blocks a keyboard or screen-reader activation", () => {
+    const guard = sameSpotGuard();
+    expect(guard.allow(tap("a", 1000))).toBe(true);
+    expect(guard.allow(tap("b", 1100, 0, 0, false))).toBe(true);
+    expect(guard.allow(tap("c", 1150))).toBe(false);
   });
 });
