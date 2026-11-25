@@ -8,7 +8,7 @@ const message: TemplateMessage = {
   to: "+263779876543",
   template: "booking_confirmed",
   language: "en",
-  body: ["Tariro Moyo", "Kudu Grill", "4", "Fri 6 Nov", "19:30", "+263771234567"],
+  body: ["Tariro Moyo", "Kudu Grill", "4 people", "Fri 6 Nov", "19:30", "+263771234567"],
   manageToken: "AbCdEfGhIjKlMnOpQrStUv",
 };
 

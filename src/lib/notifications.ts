@@ -6,10 +6,17 @@ import type { TenantTransaction } from "@/lib/tenant/scope";
 export const REMINDER_LEAD_MS = 3 * 60 * 60_000;
 
 /**
+ * The job runs every 5 minutes (S-35). A reminder due within one run of the
+ * confirmation could be sent by the same run, so it isn't queued (#110, proposed).
+ */
+export const REMINDER_MIN_GAP_MS = 5 * 60_000;
+
+/**
  * Queues the guest's WhatsApp messages for a new confirmed booking (spec 05,
  * scheduling): booking_confirmed, due at once, and booking_reminder, due at
- * starts_at - 3h, or not at all when that time has already passed (a booking made
- * less than 3 hours ahead). Both are written in the caller's transaction, so they
+ * starts_at - 3h, or not at all when that time is not more than one job interval
+ * (5 minutes) after now: a booking made less than 3 hours 5 minutes ahead, whose
+ * reminder would go out with, or just after, the confirmation. Both are written in the caller's transaction, so they
  * exist if and only if the booking does. The scheduled job sends it
  * (src/lib/cron/notifications.ts). Only for a guest who opted in and gave a
  * number (spec 05, data and privacy); anyone else gets nothing queued.
@@ -26,7 +33,7 @@ export async function queueBookingConfirmed(
   const remindAt = new Date(booking.startsAt.getTime() - REMINDER_LEAD_MS);
   await tx.insert(notifications).values([
     { restaurantId: booking.restaurantId, bookingId: booking.id, kind: "booking_confirmed", scheduledFor: now },
-    ...(remindAt.getTime() >= now.getTime()
+    ...(remindAt.getTime() > now.getTime() + REMINDER_MIN_GAP_MS
       ? [{ restaurantId: booking.restaurantId, bookingId: booking.id, kind: "booking_reminder" as const, scheduledFor: remindAt }]
       : []),
   ]);
