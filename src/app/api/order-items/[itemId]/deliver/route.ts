@@ -22,7 +22,7 @@ export async function POST(
   if (result.outcome === "wrong_status") {
     return Response.json(
       {
-        error: `Mark delivered didn't apply: this item is ${result.status === "delivered" ? "already delivered" : result.status === "voided" ? "voided" : `still ${result.status}, not done`}. Reload to see the latest.`,
+        error: `Mark delivered didn't apply: this item is ${result.status === "delivered" ? "already delivered" : result.status === "voided" ? "voided" : `still ${result.status}, not done`}.`,
         refresh: true,
       },
       { status: 409 },

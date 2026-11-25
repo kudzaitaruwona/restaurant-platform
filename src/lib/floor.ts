@@ -104,12 +104,13 @@ export const latestSessionIds = (tx: TenantTransaction, ctx: Tenant, tableIds: s
  * Of those sessions, the ones that closed within the reopen window (#76, #102),
  * read by their keys alone. Exported so a test can EXPLAIN it.
  */
-export const reopenableAmong = (tx: TenantTransaction, sessionIds: string[]) =>
+export const reopenableAmong = (tx: TenantTransaction, ctx: Tenant, sessionIds: string[]) =>
   tx
     .select({ tableId: tableSessions.tableId })
     .from(tableSessions)
     .where(
       and(
+        eq(tableSessions.restaurantId, ctx.restaurantId),
         inArray(tableSessions.id, sessionIds),
         eq(tableSessions.status, "closed"),
         sql`${tableSessions.closedAt} > now() - make_interval(mins => ${REOPEN_WINDOW_MINUTES})`,
@@ -121,7 +122,7 @@ async function reopenableTables(tx: TenantTransaction, ctx: Tenant, tableIds: st
   if (tableIds.length === 0) return new Set<string>();
   const latest = (await latestSessionIds(tx, ctx, tableIds)).flatMap((row) => (row.id ? [row.id] : []));
   if (latest.length === 0) return new Set<string>();
-  return new Set((await reopenableAmong(tx, latest)).map((row) => row.tableId));
+  return new Set((await reopenableAmong(tx, ctx, latest)).map((row) => row.tableId));
 }
 
 /**

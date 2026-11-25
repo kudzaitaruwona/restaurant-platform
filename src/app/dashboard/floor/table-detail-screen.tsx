@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft, MessageSquare, Undo2 } from "lucide-react";
 import { z } from "zod";
-import { ActionForm, type Confirmation } from "@/app/dashboard/action-form";
+import { ActionForm, type Confirmation, PageRefusalAlert, PageRefusals } from "@/app/dashboard/action-form";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -16,13 +16,6 @@ import { getTenantContext } from "@/lib/tenant";
 import { cn } from "@/lib/utils";
 import { FlaggedNote, RefreshAction, openFor } from "./floor-screen";
 import { CallingBell, dismissButtonClassName } from "./waiter-call";
-
-/**
- * A refusal in the pinned bar sits above it, out of flow, capped and scrolling:
- * it can't grow the bar or move the buttons (#102).
- */
-const refusalClassName =
-  "absolute inset-x-0 bottom-full max-h-[30dvh] overflow-y-auto border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:px-8";
 
 type LineStatus = "placed" | "cooking" | "done" | "delivered" | "voided";
 
@@ -94,7 +87,7 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
   const outstanding = orders.flatMap((order) => order.items.filter((item) => voidable(item.status)));
 
   return (
-    <div className="flex flex-1 flex-col gap-5">
+    <PageRefusals className="flex flex-1 flex-col gap-5">
       <div>
         <Link
           href="/dashboard/floor"
@@ -269,63 +262,67 @@ export async function TableDetailScreen({ tableId, now }: { tableId: string; now
               <Money amounts={total} mode={currencyMode} className="items-end text-lead font-semibold" />
             </Card>
           )}
-          <div className="sticky bottom-0 z-10 -mx-4 mt-auto -mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:-mx-8 md:-mb-8 md:px-8">
-            <p className="max-w-[34ch] text-caption text-ink-2">
-              {outstanding.length === 0
-                ? "Every item is delivered or voided: the table can be cleared."
-                : "Clear table works once every item is delivered or voided."}
-            </p>
-            <div className="flex flex-1 justify-end gap-2">
-              <ActionForm
-                action={`/api/floor/${table.id}/force-close`}
-                confirmation={{
-                  title: `Force-close ${table.label}?`,
-                  description:
-                    outstanding.length === 0 ? (
-                      "Every item is delivered or voided. This closes the table."
-                    ) : (
-                      <>
-                        <p>These items aren&apos;t delivered yet. Force-close voids them, then closes the table.</p>
-                        <ul className="mt-3 divide-y divide-line rounded-control border border-line text-ink">
-                          {outstanding.map((item) => (
-                            <li key={item.id} className="flex justify-between gap-3 px-3 py-2.5">
-                              <span>
-                                {item.quantity}x {item.name}
-                              </span>
-                              <StatusPill status={item.status} />
-                            </li>
-                          ))}
-                        </ul>
-                      </>
-                    ),
-                  confirmLabel: outstanding.length === 0 ? "Close table" : `Void ${outstanding.length} and close`,
-                  reason: reasonField(
-                    outstanding.length === 0
-                      ? "Required. Recorded with the close."
-                      : "Required. Recorded on each voided item.",
-                  ),
-                }}
-                refusalClassName={refusalClassName}
-              >
-                <input type="hidden" name="session" value={session.id} />
-                {outstanding.map((item) => (
-                  <input key={item.id} type="hidden" name="item" value={item.id} />
-                ))}
-                <Button type="submit" variant="danger-secondary" size="staff">
-                  Force-close
-                </Button>
-              </ActionForm>
-              <ActionForm action={`/api/floor/${table.id}/clear`} refusalClassName={refusalClassName}>
-                <input type="hidden" name="session" value={session.id} />
-                {/* The page knows it will be refused while a line is outstanding (#102). */}
-                <Button type="submit" size="staff" disabled={outstanding.length > 0}>
-                  Clear table
-                </Button>
-              </ActionForm>
-            </div>
-          </div>
         </>
       )}
-    </div>
+      {/* In the page's flow, outside the forms and the session: it covers nothing, can't move the bar, and outlives both. */}
+      <PageRefusalAlert className="scroll-mb-48 rounded-card border border-danger bg-surface px-4 py-3" />
+      {session && (
+        <div className="sticky bottom-0 z-10 -mx-4 mt-auto -mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-[0_-6px_18px_rgb(var(--shadow)/0.06)] md:-mx-8 md:-mb-8 md:px-8">
+          <p className="max-w-[34ch] text-caption text-ink-2">
+            {outstanding.length === 0
+              ? "Every item is delivered or voided: the table can be cleared."
+              : "Clear table works once every item is delivered or voided."}
+          </p>
+          <div className="flex flex-1 justify-end gap-2">
+            <ActionForm
+              action={`/api/floor/${table.id}/force-close`}
+              confirmation={{
+                title: `Force-close ${table.label}?`,
+                description:
+                  outstanding.length === 0 ? (
+                    "Every item is delivered or voided. This closes the table."
+                  ) : (
+                    <>
+                      <p>These items aren&apos;t delivered yet. Force-close voids them, then closes the table.</p>
+                      <ul className="mt-3 divide-y divide-line rounded-control border border-line text-ink">
+                        {outstanding.map((item) => (
+                          <li key={item.id} className="flex justify-between gap-3 px-3 py-2.5">
+                            <span>
+                              {item.quantity}x {item.name}
+                            </span>
+                            <StatusPill status={item.status} />
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ),
+                confirmLabel: outstanding.length === 0 ? "Close table" : `Void ${outstanding.length} and close`,
+                reason: reasonField(
+                  outstanding.length === 0
+                    ? "Required. Recorded with the close."
+                    : "Required. Recorded on each voided item.",
+                ),
+              }}
+              refusalOnPage
+            >
+              <input type="hidden" name="session" value={session.id} />
+              {outstanding.map((item) => (
+                <input key={item.id} type="hidden" name="item" value={item.id} />
+              ))}
+              <Button type="submit" variant="danger-secondary" size="staff">
+                Force-close
+              </Button>
+            </ActionForm>
+            <ActionForm action={`/api/floor/${table.id}/clear`} refusalOnPage>
+              <input type="hidden" name="session" value={session.id} />
+              {/* The page knows it will be refused while a line is outstanding (#102). */}
+              <Button type="submit" size="staff" disabled={outstanding.length > 0}>
+                Clear table
+              </Button>
+            </ActionForm>
+          </div>
+        </div>
+      )}
+    </PageRefusals>
   );
 }

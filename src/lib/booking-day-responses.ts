@@ -21,7 +21,6 @@ export function bookingActionResponse(outcome: ActionOutcome, request: Request, 
     return Response.json(
       {
         error: `${action} didn't apply: this booking is already ${statusWords[outcome.status]}. Reload to see the latest.`,
-        refresh: true,
       },
       { status: 409 },
     );

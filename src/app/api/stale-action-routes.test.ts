@@ -23,14 +23,18 @@ describe("stale actions on a table's detail", () => {
     const { POST } = await import("./order-items/[itemId]/deliver/route");
     const response = await POST(post(), { params: Promise.resolve({ itemId: "item" }) } as never);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ refresh: true });
+    const answer = await response.json();
+    expect(answer).toMatchObject({ refresh: true });
+    expect(answer.error).not.toMatch(/reload/i);
   });
 
   it("Void", async () => {
     const { POST } = await import("./order-items/[itemId]/void/route");
     const response = await POST(post(reasonForm()), { params: Promise.resolve({ itemId: "item" }) } as never);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ refresh: true });
+    const answer = await response.json();
+    expect(answer).toMatchObject({ refresh: true });
+    expect(answer.error).not.toMatch(/reload/i);
   });
 
   it("Reject order", async () => {
@@ -38,6 +42,8 @@ describe("stale actions on a table's detail", () => {
     const orderId = crypto.randomUUID();
     const response = await POST(post(reasonForm()), { params: Promise.resolve({ orderId }) } as never);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ refresh: true });
+    const answer = await response.json();
+    expect(answer).toMatchObject({ refresh: true });
+    expect(answer.error).not.toMatch(/reload/i);
   });
 });

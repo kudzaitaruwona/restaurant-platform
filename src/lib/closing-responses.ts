@@ -24,16 +24,17 @@ export function shownItemsFrom(form: FormData): string[] | null {
 
 /**
  * `refresh` on a refusal has ActionForm reload the page, keeping the message up
- * (#95, #102): set wherever the answer is "what you're looking at is out of date".
+ * (#95, #102): set wherever the answer is "what you're looking at is out of
+ * date", so none of them asks the reader to reload.
  */
 export const reloadToClose = () =>
-  Response.json({ error: "Reload the table and try again.", refresh: true }, { status: 400, headers });
+  Response.json({ error: "That didn't say which session it was for. Check the table, then try again.", refresh: true }, { status: 400, headers });
 
 export const sessionChanged = () =>
   Response.json(
     {
       error:
-        "This table's session has changed since the page loaded: it has closed, or a new party has sat down. Reload the table.",
+        "Nothing changed: the session this page showed had already closed, or a new party has sat down since.",
       refresh: true,
     },
     { status: 409, headers },
@@ -47,13 +48,17 @@ const listed = (items: OutstandingItem[]) =>
     summary: `${item.quantity} × ${item.name} for ${item.customerName}: ${statusWords[item.status]}`,
   }));
 
-/** Clear table refused: the items in the way, each as ActionForm lists it, and the way out. */
+/**
+ * Clear table refused: the items in the way, each as ActionForm lists it, and the
+ * way out. Always a stale page: Clear is disabled while it shows any outstanding.
+ */
 export const blockedBy = (items: OutstandingItem[]) =>
   Response.json(
     {
       error:
         "This table has items that aren't delivered or voided yet. Deliver or void them, or force-close the table with a reason.",
       items: listed(items),
+      refresh: true,
     },
     { status: 409, headers },
   );
@@ -78,8 +83,8 @@ export const itemsChanged = (items: OutstandingItem[]) =>
 const reopenWords = {
   too_late:
     "It's more than 15 minutes since this session closed, so it can't be reopened. The next scan at the table starts a new session.",
-  superseded: "A new party has opened this table since, so this session can't be reopened. Reload the table.",
-  session_changed: "This session has changed since the page loaded: it's open again, or isn't this table's. Reload the table.",
+  superseded: "A new party has opened this table since, so this session can't be reopened.",
+  session_changed: "Nothing was reopened: this session has changed. It's open again already, or isn't this table's.",
 };
 
 /** A reopen Postgres or the page's precondition refused (#76): a 409 that says why. */

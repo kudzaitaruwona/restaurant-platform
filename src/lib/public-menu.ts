@@ -261,10 +261,17 @@ export const ORDER_SCRIPT = `(() => {
     ended = false;
     for (const line of cart) line.from = line.from || next;
   };
-  const join = async () => {
-    const response = await fetch(api("/session"), { method: "POST" });
+  const scan = async () => {
+    const response = await fetch(api("/session"), Object.assign({ method: "POST" }, AbortSignal.timeout && { signal: AbortSignal.timeout(8000) }));
     if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status, wait: Number(response.headers && response.headers.get("retry-after")) || 0 });
-    enter((await response.json()).session);
+    return (await response.json()).session;
+  };
+  // Given up after 8 seconds, body included, on phones without AbortSignal.timeout
+  // too: an answer that comes later is dropped, not entered.
+  const join = async () => {
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("late")), 8000); });
+    try { enter(await Promise.race([scan(), late])); } finally { clearTimeout(timer); }
     try { fields.name.value = localStorage.getItem("order-name:" + session) || fields.name.value; } catch {}
   };
 
@@ -339,6 +346,8 @@ export const ORDER_SCRIPT = `(() => {
       if (text === last) return;
       last = text;
       ended = feed.session !== session;
+      // Reopened: a line added meanwhile, whose own join failed, is this session's.
+      if (!ended) for (const line of cart) line.from = line.from || session;
       const items = ended ? [] : feed.items;
       if (!ended) shown = items.length > 0;
       if (!ended) keep = false;
@@ -366,11 +375,15 @@ export const ORDER_SCRIPT = `(() => {
   const delays = [2000, 5000, 10000, 20000, 40000];
   const retry = make("button", "Try again", "btn");
   retry.type = "button";
+  const problem = make("span");
   let tries = 0;
   let waiting = null;
+  let connecting = false;
+  // Never disabled or moved while it is up: either would drop a keyboard's focus.
   const connect = () => {
+    if (connecting) return;
+    connecting = true;
     clearTimeout(waiting);
-    retry.disabled = true;
     join().then(() => {
       waiterSaid.replaceChildren();
       delete waiterSaid.dataset.tone;
@@ -380,12 +393,13 @@ export const ORDER_SCRIPT = `(() => {
       setInterval(() => { if (!document.hidden) poll(); }, 5000);
       document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
     }, (failure) => {
+      connecting = false;
       const refused = failure.status >= 400 && failure.status < 500 && failure.status !== 408 && failure.status !== 429;
       if (refused) { delete waiterSaid.dataset.tone; return waiterSaid.replaceChildren(); }
       const more = tries < delays.length;
       waiterSaid.dataset.tone = "error";
-      waiterSaid.replaceChildren(make("span", more ? "Couldn't reach the table. Trying again\u2026 " : "Ordering isn't available right now. Check your connection and try again. "), retry);
-      retry.disabled = false;
+      problem.textContent = more ? "Couldn't reach the table. Trying again\u2026 " : "Ordering isn't available right now. Check your connection and try again. ";
+      if (waiterSaid.children[0] !== problem) waiterSaid.replaceChildren(problem, retry);
       if (more) waiting = setTimeout(connect, Math.min(60000, Math.max(delays[tries++], (failure.wait || 0) * 1000)));
     });
   };
@@ -446,7 +460,7 @@ export const ORDER_SCRIPT = `(() => {
       // Read after joining, which may have cleared it.
       const name = fields.name.value.trim();
       if (!name) return fail("Enter a name for the waiter.");
-      const retry = asked;
+      const retrying = asked;
       asked = asked || session;
       const to = asked;
       request = request || newId();
@@ -464,7 +478,7 @@ export const ORDER_SCRIPT = `(() => {
       if (answer.placed || (answer.error && response.status < 500)) asked = null;
       if (response.status === 201 && answer.placed) {
         request = null;
-        keep = !!retry;
+        keep = !!retrying;
         try { localStorage.setItem("order-name:" + to, name); } catch {}
         cart = [];
         error.textContent = "";

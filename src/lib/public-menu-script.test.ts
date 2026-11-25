@@ -79,7 +79,7 @@ async function loadPage(
   sessionId: string,
   {
     feed = { session: sessionId, items: [] } as Feed,
-    joinReplies = [] as (Reply | "abort")[],
+    joinReplies = [] as (Reply | "abort" | "hang")[],
   } = {},
 ) {
   const state = {
@@ -89,8 +89,10 @@ async function loadPage(
     /** While true, an order is sent and no answer comes back. */
     loseOrderReply: false,
     waiterReply: undefined as Reply | undefined,
-    /** Answers to the next scans, in turn: a reply, or "abort" for one that never answers. */
+    /** Answers to the next scans, in turn: a reply, "abort" for one that fails, or "hang" for one that never answers. */
     joinReplies,
+    /** Answers each scan that hung, late. */
+    hung: [] as ((reply: unknown) => void)[],
     /** Timeouts the script set, by delay in milliseconds, until they run. */
     later: [] as { ms: number; run: () => void }[],
     requests: [] as { path: string; method: string; body?: URLSearchParams; signal?: unknown }[],
@@ -154,6 +156,8 @@ async function loadPage(
     if (path === "/session") {
       const next = state.joinReplies.shift();
       if (next === "abort") throw new TypeError("Failed to fetch");
+      // As on a phone without AbortSignal.timeout: the fetch itself is never given up.
+      if (next === "hang") return new Promise((resolve) => state.hung.push(resolve));
       if (next) {
         return {
           ok: next.status < 400,
@@ -424,6 +428,97 @@ describe("a first scan that fails (#98)", () => {
       expect(page.waiterStatus.textContent).toBe("");
       expect(page.stew.hidden).toBe(true);
     }
+  });
+});
+
+describe("a scan that never answers (#98)", () => {
+  const late = (session: string) => ({ ok: true, status: 200, json: async () => ({ session }) });
+
+  it("is given up after 8 seconds and retried, and its late answer changes nothing", async () => {
+    const page = await loadPage(new Map(), "session-2", { joinReplies: ["hang"] });
+    expect(page.state.timeouts).toEqual([8000]);
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([8000]);
+    expect(page.waiterStatus.textContent).toBe("");
+
+    await page.retryNow(); // the 8 seconds pass
+    expect(page.waiterStatus.textContent).toMatch(/trying again/i);
+    expect(page.state.later.map((entry) => entry.ms)).toEqual([2000]);
+
+    await page.retryNow();
+    expect(page.stew.hidden).toBe(false);
+    expect(page.waiterStatus.textContent).toBe("");
+    expect(page.state.later).toEqual([]);
+
+    const polls = page.polls().length;
+    page.state.hung[0](late("session-1"));
+    await settle();
+    expect(page.polls()).toHaveLength(polls);
+    await page.add(page.stew);
+    await page.placeAs("Ada");
+    expect(page.state.requests.find((request) => request.path === "/orders")!.body!.get("session")).toBe("session-2");
+  });
+
+  it("leaves the message and Try again up, and frees the button, if an answer arrives after it was given up", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: ["hang"] });
+    await page.retryNow();
+    page.state.hung[0](late("session-1"));
+    await settle();
+
+    expect(page.stew.hidden).toBe(true);
+    await page.waiterStatus.find((el) => el.tagName === "button")[0].dispatch("click");
+    await settle();
+    expect(page.joins()).toBe(2);
+    expect(page.stew.hidden).toBe(false);
+  });
+
+  it("gives Place order back, with the cart and a message", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    await page.add(page.stew);
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("hang");
+    page.name.value = "Ada";
+    void page.form.dispatch("submit");
+    await settle();
+    expect(page.form.elements.place.disabled).toBe(true);
+
+    await page.retryNow(); // the 8 seconds pass
+    expect(page.form.elements.place.disabled).toBe(false);
+    expect(page.error.textContent).toMatch(/didn't go through/);
+    expect(page.cart.children).toHaveLength(1);
+  });
+
+  it("leaves an Add in the cart when its join hangs", async () => {
+    const page = await loadPage(new Map(), "session-1");
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("hang");
+    void page.document.dispatch("click", { target: page.stew });
+    await settle();
+    await page.retryNow();
+    expect(page.cart.children).toHaveLength(1);
+    expect(page.state.later).toEqual([]);
+  });
+});
+
+describe("Try again and the keyboard (#98)", () => {
+  it("is never disabled, replaced or moved while the retries run", async () => {
+    const page = await loadPage(new Map(), "session-1", { joinReplies: [...Array(6).fill("abort"), "hang"] });
+    const placed = page.waiterStatus.children;
+    const button = page.waiterStatus.find((el) => el.tagName === "button")[0];
+    for (let i = 0; i < 5; i++) {
+      await page.retryNow();
+      expect(page.waiterStatus.children).toBe(placed);
+      expect(button.disabled).toBe(false);
+    }
+    expect(page.waiterStatus.textContent).toMatch(/isn't available/i);
+
+    // A second press while one is being tried asks nothing more.
+    await button.dispatch("click");
+    await button.dispatch("click");
+    await settle();
+    expect(page.joins()).toBe(7);
+    expect(button.disabled).toBe(false);
   });
 });
 
@@ -911,6 +1006,20 @@ describe("a cart left over from a session that ended (#85)", () => {
     await submit(page);
     expect(bodies(page)[0].get("session")).toBe("session-1");
     expect(bodies(page)[0].get("name")).toBe("Tariro");
+  });
+
+  it("counts a line added while ended, whose join failed, as current once the session is seen reopened", async () => {
+    const page = await loadPage(new Map([["order-name:session-1", "Tariro"]]), "session-1");
+    page.state.feed = { session: null, items: [] };
+    await page.tick();
+    page.state.joinReplies.push("abort");
+    await page.add(page.stew);
+    page.state.feed = { session: "session-1", items: [] };
+    await page.tick();
+
+    await submit(page);
+    expect(bodies(page)).toHaveLength(1);
+    expect(bodies(page)[0].get("session")).toBe("session-1");
   });
 
   it("clears the name and asks once when the server is first to say the session changed", async () => {

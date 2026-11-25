@@ -350,7 +350,7 @@ describe("the grid's reopen marks, at a restaurant with months of history (#102)
         const rows = await latestSessionIds(tx, restaurant, ids);
         plans = {
           latest: await explain(tx, latestSessionIds(tx, restaurant, ids)),
-          among: await explain(tx, reopenableAmong(tx, rows.flatMap((row) => (row.id ? [row.id] : [])))),
+          among: await explain(tx, reopenableAmong(tx, restaurant, rows.flatMap((row) => (row.id ? [row.id] : [])))),
         };
         tx.rollback();
       })
@@ -486,6 +486,16 @@ describe("reopenable tables on the grid (#102)", () => {
       values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '5 minutes', now() - interval '1 minute', 'staff_clear')`);
     // The latest session by when it opened is the newer one, closed a minute ago.
     expect((await getFloor(ctx(r))).tables[0].reopenable).toBe(true);
+  });
+
+  it("doesn't fall back to an older session in the window when the latest is past it", async () => {
+    const r = await orderingRestaurant(owner.db);
+    await closedAgo(r, r.tableId, 10); // opened 2 hours ago
+    await owner.db.execute(sql`
+      insert into table_sessions (restaurant_id, table_id, status, opened_at, closed_at, close_reason)
+      values (${r.restaurantId}, ${r.tableId}, 'closed', now() - interval '1 hour', now() - interval '16 minutes', 'staff_clear')`);
+
+    expect((await getFloor(ctx(r))).tables[0].reopenable).toBe(false);
   });
 });
 

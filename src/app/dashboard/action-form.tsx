@@ -1,12 +1,21 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+} from "react";
 import { ConfirmDialog, type ConfirmReason } from "@/components/ui/confirm-dialog";
 import { CONFIRMED_FIELD } from "@/lib/confirmation";
 import { postForm } from "@/lib/form-response";
-import { cn } from "@/lib/utils";
-import { announceSend, clearOnOtherSend } from "./refusals";
+import { type Refusal, announceSend, clearOnOtherSend, pageRefusal, refusalPlace } from "./refusals";
 
 /** What the in-page confirmation says (S-41). */
 export type Confirmation = {
@@ -42,7 +51,7 @@ export function ActionForm({
   confirmation,
   resetOnSuccess = false,
   savedMessage,
-  refusalClassName,
+  refusalOnPage = false,
   children,
 }: {
   action: string;
@@ -52,14 +61,15 @@ export function ActionForm({
   confirmation?: string | Confirmation;
   resetOnSuccess?: boolean;
   savedMessage?: string;
-  /** Where and how the refusal sits, for a form whose surroundings can't grow (#102). */
-  refusalClassName?: string;
+  /** Shows its refusals on the page (PageRefusalAlert), for a form whose surroundings can't grow (#102). */
+  refusalOnPage?: boolean;
   children: ReactNode;
 }) {
   const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const [error, setError] = useState<Refusal>();
   const [saved, setSaved] = useState(false);
+  const page = useContext(PageRefusalContext);
   const [pending, setPending] = useState(false);
   const [asking, setAsking] = useState(false);
   const [self] = useState(() => Symbol("action-form"));
@@ -91,6 +101,12 @@ export function ActionForm({
     else void send(event.currentTarget);
   }
 
+  function refuse(refusal: Refusal) {
+    if (page && refusalPlace(refusal, { page: true, onPage: refusalOnPage }) === "page") return page.show(refusal);
+    setError(refusal);
+    if (refusal.refresh) router.refresh();
+  }
+
   async function send(form: HTMLFormElement, confirmed = false) {
     const body = new FormData(form); // before the fieldset disables its controls
     announceSend(self);
@@ -110,12 +126,11 @@ export function ActionForm({
           setWarnings(refusal.warnings);
           setWarned(true);
         } else {
-          setError(refusal);
-          if (refusal.refresh) router.refresh();
+          refuse(refusal);
         }
       }
     } catch {
-      setError({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
+      refuse({ message: "That didn't reach the server. Try again.", bookings: [], warnings: [], refresh: false });
     } finally {
       setPending(false);
     }
@@ -130,7 +145,7 @@ export function ActionForm({
             {savedMessage}
           </p>
         )}
-        {error && <RefusalAlert refusal={error} className={refusalClassName} />}
+        {error && <RefusalAlert refusal={error} />}
       </fieldset>
       {warnings.length > 0 && (
         <ConfirmDialog
@@ -170,10 +185,54 @@ export function ActionForm({
   );
 }
 
-/** A refusal in place: its message, and the items or bookings in the way. */
-export function RefusalAlert({ refusal, className }: { refusal: Refusal; className?: string }) {
+const PageRefusalContext = createContext<
+  { refusal: Refusal | undefined; refreshing: boolean; show: (refusal: Refusal) => void } | undefined
+>(undefined);
+
+/**
+ * Gives a page a place of its own for refusals (#102): a stale form's, which
+ * reloads the page and may take the form with it, and those of forms with
+ * `refusalOnPage`. They show where PageRefusalAlert is.
+ */
+export function PageRefusals({ className, children }: { className?: string; children: ReactNode }) {
+  const router = useRouter();
+  const [store] = useState(pageRefusal);
+  const refusal = useSyncExternalStore(store.subscribe, store.get, () => undefined);
+  const [refreshing, startRefresh] = useTransition();
+  function show(next: Refusal) {
+    store.show(next);
+    if (next.refresh) startRefresh(() => router.refresh());
+  }
   return (
-    <div role="alert" className={cn("text-caption text-danger", className)}>
+    <PageRefusalContext value={{ refusal, refreshing, show }}>
+      <div className={className}>{children}</div>
+    </PageRefusalContext>
+  );
+}
+
+/**
+ * The page's refusal, in the page's flow so that it covers nothing, and scrolled
+ * into view: when it appears, and once the refreshed page has settled.
+ */
+export function PageRefusalAlert({ className }: { className?: string }) {
+  const { refusal, refreshing } = useContext(PageRefusalContext) ?? {};
+  const place = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (refusal) place.current?.scrollIntoView({ block: "nearest" });
+  }, [refusal, refreshing]);
+  return (
+    refusal && (
+      <div ref={place} className={className}>
+        <RefusalAlert refusal={refusal} />
+      </div>
+    )
+  );
+}
+
+/** A refusal in place: its message, and the items or bookings in the way. */
+export function RefusalAlert({ refusal }: { refusal: Refusal }) {
+  return (
+    <div role="alert" className="text-caption text-danger">
       <p>{refusal.message}</p>
       {refusal.bookings.length > 0 && (
         <ul className="list-disc pl-5">
@@ -185,15 +244,6 @@ export function RefusalAlert({ refusal, className }: { refusal: Refusal; classNa
     </div>
   );
 }
-
-type Refusal = {
-  message: string;
-  bookings: { id: string; summary: string }[];
-  /** A 409 that asks first: nothing was saved (lib/confirmation.ts). */
-  warnings: string[];
-  /** What the page shows is out of date (#95): reload it, keeping the refusal up. */
-  refresh: boolean;
-};
 
 /**
  * A refusal says why, and may list what is in the way: the bookings on a table
