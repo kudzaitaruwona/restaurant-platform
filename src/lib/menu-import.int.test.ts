@@ -135,11 +135,11 @@ describe("previewMenuImport", () => {
 
     expect(preview.ready).toBe(0);
     expect(preview.rows.map((row) => row.problems)).toEqual([
-      ["Enter the USD price as a number, like 8.50."],
+      ["The USD price can have at most 2 decimal places, like 8.50."],
       ["Enter a USD price, a ZiG price, or both."],
       ["Enter the item's name, up to 200 characters."],
       ["Enter the category's name, up to 200 characters."],
-      ["Enter the USD price as a number, like 8.50."],
+      ["The USD price must be digits only, like 8.50: no currency sign, letters or spaces."],
       ['Write yes or no in "available", or leave it blank for yes.'],
       ["This row has more values than the header has columns."],
     ]);
@@ -339,5 +339,56 @@ describe("importMenu", () => {
 
     expect(await itemsOf(theirs.restaurantId)).toEqual([]);
     expect(await itemsOf(mine.restaurantId)).toHaveLength(1);
+  });
+});
+
+describe("prices in a menu import (issue #112)", () => {
+  it("reads a decimal comma as a point in a semicolon file, and says so", async () => {
+    const tenant = await newRestaurant();
+    const csv = [header.replaceAll(",", ";"), "Mains;Sadza;;8,50;210,5;yes"].join("\n");
+
+    const preview = report(await previewMenuImport(tenant, csv));
+    expect(preview.ready).toBe(1);
+    expect(preview.rows[0].notes).toEqual(["A decimal comma in a price was read as a decimal point."]);
+
+    await importMenu(tenant, csv);
+    expect(await itemsOf(tenant.restaurantId)).toEqual([
+      expect.objectContaining({ priceUsd: "8.50", priceZig: "210.5" }),
+    ]);
+  });
+
+  it("still refuses a decimal comma in a comma file, naming the comma", async () => {
+    const tenant = await newRestaurant();
+    const preview = report(await previewMenuImport(tenant, `${header}\nMains,Sadza,,"8,50",,`));
+    expect(preview.rows[0].problems).toEqual([
+      "The USD price uses a comma. Write a point for the decimal, like 8.50.",
+    ]);
+  });
+
+  it("says what is wrong with each bad price", async () => {
+    const tenant = await newRestaurant();
+    const csv = [
+      header,
+      "Mains,A,,-5,,",
+      "Mains,B,,$5,,",
+      "Mains,C,,1000000,,",
+      "Mains,D,,,1.234,",
+    ].join("\n");
+    const preview = report(await previewMenuImport(tenant, csv));
+    expect(preview.rows.map((row) => row.problems)).toEqual([
+      ["The USD price can't be negative. Enter it like 8.50."],
+      ["The USD price must be digits only, like 8.50: no currency sign, letters or spaces."],
+      ["The USD price is too large. The most is 999,999.99."],
+      ["The ZiG price can have at most 2 decimal places, like 210."],
+    ]);
+  });
+
+  it("flags a zero price in the preview, where the import is confirmed", async () => {
+    const tenant = await newRestaurant();
+    const preview = report(await previewMenuImport(tenant, `${header}\nMains,Water,,0,,`));
+    expect(preview.ready).toBe(1);
+    expect(preview.rows[0].notes).toEqual([
+      "A price is 0, so this item would be free. Check it before importing.",
+    ]);
   });
 });

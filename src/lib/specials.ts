@@ -3,7 +3,10 @@ import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizz
 import { z } from "zod";
 import { menuItems, restaurants, specials } from "@/db/schema";
 import { optionalPrice } from "@/lib/menu";
+import { latestRate } from "@/lib/exchange-rate";
 import { revalidateMenu } from "@/lib/menu-cache";
+import { effectiveUsd, effectiveZig, formatUsd, formatZig, specialUsd, specialZig } from "@/lib/pricing";
+import { usdShape, zigShape } from "@/lib/price-input";
 import { recordAdminAction } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -30,8 +33,6 @@ export const errorConstraint = (error: unknown) =>
 export const specialMessages = {
   item: "Choose an item.",
   title: "Enter a badge of up to 80 characters, like Taco Tuesday.",
-  priceUsd: "Enter the special USD price as a number, like 6.50.",
-  priceZig: "Enter the special ZiG price as a number, like 150.",
   nothing: "Enter a badge, a special price, or both.",
   date: "Enter the date as year-month-day, like 2026-11-30.",
   order: "The end date can't be before the start date.",
@@ -82,8 +83,8 @@ const newSpecial = z
     // so another restaurant's id gets the 404 an unknown one does.
     menuItemId: z.string(specialMessages.item).min(1, specialMessages.item),
     title: optionalText(specialMessages.title, 80),
-    priceUsd: optionalPrice(/^[0-9]{1,6}(\.[0-9]{1,2})?$/, specialMessages.priceUsd),
-    priceZig: optionalPrice(/^[0-9]{1,9}(\.[0-9]{1,2})?$/, specialMessages.priceZig),
+    priceUsd: optionalPrice(usdShape("special USD price", "6.50")),
+    priceZig: optionalPrice(zigShape("special ZiG price", "150")),
     startDate: optionalDate,
     endDate: optionalDate,
   })
@@ -174,6 +175,73 @@ export function specialRefusal(error: unknown): "overlap" | "already_over" | nul
   if (errorCode(error) === EXCLUSION_VIOLATION) return "overlap";
   if (errorConstraint(error) === "specials_window_ordered") return "already_over";
   return null;
+}
+
+const calculatedAbove = (currency: string, price: string, normal: string, typed: string) =>
+  `At the current rate this special's ${currency} price is calculated as ${price}, above the normal price (${normal}). Enter a special ${currency} price too, or lower the special ${typed} price.`;
+
+/**
+ * Why a special price can't be saved, or null: a special above the item's
+ * normal price isn't a special, and the page would strike through a price lower
+ * than the one shown (issue #112). What the special charges is compared with what
+ * the item normally charges in both currencies, because a price typed in one
+ * replaces the other too (specialUsd, specialZig).
+ *
+ * A currency whose special price is calculated is compared only when the item
+ * fixes both its prices. When it fixes one, both normal prices come from that one
+ * at the same rate, so a special at or below the typed currency's normal price
+ * can end up above the other one only by rounding up (ZiG 210 is $8.02, and $8.02
+ * back is ZiG 220), and an equal or lower special must not be refused for that.
+ *
+ * With no rate nothing is calculated, so nothing is refused on that account. An
+ * item that isn't live is createSpecial's 404.
+ */
+export async function specialPriceProblem(
+  ctx: Pick<TenantContext, "restaurantId">,
+  { menuItemId, priceUsd, priceZig }: Pick<NewSpecial, "menuItemId" | "priceUsd" | "priceZig">,
+): Promise<string | null> {
+  if (!isId(menuItemId) || (priceUsd === null && priceZig === null)) return null;
+  const { restaurantId } = ctx;
+  return withTenant(ctx, async (tx) => {
+    const [item] = await tx
+      .select({ priceUsd: menuItems.priceUsd, priceZig: menuItems.priceZig })
+      .from(menuItems)
+      .where(
+        and(
+          eq(menuItems.restaurantId, restaurantId),
+          eq(menuItems.id, menuItemId),
+          isNull(menuItems.archivedAt),
+        ),
+      );
+    if (!item) return null;
+    const [restaurant] = await tx
+      .select({ zigStep: restaurants.zigRoundingStep, usdStep: restaurants.usdRoundingStep })
+      .from(restaurants)
+      .where(eq(restaurants.id, restaurantId));
+    const rate = await latestRate(tx, restaurantId);
+    const pricing = { rate: rate?.usdToZig ?? null, ...restaurant };
+
+    const normalUsd = effectiveUsd(item, pricing);
+    if (priceUsd !== null && normalUsd !== null && Number(priceUsd) > Number(normalUsd)) {
+      return `The special USD price (${formatUsd(priceUsd)}) is above the normal price (${formatUsd(normalUsd)}). A special has to be lower, or leave the price blank for a badge alone.`;
+    }
+    const normalZig = effectiveZig(item, pricing);
+    if (priceZig !== null && normalZig !== null && Number(priceZig) > Number(normalZig.amount)) {
+      return `The special ZiG price (${formatZig(priceZig)}) is above the normal price (${formatZig(normalZig.amount)}). A special has to be lower, or leave the price blank for a badge alone.`;
+    }
+    if (item.priceUsd === null || item.priceZig === null) return null;
+
+    const special = { priceUsd, priceZig };
+    const usd = specialUsd(item, special, pricing);
+    if (priceUsd === null && usd !== null && normalUsd !== null && Number(usd) > Number(normalUsd)) {
+      return calculatedAbove("USD", formatUsd(usd), formatUsd(normalUsd), "ZiG");
+    }
+    const zig = specialZig(item, special, pricing);
+    if (priceZig === null && zig && normalZig && Number(zig.amount) > Number(normalZig.amount)) {
+      return calculatedAbove("ZiG", formatZig(zig.amount), formatZig(normalZig.amount), "USD");
+    }
+    return null;
+  });
 }
 
 /**
