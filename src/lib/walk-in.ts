@@ -15,6 +15,12 @@ import { type TenantContext, withTenant } from "@/lib/tenant/scope";
 
 type Actor = Pick<TenantContext, "restaurantId" | "staffId" | "platformAdminId">;
 
+/**
+ * No booking holds a table longer than this from its start (bookings_hold_capped:
+ * a sitting of at most 720 minutes and a buffer of at most 240). It bounds both lateral reads.
+ */
+const HOLD_CAP_MINUTES = 960;
+
 /** A walk-in needs at least this long before the next booking's reset buffer starts (spec 04). */
 export const WALK_IN_MIN_MINUTES = 30;
 /** *(Proposed)* A sanity bound on the party size; booking_settings allows a large-party size of up to 100. */
@@ -78,15 +84,20 @@ type Calculated = {
 /**
  * The two reads both the seating statement and the availability list make about a
  * table, so what the list promises is what the statement enforces. Each is a
- * lateral join over `ctx` (table_id, n, restaurant_id), bounded by the table and
- * the restaurant, reading the index on (restaurant_id, starts_at).
+ * lateral join over `ctx` (table_id, n, restaurant_id), bounded by the table, the
+ * restaurant and a window of HOLD_CAP_MINUTES either side of n, reading the index on
+ * (restaurant_id, starts_at).
  *
  *  - held: the blocking booking holding the table at n with the latest hold.
  *    bookings_hold_capped keeps a hold within 960 minutes of its start, so nothing
  *    that started earlier can still hold the table. Raising that cap means raising
  *    this bound too. `resetting` is the buffer after a finish: the party is gone
  *    (completed, ends_at passed) and only the reset buffer holds the table.
- *  - upcoming: the earliest blocking booking starting after n.
+ *  - upcoming: the earliest blocking booking starting after n, and no later than
+ *    n + HOLD_CAP_MINUTES: a sitting ends within 720 minutes and the buffer is at most
+ *    240, so a booking starting later than that never cuts a sitting short or leaves
+ *    under 30 minutes of room, and reading on for it (a table booked months ahead)
+ *    would change no answer.
  */
 const blocking = sql.join(
   blockingStatuses.map((status) => sql`${status}`),
@@ -100,7 +111,7 @@ const heldNow = sql`left join lateral (
   from bookings b
   where b.restaurant_id = ctx.restaurant_id and b.table_id = ctx.table_id
     and b.status in (${blocking}) and b.starts_at <= ctx.n and b.hold_ends_at > ctx.n
-    and b.starts_at > ctx.n - 960 * ${minute}
+    and b.starts_at > ctx.n - ${HOLD_CAP_MINUTES} * ${minute}
   order by b.hold_ends_at desc, b.id
   limit 1) held on true`;
 const upcoming = sql`left join lateral (
@@ -108,6 +119,7 @@ const upcoming = sql`left join lateral (
   from bookings b
   where b.restaurant_id = ctx.restaurant_id and b.table_id = ctx.table_id
     and b.status in (${blocking}) and b.starts_at > ctx.n
+    and b.starts_at <= ctx.n + ${HOLD_CAP_MINUTES} * ${minute}
   order by b.starts_at, b.id
   limit 1) upcoming on true`;
 /** When a walk-in must be gone: the next booking's start less the reset buffer (null with none). */
@@ -141,6 +153,7 @@ const bookingOf = (
  * database's own now() (the transaction's start) unless a test passes one.
  *
  *  - "Next booking" is the earliest booking on the table that starts after now
+ *    (and within HOLD_CAP_MINUTES of it, which nothing later can matter to)
  *    and is in a blocking status (the exclusion constraint's WHERE), so a
  *    cancelled or no-show booking never blocks a walk-in.
  *  - sitting is the table's real one by party size (booking_settings).
