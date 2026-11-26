@@ -26,6 +26,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:unit
+      # Client wiring in a DOM (#137): focus, dialogs, leave warnings, shared forms.
+      - run: npm run test:dom
       # Build runs without runtime secrets: env validation happens at server
       # start (src/instrumentation.ts), not during `next build`.
       - run: npm run build

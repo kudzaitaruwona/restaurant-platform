@@ -67,6 +67,18 @@ export default defineConfig({
         },
       },
       {
+        // The client components, in a DOM (#137): focus, dialogs, leave warnings
+        // and the shared forms' wiring, which the node projects can't see.
+        // Kept to test/dom so that the unit project's include is untouched.
+        extends: true,
+        test: {
+          name: "dom",
+          environment: "happy-dom",
+          include: ["test/dom/**/*.test.{ts,tsx}"],
+          setupFiles: ["./test/dom/setup.ts"],
+        },
+      },
+      {
         // Not part of `npm test`: it needs `npm run build` first.
         extends: true,
         test: {
