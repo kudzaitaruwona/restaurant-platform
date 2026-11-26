@@ -21,17 +21,28 @@ export const initialFormState = (saved: SettingsValues): FormState => ({
   dirty: false,
 });
 
-export const edited = (state: FormState, now: SettingsValues): FormState => ({
-  ...state,
-  dirty: settingsDirty(state.baseline, now),
-});
+/** The same state when nothing it says changes, so a keystroke in an edited form renders nothing. */
+export function edited(state: FormState, now: SettingsValues): FormState {
+  const dirty = settingsDirty(state.baseline, now);
+  return dirty === state.dirty ? state : { ...state, dirty };
+}
 
-/** The server took `posted` while the screen still held `saved`. */
+/**
+ * The server took `posted` while the screen still held `saved`. `now` is what the
+ * fields hold by then: the form stays editable while a save is out, so it may
+ * be more than was sent, and that is still unsaved.
+ */
 export const saveAccepted = (
   state: FormState,
   posted: SettingsValues,
   saved: SettingsValues,
-): FormState => ({ ...state, baseline: posted, dirty: false, outdated: saved });
+  now: SettingsValues = posted,
+): FormState => ({
+  ...state,
+  baseline: posted,
+  dirty: settingsDirty(posted, now),
+  outdated: saved,
+});
 
 /**
  * The values the screen now holds. Unsaved edits always win. The first new ones

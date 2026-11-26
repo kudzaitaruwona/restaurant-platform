@@ -10,6 +10,8 @@ import {
   isTimeZone,
   updateRestaurantSettings,
 } from "./restaurant-settings";
+import { bookableRestaurant } from "../../test/integration/bookings";
+import { countQueries } from "../../test/integration/queries";
 import { menuTag } from "./menu-cache";
 
 const revalidateTag = vi.hoisted(() => vi.fn());
@@ -81,6 +83,31 @@ describe("restaurant settings", () => {
       name: "Before",
       contactPhone: null,
     });
+  });
+
+  it("reads once before an ordinary save, and again only when clearing the phone could switch booking off", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const ctx = { restaurantId };
+    const saved = await getRestaurantSettings(ctx);
+    const count = (settings: typeof saved) => countQueries(() => updateRestaurantSettings(ctx, settings));
+
+    const ordinary = await count({ ...saved, name: "Again" });
+    const clearing = await count({ ...saved, contactPhone: null });
+
+    // BEGIN, set_config, the one read, the update, COMMIT.
+    expect(ordinary).toBe(5);
+    // The one more read is the second look at booking_settings.
+    expect(clearing).toBe(6);
+  });
+
+  it("says online booking switched off when clearing the phone did it, and only then", async () => {
+    const { restaurantId } = await bookableRestaurant(owner.db);
+    const saved = await getRestaurantSettings({ restaurantId });
+
+    expect(await updateRestaurantSettings({ restaurantId }, { ...saved, name: "Same phone" })).toBe("saved");
+    expect(await updateRestaurantSettings({ restaurantId }, { ...saved, contactPhone: null })).toBe("saved_booking_off");
+    // Already off, and already without a phone: nothing switched off this time.
+    expect(await updateRestaurantSettings({ restaurantId }, { ...saved, contactPhone: null })).toBe("saved");
   });
 
   it("leaves the public identifiers alone", async () => {

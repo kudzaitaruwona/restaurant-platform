@@ -8,7 +8,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import { getEnv } from "@/lib/env";
 import { cn } from "@/lib/utils";
 import { currencyMode } from "@/db/schema";
-import { DEFAULT_CURRENCY_MODE, timezoneChoices } from "@/lib/new-restaurant";
+import { DEFAULT_CURRENCY_MODE } from "@/lib/new-restaurant";
+import { timezoneChoices } from "@/lib/restaurant-settings";
 import {
   type CurrencyMode,
   DEFAULT_TIMEZONE,
@@ -67,6 +68,9 @@ const onboardingPages: Record<
   bookingHoursSet: { href: "/dashboard/bookings/settings", label: "Open Booking settings" },
   bookingEnabled: { href: "/dashboard/bookings/settings", label: "Open Booking settings" },
 };
+
+/** The one form that enters a restaurant: its summary's button and every checklist link submit it. */
+const enterFormId = (restaurantId: string) => `enter-${restaurantId}`;
 
 type Restaurant = Awaited<ReturnType<typeof listRestaurants>>[number];
 type Checklist = NonNullable<
@@ -156,20 +160,17 @@ function Onboarding({
                 {onboardingRules[key]}
                 {key === "qrCodesPrinted" && !checklist.tablesAdded && " No tables yet."}
               </span>
-              <form
-                method="post"
-                action={`/api/admin/restaurants/${restaurant.id}/enter`}
-                className="mt-1"
+              {/* A button of the restaurant's one way in, saying where it lands. */}
+              <button
+                type="submit"
+                form={enterFormId(restaurant.id)}
+                name="next"
+                value={onboardingPages[key].href}
+                className="mt-1 inline-flex min-h-8 items-center gap-1 self-start rounded-control text-caption font-medium text-accent underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <input type="hidden" name="next" value={onboardingPages[key].href} />
-                <button
-                  type="submit"
-                  className="inline-flex min-h-8 items-center gap-1 rounded-control text-caption font-medium text-accent underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {onboardingPages[key].label}
-                  <ArrowRight aria-hidden strokeWidth={1.75} className="size-3.5" />
-                </button>
-              </form>
+                {onboardingPages[key].label}
+                <ArrowRight aria-hidden strokeWidth={1.75} className="size-3.5" />
+              </button>
             </div>
             {key === "qrCodesPrinted" && (
               <QrCodesPrintedForm
@@ -277,6 +278,7 @@ function restaurantItem({
         <form
           method="post"
           action={`/api/admin/restaurants/${restaurant.id}/enter`}
+          id={enterFormId(restaurant.id)}
         >
           <Button type="submit" size="compact" className={pressable}>
             Enter restaurant

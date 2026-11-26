@@ -17,9 +17,10 @@ export const REMINDER_MIN_GAP_MS = 5 * 60_000;
  * starts_at - 3h, or not at all when that time is not more than one job interval
  * (5 minutes) after now: a booking made 3 hours 5 minutes or less ahead, whose
  * reminder would go out with, or just after, the confirmation. Both are written
- * in the caller's transaction, so they exist if and only if the booking does. The scheduled job sends it
- * (src/lib/cron/notifications.ts). Only for a guest who opted in and gave a
- * number (spec 05, data and privacy); anyone else gets nothing queued.
+ * in the caller's transaction, so they exist if and only if the booking does. The
+ * scheduled job sends them (src/lib/cron/notifications.ts). Only for a guest who
+ * opted in and gave a number (spec 05, data and privacy); anyone else gets nothing
+ * queued.
  *
  * Every path that creates a confirmed booking calls this: the guest's online
  * booking (src/lib/bookings.ts) and staff adding one (src/lib/booking-staff.ts).

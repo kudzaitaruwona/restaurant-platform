@@ -341,6 +341,45 @@ describe("a sign-in page visited while signed in (#116)", () => {
     expect(await home()).toBe("/dashboard");
   });
 
+  // `/` (signedInHome) and `/login` (SignIn) are outside the proxy matcher (#144): they read
+  // the session without refreshing its cookie, so a stale one must read as no session at all.
+  describe("with a stale cookie, the same as signed out", () => {
+    const expire = async (email: string) => {
+      const [{ id }] = await owner.db
+        .select({ id: staffAuthUser.id })
+        .from(staffAuthUser)
+        .where(eq(staffAuthUser.email, email));
+      await owner.db
+        .update(staffAuthSession)
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where(eq(staffAuthSession.userId, id));
+    };
+    const staleCookies = {
+      "forged": async () => (await signIn(services, "staff", people.active)).replace(/\.[^.;]+(;|$)/, ".forged$1"),
+      "expired": async () => {
+        const cookie = await signIn(services, "staff", people.active);
+        await expire(people.active);
+        return cookie;
+      },
+      "signed out since": async () => {
+        const cookie = await signIn(services, "staff", people.active);
+        await postAuth("staff", "/sign-out", {}, { cookie });
+        return cookie;
+      },
+    };
+
+    it.each(Object.keys(staleCookies) as (keyof typeof staleCookies)[])("%s", async (kind) => {
+      request.cookie = "";
+      const signedOut = { form: await visit("staff", { next: "/dashboard/menu" }), home: await home() };
+      request.cookie = await staleCookies[kind]();
+
+      expect(await visit("staff", { next: "/dashboard/menu" })).toEqual(signedOut.form);
+      expect(await visit("admin")).toMatchObject({ destination: "/admin", page: "/login/admin" });
+      expect(await home()).toBeUndefined();
+      expect(signedOut.home).toBeUndefined();
+    });
+  });
+
   it("still shows the form for an invite to somebody else", async () => {
     request.cookie = await signIn(services, "staff", people.active);
     expect(await visit("staff", { email: "other@example.test" })).toHaveProperty("destination");

@@ -7,9 +7,12 @@ import {
 import { STAFF_PAGE_HEADER } from "@/lib/staff-page-header";
 
 /**
- * Two things every staff request needs, and one every public page needs. The
- * matcher is what keeps this off everything else, and nothing here touches the
- * database.
+ * Two things every staff request needs, a third that only a staff page does, and
+ * one every public page needs: the cross-site check on writes, a fresh session
+ * cookie, the `x-staff-page` header the tenant seam reads (set here on a GET under
+ * /dashboard, and dropped from anything a browser sent), and the cache's method
+ * check. The matcher is what keeps this off everything else, and nothing here
+ * touches the database.
  *
  * Any new staff page outside these paths needs adding here, or its visits stop
  * counting towards keeping a session alive.

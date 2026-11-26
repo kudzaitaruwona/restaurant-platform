@@ -137,6 +137,24 @@ describe("the next booking and the buffer", () => {
     expect(iso(row.holdEndsAt)).toBe(iso(at(100)));
   });
 
+  it("with the longest sitting and buffer, a booking 959 minutes away still cuts it, and one at 960 or later never does", async () => {
+    const longest = { sittingMinutes: 720, largePartySittingMinutes: 720, bufferMinutes: 240 };
+    const { restaurantId, tableIds, actor: who } = await restaurant({
+      rules: { ...rules, ...longest },
+      tables: [{ capacity: 4 }, { capacity: 4 }, { capacity: 4 }],
+    });
+    await bookOn(restaurantId, tableIds[0], 959, 105);
+    await bookOn(restaurantId, tableIds[1], 960, 105);
+    await bookOn(restaurantId, tableIds[2], 60 * 24 * 90, 105);
+
+    const list = await walkInTables(who, NOW);
+    expect(list.map(({ state, until }) => [state, until])).toEqual([["free", "06:59"], ["free", null], ["free", null]]);
+    for (const [index, minutes] of [719, 720, 720].entries()) {
+      const seated = await seatWalkIn(who, tableIds[index], 2, NOW);
+      expect(seated).toMatchObject({ outcome: "seated", endsAt: at(minutes) });
+    }
+  });
+
   it("exactly 30 minutes of room before the booking's buffer is seated", async () => {
     const { restaurantId, tableId, actor: who } = await restaurant();
     await bookOn(restaurantId, tableId, 15 + WALK_IN_MIN_MINUTES, 105);
