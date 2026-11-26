@@ -102,7 +102,12 @@ describe("the closures table", () => {
       );
     try {
       await client.query("begin");
-      await client.query('alter table "closures" drop constraint "closures_window_unique"');
+      // A copy without the rule, in this session's own schema, which Postgres searches
+      // first for "closures": the migration's statements then run on the copy, never on
+      // the shared table (no DDL on a shared table, test/integration/global-setup.ts).
+      await client.query(
+        'create temporary table "closures" (like public.closures including defaults including constraints) on commit drop',
+      );
       await insert(a.restaurantId, 5, 6, null);
       await insert(a.restaurantId, 5, 6, "Holiday");
       await insert(a.restaurantId, 5, 6, "Holiday");
@@ -124,6 +129,13 @@ describe("the closures table", () => {
         "Once",
       ]);
       expect(rows.filter((r) => r.restaurant_id === b.restaurantId)).toHaveLength(1);
+      // Nothing stronger than a reader's lock on the shared table: an ALTER there queues
+      // behind every booking in flight (their trigger reads closures), shows up as a waiter
+      // on another file's lock, and holds up every booking after it.
+      const { rows: locks } = await client.query<{ mode: string }>(
+        "select mode from pg_locks where pid = pg_backend_pid() and relation = 'public.closures'::regclass",
+      );
+      expect(locks.map(({ mode }) => mode).filter((mode) => mode !== "AccessShareLock")).toEqual([]);
     } finally {
       await client.query("rollback");
       client.release();

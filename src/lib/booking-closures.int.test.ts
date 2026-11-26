@@ -4,6 +4,7 @@ import { auditLog, bookings, closures, diningTables } from "@/db/schema";
 import { addDays, instantOf, localToday } from "@/lib/booking-engine";
 import { aBooking, bookableRestaurant, bookingsOf } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
+import { whileWaiting } from "../../test/integration/locks";
 import {
   addClosure,
   type ClosureRequest,
@@ -98,17 +99,14 @@ const closeEvening = (restaurantId: string) =>
   addClosure(actor(restaurantId), parsed({ startDate: date, startTime: "19:00", endTime: "22:00" }), now);
 
 /** The backend that waits on `holder`'s lock: the one thing that proves the save is past its read. */
-const waitUntilSomeoneWaitsOn = (holder: number) =>
-  vi.waitFor(
-    async () => {
-      const { rows } = await owner.db.execute<{ pid: number }>(sql`
-        select pid from pg_stat_activity
-        where wait_event_type = 'Lock' and ${holder} = any(pg_blocking_pids(pid))
-      `);
-      expect(rows).not.toEqual([]);
-    },
-    { timeout: 5_000, interval: 20 },
-  );
+const waitUntilSomeoneWaitsOn = (holder: number, waiting: Promise<unknown>) =>
+  whileWaiting([waiting], async () => {
+    const { rows } = await owner.db.execute<{ pid: number }>(sql`
+      select pid from pg_stat_activity
+      where wait_event_type = 'Lock' and ${holder} = any(pg_blocking_pids(pid))
+    `);
+    expect(rows).not.toEqual([]);
+  });
 
 describe("what a form can say", () => {
   it("is a start date alone, which is that whole date", () => {
@@ -440,7 +438,7 @@ describe("saving over bookings", () => {
       const { rows } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
 
       const saving = closeEvening(restaurantId);
-      await waitUntilSomeoneWaitsOn(rows[0].pid);
+      await waitUntilSomeoneWaitsOn(rows[0].pid, saving);
       await other.query("commit");
       const result = await saving;
 
@@ -608,7 +606,7 @@ describe("a closure committed between a booking's read and its insert", () => {
       );
       const { rows } = await other.query<{ pid: number }>("select pg_backend_pid() as pid");
       const booked = booking();
-      await waitUntilSomeoneWaitsOn(rows[0].pid);
+      await waitUntilSomeoneWaitsOn(rows[0].pid, booked);
       await other.query("commit");
       return await booked;
     } finally {

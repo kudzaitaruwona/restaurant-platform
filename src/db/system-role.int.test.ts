@@ -1,4 +1,5 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/neon-serverless";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
 import {
@@ -49,6 +50,22 @@ afterAll(() =>
 
 const INSUFFICIENT_PRIVILEGE = "42501";
 const refused = { cause: { code: INSUFFICIENT_PRIVILEGE } };
+
+/**
+ * Expects each query to be refused, run one after another on one held connection.
+ * Not through the pool: the driver closes a pooled connection whose query failed, so
+ * every refusal there opened a new one, and on a loaded machine a run of them took
+ * longer than the test's timeout (each new connection costs seconds there).
+ */
+async function expectEachRefused(queries: SQL[]) {
+  const client = await system.pool.connect();
+  try {
+    const held = drizzle({ client });
+    for (const query of queries) await expect(held.execute(query)).rejects.toMatchObject(refused);
+  } finally {
+    client.release();
+  }
+}
 
 /** Every privilege app_system holds on a table in public, by table and column. */
 async function grantsOf(role: string) {
@@ -160,7 +177,7 @@ describe("app_system", () => {
   });
 
   it("can't read a guest's name, number or manage link, the restaurant's other columns, or any other tenant table", async () => {
-    for (const query of [
+    await expectEachRefused([
       sql`select guest_name from bookings limit 1`,
       sql`select guest_phone from bookings limit 1`,
       sql`select id from bookings where guest_phone like '+263%' limit 1`,
@@ -181,13 +198,11 @@ describe("app_system", () => {
       sql`select * from orders limit 1`,
       sql`select table_id from table_sessions limit 1`,
       sql`select waiter_requested_at from table_sessions limit 1`,
-    ]) {
-      await expect(system.db.execute(query)).rejects.toMatchObject(refused);
-    }
+    ]);
   });
 
   it("can't rewrite or erase history", async () => {
-    for (const query of [
+    await expectEachRefused([
       sql`update bookings set table_id = table_id where false`,
       sql`update bookings set guest_name = '' where false`,
       sql`update bookings set manage_token = '' where false`,
@@ -203,9 +218,7 @@ describe("app_system", () => {
       sql`delete from table_sessions where false`,
       sql`update orders set customer_name = customer_name where false`,
       sql`update order_items set status = status where false`,
-    ]) {
-      await expect(system.db.execute(query)).rejects.toMatchObject(refused);
-    }
+    ]);
   });
 
   describe("a guest's phone, the one personal column it may change (D-06)", () => {
@@ -278,15 +291,13 @@ describe("app_system", () => {
 
     it("can't queue a notification, move one to another booking, or delete one", async () => {
       const { restaurantId, bookingId, id } = await aQueuedBooking();
-      for (const query of [
+      await expectEachRefused([
         sql`insert into notifications (restaurant_id, booking_id, kind, scheduled_for) values (${restaurantId}, ${bookingId}, 'booking_reminder', now())`,
         sql`update notifications set booking_id = booking_id where id = ${id}`,
         // scheduled_for it may move (migration 0035): a retry's backoff. Not its kind.
         sql`update notifications set kind = 'booking_reminder' where id = ${id}`,
         sql`delete from notifications where id = ${id}`,
-      ]) {
-        await expect(system.db.execute(query)).rejects.toMatchObject(refused);
-      }
+      ]);
     });
   });
 

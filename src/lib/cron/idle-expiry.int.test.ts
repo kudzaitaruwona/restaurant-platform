@@ -9,7 +9,7 @@ import {
   testDatabaseSettings,
 } from "../../../test/integration/database";
 import { orderingRestaurant } from "../../../test/integration/ordering";
-import { closeIdleSessions, closeSessions, closing, idleSessions } from "./idle-expiry";
+import { closeIdleSessions, closeSessions, closing, idleSessions, keepToIndexes } from "./idle-expiry";
 
 /**
  * Spec 06's idle expiry, run by the scheduled job (S-35) as app_system: an open
@@ -309,6 +309,23 @@ async function history(tx: Transaction, r: Restaurant, sessions: number) {
   await tx.execute(sql`set local session_replication_role = origin`);
 }
 
+/**
+ * The rows every plan may read, counted in the transaction's own snapshot: the open
+ * sessions, their orders and lines, and the lines in play.
+ */
+async function liveRows(tx: Transaction) {
+  const { rows } = await tx.execute<Record<string, number>>(sql`
+    select
+      (select count(*)::int from table_sessions where status = 'open') as table_sessions,
+      (select count(*)::int from orders o join table_sessions s
+         on s.restaurant_id = o.restaurant_id and s.id = o.session_id where s.status = 'open') as orders,
+      (select count(*)::int from order_items i join orders o
+         on o.restaurant_id = i.restaurant_id and o.id = i.order_id
+         join table_sessions s on s.restaurant_id = o.restaurant_id and s.id = o.session_id
+         where s.status = 'open') + (select count(*)::int from order_items where in_play) as order_items`);
+  return rows[0];
+}
+
 describe("idle expiry, across restaurants with months of history", () => {
   // Sessions, orders and lines are never deleted, so the job must find the open
   // sessions without reading the closed ones, and check each one's lines without
@@ -346,17 +363,7 @@ describe("idle expiry, across restaurants with months of history", () => {
         // repeatable read: the closure gate refuses a close under repeatable read.
         await tx.execute(sql`set transaction isolation level serializable`);
         await history(tx, r, 2000);
-        [live] = (
-          await tx.execute<Record<string, number>>(sql`
-            select
-              (select count(*)::int from table_sessions where status = 'open') as table_sessions,
-              (select count(*)::int from orders o join table_sessions s
-                 on s.restaurant_id = o.restaurant_id and s.id = o.session_id where s.status = 'open') as orders,
-              (select count(*)::int from order_items i join orders o
-                 on o.restaurant_id = i.restaurant_id and o.id = i.order_id
-                 join table_sessions s on s.restaurant_id = o.restaurant_id and s.id = o.session_id
-                 where s.status = 'open') + (select count(*)::int from order_items where in_play) as order_items`)
-        ).rows;
+        live = await liveRows(tx);
 
         for (const stats of ["as they stand", "analyzed without the history", "analyzed"]) {
           // Another connection, which can't see this transaction's history: what a concurrent autovacuum leaves.
@@ -367,6 +374,7 @@ describe("idle expiry, across restaurants with months of history", () => {
           // The UPDATE runs, so it runs in a savepoint and is undone before the next EXPLAIN.
           await tx.execute(sql`savepoint explained`);
           await tx.execute(sql`set local role app_system`);
+          await keepToIndexes(tx);
           found.push({ stats, query: "batch", plan: await explain(tx, idleSessions(tx, NOW)) });
           found.push({ stats, query: "close", plan: await explain(tx, closing(tx, checked, NOW).getSQL()) });
           await tx.execute(sql`reset role`);
@@ -394,6 +402,59 @@ describe("idle expiry, across restaurants with months of history", () => {
         expect(rowsRead(plan, table), `${query} reads ${table}, stats ${stats}`).toBeLessThanOrEqual(
           live![table] + margin,
         );
+      }
+    }
+  });
+
+  // Statistics taken while nearly every session was open, as on a database whose
+  // closed history piled up after the last analyze (or early in a full test run, before
+  // the files that close sessions): Postgres judged the partial index no better than
+  // reading the whole table, and read every session ever closed. Made here in the
+  // transaction, so it isn't left to the shared database's state: open sessions on
+  // tables of their own, active at NOW (so none is due), nine for every committed
+  // session, analyzed, and only then the history.
+  it("reads none of the closed history on statistics that saw nearly every session open", async () => {
+    const r = await orderingRestaurant(owner.db);
+    const due = await aSession(["delivered"], { idle: 100, at: r });
+
+    const found: { query: string; plan: PlanNode }[] = [];
+    let live: Record<string, number> | undefined;
+    await owner.db
+      .transaction(async (tx) => {
+        await tx.execute(sql`set transaction isolation level serializable`);
+        const [{ sessions }] = (
+          await tx.execute<{ sessions: number }>(sql`select count(*)::int as sessions from table_sessions`)
+        ).rows;
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx.execute(sql`
+          with t as (
+            insert into tables (restaurant_id, label, capacity, qr_token)
+            select ${r.restaurantId}, 'Open ' || g, 4, md5(random()::text)
+            from generate_series(1, ${Math.max(1000, 9 * sessions)}) g
+            returning restaurant_id, id
+          )
+          insert into table_sessions (restaurant_id, table_id, opened_at, last_activity_at)
+          select restaurant_id, id, ${NOW}, ${NOW} from t`);
+        await tx.execute(sql`analyze table_sessions, orders, order_items`);
+        await history(tx, r, 2000);
+        live = await liveRows(tx);
+
+        await tx.execute(sql`set local role app_system`);
+        await keepToIndexes(tx);
+        found.push({ query: "batch", plan: await explain(tx, idleSessions(tx, NOW)) });
+        const checked = [{ restaurantId: r.restaurantId, id: due.sessionId }];
+        found.push({ query: "close", plan: await explain(tx, closing(tx, checked, NOW).getSQL()) });
+        tx.rollback();
+      })
+      .catch((error: unknown) => {
+        if (found.length < 2) throw error;
+      });
+
+    const margin = 300;
+    for (const { query, plan } of found) {
+      if (query === "batch") expect(plan["Actual Rows"], query).toBeGreaterThanOrEqual(1);
+      for (const table of ["table_sessions", "orders", "order_items"]) {
+        expect(rowsRead(plan, table), `${query} reads ${table}`).toBeLessThanOrEqual(live![table] + margin);
       }
     }
   });
