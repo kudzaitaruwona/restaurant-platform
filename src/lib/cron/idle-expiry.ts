@@ -88,6 +88,17 @@ function due(now: Date) {
   )!;
 }
 
+/**
+ * Run first in each batch's transaction: no sequential scans, so the open sessions
+ * are read from table_sessions_one_open_per_table on any statistics. On statistics
+ * taken while nearly every session was open (a young database whose history piled up
+ * since the last analyze), Postgres judged that partial index no better than the
+ * whole table and read every session ever closed (rows-read tested). The probes'
+ * own tables are better served by their indexes anyway. Exported so a test can
+ * EXPLAIN under it.
+ */
+export const keepToIndexes = (tx: Transaction) => tx.execute(sql`set local enable_seqscan = off`);
+
 /** The next batch of sessions due to close, locked, skipping any another run or an order holds. */
 export const idleSessions = (tx: Transaction, now: Date) =>
   tx
@@ -145,6 +156,7 @@ export async function closeIdleSessions(
   for (let batch = 0; batch < MAX_BATCHES && Date.now() < deadline; batch++) {
     const { taken, changed } = await db.transaction(
       async (tx) => {
+        await keepToIndexes(tx);
         const rows = await idleSessions(tx, now);
         return { taken: rows.length, changed: await closeSessions(tx, rows, now) };
       },

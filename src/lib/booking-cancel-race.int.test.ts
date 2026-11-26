@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { auditLog, bookings } from "@/db/schema";
 import { aBooking, bookableRestaurant } from "../../test/integration/bookings";
 import { openOwnerDatabase, testDatabaseSettings } from "../../test/integration/database";
+import { whileWaiting } from "../../test/integration/locks";
 import { type ActionOutcome, cancelBooking as staffCancel, seatBooking } from "./booking-day";
 import { bookingActionResponse } from "./booking-day-responses";
 import { cancelBooking as guestCancel, type CancelOutcome } from "./bookings";
@@ -43,22 +44,19 @@ const rowOf = async (id: string) =>
   (await owner.db.select().from(bookings).where(eq(bookings.id, id)))[0];
 const auditOf = (id: string) => owner.db.select().from(auditLog).where(eq(auditLog.entityId, id));
 
-/** Backends queued behind this one, directly or behind each other on the row. */
-const queuedBehind = (holder: number, length: number) =>
-  vi.waitFor(
-    async () => {
-      const { rows } = await owner.db.execute<{ pid: number }>(sql`
-        with recursive queue(pid) as (
-          select pid from pg_stat_activity where ${holder} = any(pg_blocking_pids(pid))
-          union
-          select waiting.pid from pg_stat_activity waiting
-          join queue on queue.pid = any(pg_blocking_pids(waiting.pid))
-        )
-        select pid from queue`);
-      expect(rows).toHaveLength(length);
-    },
-    { timeout: 5_000, interval: 20 },
-  );
+/** Backends queued behind this one, directly or behind each other on the row, while `waiting` are. */
+const queuedBehind = (holder: number, length: number, waiting: Promise<unknown>[]) =>
+  whileWaiting(waiting, async () => {
+    const { rows } = await owner.db.execute<{ pid: number }>(sql`
+      with recursive queue(pid) as (
+        select pid from pg_stat_activity where ${holder} = any(pg_blocking_pids(pid))
+        union
+        select waiting.pid from pg_stat_activity waiting
+        join queue on queue.pid = any(pg_blocking_pids(waiting.pid))
+      )
+      select pid from queue`);
+    expect(rows).toHaveLength(length);
+  });
 
 /** Starts `first`, then `second`, both stopped on the booking's row, then lets them go. */
 async function inOrder<A, B>(id: string, first: () => Promise<A>, second: () => Promise<B>) {
@@ -70,9 +68,9 @@ async function inOrder<A, B>(id: string, first: () => Promise<A>, second: () => 
     const pid = rows[0].pid as number;
 
     const a = first();
-    await queuedBehind(pid, 1);
+    await queuedBehind(pid, 1, [a]);
     const b = second();
-    await queuedBehind(pid, 2);
+    await queuedBehind(pid, 2, [a, b]);
     await holder.query("commit");
 
     return [await a, await b] as const;
