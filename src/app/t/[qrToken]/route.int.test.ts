@@ -121,7 +121,7 @@ afterAll(async () => {
  * end: all ordering adds.
  */
 const plus = '<svg class="icon"><use href="#i-plus"/></svg>';
-const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<\/button>/g;
+const addButton = /<button type="button" class="add" data-item="[^"]*" data-name="[^"]*" data-price="[^"]*" hidden><svg class="icon"><use href="#i-plus"\/><\/svg>Add<span class="sr"> [^<]*<\/span><\/button>/g;
 const waiterButton = /<button type="button" id="call-waiter"[^>]* hidden>[\s\S]*?<\/button>/;
 const tableName = '<p id="table-name" class="table" hidden></p>';
 const trackerBlock = /<p id="waiter-status"[^>]*><\/p>\n<section id="tracker"[^>]* hidden>[\s\S]*?<\/section>\n/;
@@ -162,7 +162,7 @@ describe("/t/{qr_token}", () => {
     const body = await (await scan(qrToken)).text();
 
     expect(body).toContain(
-      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>${plus}Add</button>`,
+      `<button type="button" class="add" data-item="${stew.id}" data-name="Beef stew" data-price="$8.00" hidden>${plus}Add<span class="sr"> Beef stew</span></button>`,
     );
     expect(body).not.toContain(soldOut.id);
     expect(body.match(addButton)).toHaveLength(1);
@@ -214,6 +214,15 @@ describe("/t/{qr_token}", () => {
     expect(body).toMatch(
       /<div class="sheet-foot">[^]*?id="order-cancel"[^]*?Keep browsing[^]*?name="place"[^]*?Place order<\/button><\/div><\/div>\n<\/form>/,
     );
+  });
+
+  it("makes the sheet something focus can start on, with no ring drawn round the whole sheet (#119)", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "Beef stew");
+
+    const body = await (await scan(qrToken)).text();
+
+    expect(body).toMatch(/<form id="order"[^>]* role="dialog" aria-modal="true"[^>]* tabindex="-1" hidden>/);
+    expect(body).toContain(".order:focus{outline:none}");
   });
 
   it("has a Call a waiter button, hidden until the script has joined the session", async () => {
@@ -443,5 +452,13 @@ describe("the build", () => {
 
   it("answers the sample without a restaurant: the build has no database", async () => {
     expect((await scan(BUILD_SAMPLE_TOKEN)).status).toBe(404);
+  });
+  it("serves a 200-character unbroken dish name whole, under rules that wrap it and the tracker's text column (#94)", async () => {
+    const { qrToken } = await newRestaurant("Ordering", "W".repeat(200));
+    const body = await (await scan(qrToken)).text();
+    // The tracker's rows are drawn by the script: public-menu-script.test.ts puts such a name and note in .tw.
+    expect(body).toMatch(/body\{[^}]*overflow-wrap:anywhere/);
+    expect(body).toMatch(/\.tw\{[^}]*min-width:0;overflow-wrap:anywhere/);
+    expect(body).toContain("W".repeat(200));
   });
 });

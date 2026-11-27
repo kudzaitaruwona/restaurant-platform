@@ -152,7 +152,7 @@ describe("updateTable", () => {
       bookable: false,
     });
 
-    expect(outcome).toBe("saved");
+    expect(outcome).toEqual({ capacityChanged: true, bookingSwitchedOff: false });
     expect(await listTables(tenant)).toMatchObject([
       { label: "Bar 1", capacity: 2, bookable: false },
     ]);
@@ -175,7 +175,7 @@ describe("updateTable", () => {
 
     expect(
       await updateTable(tenant, await idOf(tenant, "7"), { label: "7", capacity: 6, bookable: true }),
-    ).toBe("saved");
+    ).toEqual({ capacityChanged: true, bookingSwitchedOff: false });
   });
 
   it("refuses a label another live table has, and changes nothing", async () => {
@@ -202,7 +202,7 @@ describe("updateTable", () => {
 
     expect(
       await updateTable(tenant, await idOf(tenant, "A"), { label: "B", capacity: 2, bookable: true }),
-    ).toBe("saved");
+    ).toEqual({ capacityChanged: false, bookingSwitchedOff: false });
   });
 
   it("is not found for an archived table, and for another restaurant's", async () => {

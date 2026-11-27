@@ -24,6 +24,39 @@ const start = initialFormState(stored);
 const shown = (before: FormState, after: FormState, inFields: SettingsValues) =>
   after.version === before.version ? inFields : after.baseline;
 
+describe("typing", () => {
+  it("changes nothing while the form stays as dirty as it was, so a keystroke renders nothing", () => {
+    const once = edited(start, { ...stored, name: "Baba's Kitchen" });
+    expect(edited(once, { ...stored, name: "Baba's Kitchen!" })).toBe(once);
+    expect(edited(start, stored)).toBe(start);
+  });
+
+  it("changes when it turns dirty, and when it is back to what was saved", () => {
+    const dirty = edited(start, { ...stored, name: "Baba's Kitchen" });
+    expect(dirty).not.toBe(start);
+    expect(edited(dirty, stored)).toMatchObject({ dirty: false });
+  });
+});
+
+describe("typing while a save is out", () => {
+  const sent = { ...stored, name: "Baba's Kitchen" };
+  const during = { ...sent, name: "Baba's Kitchen Two" };
+
+  it("keeps what was typed after it was sent as unsaved, and warns about it", () => {
+    const accepted = saveAccepted(edited(start, sent), sent, stored, during);
+
+    expect(accepted.baseline).toEqual(sent);
+    expect(accepted.dirty).toBe(true);
+    // The refresh that follows can't put the old values over it.
+    expect(received(accepted, sent)).toBe(accepted);
+  });
+
+  it("is saved cleanly when nothing was typed meanwhile", () => {
+    expect(saveAccepted(edited(start, sent), sent, stored, sent).dirty).toBe(false);
+    expect(saveAccepted(edited(start, sent), sent, stored).dirty).toBe(false);
+  });
+});
+
 describe("saving", () => {
   it.each([
     { currencyMode: "both" },

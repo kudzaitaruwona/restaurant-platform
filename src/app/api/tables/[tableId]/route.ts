@@ -1,7 +1,13 @@
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
-import { formSaved } from "@/lib/form-response";
-import { labelTakenMessage, parseTableEdit, tableIdFrom, updateTable } from "@/lib/tables";
+import { FORM_FETCH_HEADER, formSaved } from "@/lib/form-response";
+import {
+  labelTakenMessage,
+  parseTableEdit,
+  tableIdFrom,
+  tableSavedMessage,
+  updateTable,
+} from "@/lib/tables";
 import { getTenantContext, requireOwner } from "@/lib/tenant";
 
 /** Edits a table's label, capacity and bookable flag, from /dashboard/tables. Owner only (S-26). */
@@ -23,5 +29,7 @@ export async function POST(
   if (outcome === "label_taken") {
     return Response.json({ error: labelTakenMessage }, { status: 409 });
   }
+  const message = tableSavedMessage(outcome);
+  if (message && request.headers.has(FORM_FETCH_HEADER)) return Response.json({ saved: { message } });
   return formSaved(request, "/dashboard/tables");
 }

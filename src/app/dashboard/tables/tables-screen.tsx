@@ -102,13 +102,13 @@ export async function TablesScreen() {
                 <li key={table.id} className="flex flex-col px-4 py-3">
                   <ActionForm
                     action={`/api/tables/${table.id}`}
-                    savedMessage="Saved. Capacity changes apply to bookings made from now on. If you made the last bookable table walk-ins only, online booking has switched off."
+                    savedMessage="Saved."
                     className="flex flex-col gap-1"
                   >
                     <div className="flex flex-wrap items-end gap-x-3 gap-y-1 md:flex-nowrap md:items-center">
                       <div className="flex min-w-0 flex-1 basis-full items-end gap-3 md:basis-auto md:items-center">
                         <span
-                          className="flex h-12 w-7 shrink-0 items-center text-lead font-semibold text-ink-2 tabular-nums"
+                          className="flex h-12 w-7 shrink-0 items-center whitespace-nowrap text-lead font-semibold text-ink-2 tabular-nums"
                           title="Position in the list"
                         >
                           {index + 1}
@@ -151,7 +151,7 @@ export async function TablesScreen() {
                             defaultChecked={table.bookable}
                             className="size-5 shrink-0 cursor-pointer accent-brand"
                           />
-                          Bookable online
+                          <span className="wrap-normal">Bookable online</span>
                         </label>
                         <Button type="submit" variant="secondary" size="compact" className="mr-1 md:mr-2">
                           Save

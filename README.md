@@ -58,8 +58,9 @@ The app reaches Postgres only through Neon's WebSocket `Pool` driver (D-07). Aga
 | `npm run typecheck` | Route type generation plus `tsc --noEmit` |
 | `npm run test:unit` | Unit tests (no database) |
 | `npm run test:integration` | Integration tests against a real Postgres, migrated and seeded first: `TEST_DATABASE_URL` as the owner, `TEST_DATABASE_URL_APP` as `app_tenant`, `TEST_DATABASE_URL_ADMIN` as `app_admin`, `TEST_DATABASE_URL_STAFF_AUTH` as `app_staff_auth`, `TEST_DATABASE_URL_SYSTEM` as `app_system` |
-| `npm test` | Both test projects |
-| `npm run test:production` | The public pages' cache, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
+| `npm run test:dom` | Client components in happy-dom (`test/dom`) |
+| `npm test` | Unit, integration and DOM projects |
+| `npm run test:production` | The public pages' cache, and every dashboard page rendered as an owner, against `next start` on the last `npm run build` and the same Postgres as the integration tests |
 | `npm run db:generate` | Writes the next migration in `db/migrations` from `src/db/schema.ts` (`-- --custom --name x` for hand-written SQL) |
 | `npm run db:migrate` | Applies pending migrations to `DATABASE_URL_UNPOOLED`, then sets the `app_tenant` password from `DATABASE_URL`, the `app_admin` password from `DATABASE_URL_ADMIN` and the `app_staff_auth` password from `DATABASE_URL_STAFF_AUTH` and the `app_system` password from `DATABASE_URL_SYSTEM`, and fails if RLS wouldn't apply to the first three, or if `app_system` isn't `BYPASSRLS` or has more power than the job needs (`provisionSystemRole`) |
 | `npm run db:seed` | Creates the development restaurants and staff (needs `DEV_AUTH_BYPASS`, refuses production) |

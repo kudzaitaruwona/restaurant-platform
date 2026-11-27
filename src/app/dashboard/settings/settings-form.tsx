@@ -8,6 +8,7 @@ import {
   Fragment,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -55,7 +56,7 @@ export function SettingsForm({
 }: {
   saved: SettingsValues;
   currencies: { value: string; label: string }[];
-  zones: string[];
+  zones: readonly string[];
 }) {
   const router = useRouter();
   const form = useRef<HTMLFormElement>(null);
@@ -66,14 +67,17 @@ export function SettingsForm({
   const [badField, setBadField] = useState<string>();
   const [leaving, setLeaving] = useState<string>();
 
-  // Until the saved values are back, so nothing typed meanwhile is lost to them.
+  // `posting` as events see it, before it has rendered: a second press posts nothing.
+  const sending = useRef(false);
+  // Until the saved values are back. The fields stay editable and keep focus, which a
+  // disabled fieldset would take away: what is typed meanwhile stays unsaved (saveAccepted).
   const pending = posting || refreshing;
   const { baseline, dirty, version } = state;
 
   const next = received(state, saved);
   if (next !== state) setState(next);
 
-  // A refused field takes focus, once the fieldset around it is enabled again.
+  // A refused field takes focus, once the save is no longer out.
   useEffect(() => {
     if (badField === undefined || pending) return;
     const control = form.current?.elements.namedItem(badField);
@@ -115,7 +119,8 @@ export function SettingsForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Read before the fieldset disables its controls.
+    if (sending.current || refreshing) return;
+    sending.current = true;
     const body = new FormData(event.currentTarget);
     const posted = valuesOf(event.currentTarget);
     setPosting(true);
@@ -125,7 +130,9 @@ export function SettingsForm({
       const response = await postForm("/api/restaurant", body);
       if (response.ok) {
         const reply = await response.json().catch(() => undefined);
-        setState((before) => saveAccepted(before, posted, saved));
+        // What the fields hold by now, if more was typed while the save was out.
+        const now = form.current ? valuesOf(form.current) : posted;
+        setState((before) => saveAccepted(before, posted, saved, now));
         setMessage({ tone: "positive", text: savedMessage(reply?.bookingSwitchedOff === true) });
         startRefresh(() => router.refresh());
       } else {
@@ -143,9 +150,21 @@ export function SettingsForm({
     } catch {
       setMessage({ tone: "danger", text: "That didn't reach the server. Try again." });
     } finally {
+      sending.current = false;
       setPosting(false);
     }
   }
+
+  // Hundreds of options, which a keystroke elsewhere in the form has no reason to render again.
+  const zoneOptions = useMemo(
+    () =>
+      zones.map((zone) => (
+        <option key={zone} value={zone}>
+          {zone}
+        </option>
+      )),
+    [zones],
+  );
 
   const errorId = (name: keyof SettingsValues) => `settings-${name}-error`;
   const bad = (name: keyof SettingsValues) => badField === name && message?.tone === "danger";
@@ -164,7 +183,7 @@ export function SettingsForm({
       onSubmit={submit}
       onChange={change}
     >
-      <fieldset disabled={pending} className="flex flex-col gap-6">
+      <fieldset className="flex flex-col gap-6">
         <Fragment key={version}>
           <Group title="Restaurant" description="Your name and phone, as guests see them.">
             <Field label="Restaurant name" {...refusal("name")}>
@@ -245,11 +264,7 @@ export function SettingsForm({
               {...refusal("timezone")}
             >
               <Select name="timezone" defaultValue={baseline.timezone} {...refused("timezone")}>
-                {zones.map((zone) => (
-                  <option key={zone} value={zone}>
-                    {zone}
-                  </option>
-                ))}
+                {zoneOptions}
               </Select>
             </Field>
           </Group>
@@ -270,7 +285,14 @@ export function SettingsForm({
             )}
             {!message && dirty && <p className="text-body text-ink-2">You have unsaved changes.</p>}
           </div>
-          <Button type="submit" size="staff" className="w-full sm:w-auto">
+          <Button
+            type="submit"
+            size="staff"
+            // Not disabled, which would drop focus; a press while pending posts nothing.
+            aria-disabled={pending || undefined}
+            aria-busy={pending || undefined}
+            className="w-full sm:w-auto"
+          >
             Save settings
           </Button>
         </div>

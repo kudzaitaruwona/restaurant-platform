@@ -1,4 +1,5 @@
 import { type ReactNode, Suspense } from "react";
+import { PageRefresh } from "../page-refresh";
 import { ActingAsAdminBanner } from "./acting-as-admin-banner";
 import { StaffNav, StaffNavPlaceholder } from "./shell/staff-shell";
 
@@ -22,7 +23,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <Suspense fallback={<StaffNavPlaceholder />}>
           <StaffNav />
         </Suspense>
-        <div className="min-w-0 px-4 pt-3 pb-6 md:px-8 md:pt-5 md:pb-8 print:p-0">{children}</div>
+        <div className="min-w-0 px-4 pt-3 pb-6 md:px-8 md:pt-5 md:pb-8 print:p-0">
+          <PageRefresh>{children}</PageRefresh>
+        </div>
       </div>
     </div>
   );

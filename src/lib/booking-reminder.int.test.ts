@@ -10,9 +10,9 @@ import { cancelBooking as guestCancel, confirmBooking, type GuestRequest } from 
 
 /**
  * The booking reminder (#45, spec 05, D-03): queued with the confirmation at
- * starts_at - 3h, skipped when that time is not more than 5 minutes ahead, and made `cancelled` on
- * every path that ends the booking early. As app_tenant, each test on a
- * restaurant of its own.
+ * starts_at - 3h, skipped when that time is not more than 5 minutes ahead, and made
+ * `cancelled` on every path that ends the booking early. As app_tenant, each test on
+ * a restaurant of its own.
  */
 const owner = openOwnerDatabase();
 beforeAll(() => {

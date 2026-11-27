@@ -284,7 +284,7 @@ function Rate({ rate, variant, onNavigate }: { rate: RailRate; variant: Variant;
         <Banknote aria-hidden className={cn("size-5", warn && "text-attention")} strokeWidth={1.75} />
         <small
           className={cn(
-            "mt-px text-caption font-semibold tracking-[-0.01em] tabular-nums",
+            "mt-px text-caption font-semibold tracking-[-0.01em] whitespace-nowrap tabular-nums",
             warn ? "text-attention-ink" : "text-ink",
             collapsedOnly(variant),
           )}

@@ -132,7 +132,7 @@ export function MoveTableDialog({
                 className="size-5 accent-brand"
               />
               <span className="min-w-12 text-lead font-semibold">{move.label}</span>
-              <span className="text-body text-ink-2">
+              <span className="shrink-0 whitespace-nowrap text-body text-ink-2">
                 seats {move.capacity}
                 {move.walkInOnly ? ", walk-ins" : ""}
               </span>

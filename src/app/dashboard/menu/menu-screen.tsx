@@ -554,6 +554,7 @@ function CategoryItems({
                   className="min-w-36"
                 >
                   {item.available ? "Mark sold out" : "Mark available"}
+                  <span className="sr-only"> {item.name}</span>
                 </Button>
               </ActionForm>
             </div>
@@ -603,7 +604,7 @@ function ItemEditor({
             "absolute top-3 right-3 size-10 cursor-pointer list-none px-0 group-open:bg-surface-2 [&::-webkit-details-marker]:hidden",
         }))}
       >
-        <span className="sr-only">Edit</span>
+        <span className="sr-only">Edit {item.name}</span>
         <Pencil aria-hidden className="group-open:hidden" />
         <ChevronUp aria-hidden className="hidden group-open:block" />
       </summary>
@@ -676,6 +677,7 @@ function ItemEditor({
           >
             <Button type="submit" variant="danger-secondary" size="compact">
               Archive item
+              <span className="sr-only"> {item.name}</span>
             </Button>
           </ActionForm>
         </div>

@@ -251,7 +251,7 @@ export function NewRestaurantSheet({
                     "flex items-center gap-0 py-0 pr-0 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30",
                   )}
                 >
-                  <span aria-hidden className="text-ink-2">/r/</span>
+                  <span aria-hidden className="shrink-0 whitespace-nowrap text-ink-2">/r/</span>
                   <input
                     name="slug"
                     required

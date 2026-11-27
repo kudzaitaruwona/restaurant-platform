@@ -1,4 +1,4 @@
-import { byteLength, CSV_MAX_BYTES } from "./csv";
+import { byteLength, checkCsvText, CSV_MAX_BYTES, decodeCsvBytes } from "./csv";
 import type { ImportReport } from "./csv-import";
 
 /**
@@ -62,10 +62,14 @@ export async function readImportRequest(
   }
   const sent = form.get("csv");
   if (sent instanceof Blob && sent.size > CSV_MAX_BYTES) return tooBig();
-  const csv = sent instanceof Blob ? await sent.text() : sent;
-  if (!csv) return Response.json({ error: "Choose a CSV file or paste one." }, { status: 400 });
-  if (byteLength(csv) > CSV_MAX_BYTES) return tooBig();
-  return { csv, intent };
+  if (sent === null) return Response.json({ error: "Choose a CSV file or paste one." }, { status: 400 });
+  // A file is decoded from its bytes here (S-43): the browser's own reading
+  // would turn a Windows-1252 "e" with a grave into U+FFFD and say nothing.
+  const read =
+    sent instanceof Blob ? decodeCsvBytes(new Uint8Array(await sent.arrayBuffer())) : checkCsvText(sent);
+  if (!read.ok) return Response.json({ error: read.error }, { status: 400 });
+  if (byteLength(read.text) > CSV_MAX_BYTES) return tooBig();
+  return { csv: read.text, intent };
 }
 
 /** 400 with the reason for a file that can't be read as a whole; 200 with the report. */

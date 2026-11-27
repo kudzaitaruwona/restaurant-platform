@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isTimeZone,
   parseRestaurantSettings,
-  timeZoneNames,
+  timezoneChoices,
   timeZoneOptions,
 } from "./restaurant-settings";
 
@@ -160,11 +160,11 @@ describe("parseRestaurantSettings", () => {
   });
 
   it("offers the default timezone", () => {
-    expect(timeZoneNames).toContain("Africa/Harare");
+    expect(timezoneChoices()).toContain("Africa/Harare");
   });
 
   it("accepts every timezone it offers, whatever this runtime's list holds", () => {
-    expect(timeZoneNames.filter((zone) => !isTimeZone(zone))).toEqual([]);
+    expect(timezoneChoices().filter((zone) => !isTimeZone(zone))).toEqual([]);
   });
 
   it("offers a stored timezone that isn't on the list, in order", () => {
@@ -173,8 +173,9 @@ describe("parseRestaurantSettings", () => {
     expect(options).toEqual([...options].sort());
   });
 
-  it("offers each timezone once", () => {
-    expect(timeZoneOptions("Africa/Harare")).toEqual(timeZoneNames);
+  it("offers each timezone once, from the one list the New restaurant sheet shares", () => {
+    expect(timeZoneOptions("Africa/Harare")).toBe(timezoneChoices());
+    expect(timezoneChoices()).toBe(timezoneChoices());
   });
 
   it("refuses a form with a field missing, rather than blanking it", () => {

@@ -14,6 +14,7 @@ import {
   openTestDatabase,
   testDatabaseSettings,
 } from "../../test/integration/database";
+import { whileWaiting } from "../../test/integration/locks";
 import {
   confirmBooking,
   type ConfirmOutcome,
@@ -428,17 +429,14 @@ describe("two guests at once", () => {
    * The backend waiting on this particular holder. Integration files share one
    * database, so "anything waiting on a lock" could be somebody else's test.
    */
-  const blockedBehind = (holder: number) =>
-    vi.waitFor(
-      async () => {
-        const { rows } = await owner.db.execute<{ pid: number }>(sql`
-          select pid from pg_stat_activity where ${holder} = any(pg_blocking_pids(pid))
-        `);
-        expect(rows).toHaveLength(1);
-        return rows[0].pid;
-      },
-      { timeout: 5_000, interval: 20 },
-    );
+  const blockedBehind = (holder: number, waiting: Promise<unknown>) =>
+    whileWaiting([waiting], async () => {
+      const { rows } = await owner.db.execute<{ pid: number }>(sql`
+        select pid from pg_stat_activity where ${holder} = any(pg_blocking_pids(pid))
+      `);
+      expect(rows).toHaveLength(1);
+      return rows[0].pid;
+    });
 
   const holdLastTable = (restaurantId: string, tableId: string, token: string) => `
     insert into bookings (restaurant_id, table_id, guest_name, whatsapp_opt_in, party_size,
@@ -460,7 +458,7 @@ describe("two guests at once", () => {
       const pid = await pidOf(holder);
 
       const second = confirmBooking({ restaurantId }, guest({ name: "Second guest" }), now);
-      await blockedBehind(pid);
+      await blockedBehind(pid, second);
       await holder.query(finish);
 
       return { restaurantId, result: await second };
@@ -501,7 +499,7 @@ describe("two guests at once", () => {
       const pid = await pidOf(holder);
 
       const second = confirmBooking({ restaurantId }, guest({ name: "Second guest" }), now);
-      await blockedBehind(pid);
+      await blockedBehind(pid, second);
       await holder.query("commit");
 
       expect((await second).outcome).toBe("confirmed");
@@ -824,15 +822,12 @@ describe("a confirm racing another for the same phone, held mid-flight", () => {
       const pid = rows[0].pid as number;
 
       const second = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
-      await vi.waitFor(
-        async () => {
-          const blocked = await owner.db.execute<{ pid: number }>(sql`
-            select pid from pg_stat_activity
-            where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
-          expect(blocked.rows).toHaveLength(1);
-        },
-        { timeout: 5_000, interval: 20 },
-      );
+      await whileWaiting([second], async () => {
+        const blocked = await owner.db.execute<{ pid: number }>(sql`
+          select pid from pg_stat_activity
+          where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+        expect(blocked.rows).toHaveLength(1);
+      });
       await holder.query("commit");
 
       expect(await second).toMatchObject({ outcome: "phone_limit", held: 1 });
@@ -887,16 +882,13 @@ describe("a confirm whose first table is archived under it", () => {
     const { rows } = await archiver.query("select pg_backend_pid() as pid");
     return { archiver, pid: rows[0].pid as number };
   };
-  const stoppedBehind = (pid: number) =>
-    vi.waitFor(
-      async () => {
-        const blocked = await owner.db.execute<{ pid: number }>(sql`
-          select pid from pg_stat_activity
-          where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
-        expect(blocked.rows).toHaveLength(1);
-      },
-      { timeout: 5_000, interval: 20 },
-    );
+  const stoppedBehind = (pid: number, waiting: Promise<unknown>) =>
+    whileWaiting([waiting], async () => {
+      const blocked = await owner.db.execute<{ pid: number }>(sql`
+        select pid from pg_stat_activity
+        where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+      expect(blocked.rows).toHaveLength(1);
+    });
 
   it("gives the phone's lock back with the savepoint and takes the next table", async () => {
     const live = new Date();
@@ -908,7 +900,7 @@ describe("a confirm whose first table is archived under it", () => {
     const { archiver, pid } = await holdArchive(restaurantId, tableIds[0]);
     try {
       const confirming = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
-      await stoppedBehind(pid);
+      await stoppedBehind(pid, confirming);
       await archiver.query("commit");
 
       expect((await confirming).outcome).toBe("confirmed");
@@ -941,15 +933,12 @@ describe("a confirm whose first table is made walk-ins only under it", () => {
       ]);
       const { rows } = await editor.query("select pg_backend_pid() as pid");
       const confirming = confirmBooking({ restaurantId }, guest({ date: day, time: "19:00" }), live);
-      await vi.waitFor(
-        async () => {
-          const blocked = await owner.db.execute<{ pid: number }>(sql`
-            select pid from pg_stat_activity
-            where ${rows[0].pid as number} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
-          expect(blocked.rows).toHaveLength(1);
-        },
-        { timeout: 5_000, interval: 20 },
-      );
+      await whileWaiting([confirming], async () => {
+        const blocked = await owner.db.execute<{ pid: number }>(sql`
+          select pid from pg_stat_activity
+          where ${rows[0].pid as number} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+        expect(blocked.rows).toHaveLength(1);
+      });
       await editor.query("commit");
 
       expect((await confirming).outcome).toBe("confirmed");
@@ -1141,25 +1130,22 @@ describe("a retry after a lost answer (#134)", () => {
       });
       const sent = submission();
       const holder = await owner.pool.connect();
-      const behind = (pid: number) =>
-        vi.waitFor(
-          async () => {
-            const { rows } = await owner.db.execute<{ pid: number }>(sql`
-              select pid from pg_stat_activity
-              where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
-            expect(rows).toHaveLength(1);
-            return rows[0].pid;
-          },
-          { timeout: 15_000, interval: 20 },
-        );
+      const behind = (pid: number, waiting: Promise<unknown>[]) =>
+        whileWaiting(waiting, async () => {
+          const { rows } = await owner.db.execute<{ pid: number }>(sql`
+            select pid from pg_stat_activity
+            where ${pid} = any(pg_blocking_pids(pid)) and wait_event = 'advisory'`);
+          expect(rows).toHaveLength(1);
+          return rows[0].pid;
+        });
       try {
         await holder.query("begin");
         await holder.query("select pg_advisory_xact_lock(hashtextextended('table_seat:' || $1, 0))", [tableIds[0]]);
         const { rows } = await holder.query("select pg_backend_pid() as pid");
         const original = confirmBooking({ restaurantId }, sent, live);
-        const originalPid = await behind(rows[0].pid);
+        const originalPid = await behind(rows[0].pid, [original]);
         const retry = confirmBooking({ restaurantId }, second(sent), live);
-        await behind(originalPid);
+        await behind(originalPid, [original, retry]);
         await holder.query("commit");
         return { restaurantId, original: await original, retry: await retry };
       } finally {

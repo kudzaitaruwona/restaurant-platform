@@ -464,6 +464,17 @@ describe("a sold-out item", () => {
     expect(body).toContain('class="sold-out"');
   });
 
+  it("is separated from the item's name, so a screen reader doesn't run them together (#119)", async () => {
+    const { id, menuToken } = await newRestaurant("Sold out words");
+    await addItem(id, await addCategory(id, "Sides"), {
+      name: "Chips",
+      priceUsd: "3",
+      available: false,
+    });
+
+    expect(await page(menuToken)).toContain('Chips <em class="tag">Sold out</em>');
+  });
+
   it("is greyed out and sorted after the items still on", async () => {
     const { id, menuToken } = await newRestaurant("Sorted last");
     const mains = await addCategory(id, "Mains");
@@ -585,7 +596,7 @@ describe("specials", () => {
 
     // 6 * 26.2 = 157.2 -> 160. The normal price is 8 * 26.2 = 209.6 -> 210.
     expect(specialsSection(body)).toContain(
-      '<span class="price"><s>$8.00</s> $6.00<span class="sub"><s>ZiG 210</s> ZiG 160</span></span>',
+      '<span class="price"><span class="sr">was </span><s>$8.00</s> <span class="sr">now </span>$6.00<span class="sub"><span class="sr">was </span><s>ZiG 210</s> <span class="sr">now </span>ZiG 160</span></span>',
     );
   });
 
@@ -596,13 +607,21 @@ describe("specials", () => {
       { priceUsd: "8", priceZig: "250" },
     );
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>ZiG 250</s> <span class="sr">now </span>ZiG 160');
+  });
+
+  it("says was and now to a screen reader, which doesn't read strike-through (#119)", async () => {
+    const { menuToken } = await stewWith({ endsAt: ahead(1) }, "usd_only");
+
+    expect(specialsSection(await page(menuToken))).toContain(
+      '<span class="sr">was </span><s>$8.00</s> <span class="sr">now </span>$6.00',
+    );
   });
 
   it("puts a one-line struck price under both", async () => {
     const { menuToken } = await stewWith({ endsAt: ahead(1) }, "both");
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>$8.00 · ZiG 210</s> $6.00 · ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>$8.00 · ZiG 210</s> <span class="sr">now </span>$6.00 · ZiG 160');
   });
 
   it("shows a badge-only special with the normal price and nothing struck", async () => {
@@ -707,7 +726,7 @@ describe("specials", () => {
   it("for a ZiG-only item with a rate, shows the dollar special as ZiG, calculated", async () => {
     const { menuToken } = await stewWith({ endsAt: ahead(1) }, "zig_only", { priceZig: "250" });
 
-    expect(specialsSection(await page(menuToken))).toContain("<s>ZiG 250</s> ZiG 160");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>ZiG 250</s> <span class="sr">now </span>ZiG 160');
   });
 
   it("escapes a badge an owner typed", async () => {
@@ -873,7 +892,7 @@ describe("bundles", () => {
 
   it("a bundle's special price strikes the bundle's price, as for any item", async () => {
     const { menuToken } = await withBundle({ startsAt: ago(1), specialPriceUsd: "8" });
-    expect(specialsSection(await page(menuToken))).toContain("<s>$9.50</s> $8.00");
+    expect(specialsSection(await page(menuToken))).toContain('<span class="sr">was </span><s>$9.50</s> <span class="sr">now </span>$8.00');
   });
 
   it("keeps its own restaurant's bundles: another's never show", async () => {
@@ -974,6 +993,25 @@ describe("layout (issue 26)", () => {
     expect(body).toMatch(/scroll-margin-top/);
   });
 
+  it("wraps the jump bar on a wide screen, where a mouse can't scroll it, at most two rows tall (#119)", async () => {
+    const { menuToken } = await menuWith(null, ["Starters", "Mains"]);
+    const body = await page(menuToken);
+    expect(body).toMatch(/@media \(min-width:640px\)\{nav\{flex-wrap:wrap;max-height:113px;overflow-y:auto;scrollbar-width:thin\}/);
+    // Its scrollbar is hidden only below that width: the rest of it must be findable here.
+    expect(body).toContain("@media not all and (min-width:640px){nav::-webkit-scrollbar{display:none}}");
+    expect(body.match(/nav::-webkit-scrollbar/g)).toHaveLength(1);
+  });
+
+  it("keeps a section clear of the two-row bar: that rule comes after the one-row rule it overrides (#119)", async () => {
+    const { menuToken } = await menuWith(null, ["Starters", "Mains"]);
+    const body = await page(menuToken);
+    const oneRow = body.indexOf(".sections section{padding:0 16px;scroll-margin-top:61px}");
+    const twoRows = body.indexOf(".sections section{scroll-margin-top:125px}");
+    expect(oneRow).toBeGreaterThan(-1);
+    // Same specificity, so the later one is the one a wide screen uses.
+    expect(twoRows).toBeGreaterThan(oneRow);
+  });
+
   it("puts Specials first in the jump bar when there are some", async () => {
     const { id, menuToken } = await menuWith(null, ["Mains"]);
     const [dish] = await owner.db
@@ -1049,5 +1087,20 @@ describe("layout (issue 26)", () => {
     for (const [, anchor] of links) expect(body).toContain(`<section id="${anchor}"`);
     // No ids from the database on the page, only the positional ones.
     expect([...body.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])).toEqual(["specials", "c1"]);
+  });
+  it("keeps a 200-character unbroken name, description and category whole, and lets the page wrap them (#94)", async () => {
+    const long = "W".repeat(200);
+    const { id, menuToken } = await newRestaurant(long);
+    const category = await addCategory(id, long);
+    await addItem(id, category, { name: long, description: long, priceUsd: "8" });
+    const body = await page(menuToken);
+    // Nothing is cut or truncated: the full string is on the page, three times
+    // over (name, description, category) and once more as the restaurant's own.
+    expect(body.split(long).length - 1).toBeGreaterThanOrEqual(5);
+    // Unbroken text wraps wherever it must (the body's rule), so no sideways
+    // scroll at 390px, and the price column is the one that never shrinks.
+    expect(body).toMatch(/body\{[^}]*overflow-wrap:anywhere/);
+    expect(body).toMatch(/\.right\{[^}]*flex:none/);
+    expect(body).not.toMatch(/nav a\{[^}]*white-space:nowrap/);
   });
 });

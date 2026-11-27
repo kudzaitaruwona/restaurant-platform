@@ -5,7 +5,8 @@ import { bookingSettings, currencyMode, restaurants } from "@/db/schema";
 import { DEFAULT_COUNTRY_CODE } from "@/lib/bookings";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { type SpecialAbove, specialsAbove } from "@/lib/special-price-refusal";
-import { type TenantContext, withTenant } from "@/lib/tenant";
+import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant";
+import { DEFAULT_TIMEZONE } from "@/lib/tenant/platform-admin";
 import { recordAdminAction } from "@/lib/tenant/audit";
 
 /**
@@ -16,16 +17,21 @@ import { recordAdminAction } from "@/lib/tenant/audit";
 
 type Tenant = Pick<TenantContext, "restaurantId">;
 
-/** What the settings screen offers. Varies with the runtime's ICU data. */
-export const timeZoneNames = [
-  ...new Set([...Intl.supportedValuesOf("timeZone"), "UTC"]),
-].sort();
+/**
+ * Every zone the settings page and the New restaurant sheet offer, in one list
+ * worked out once (checking each builds a DateTimeFormat, hundreds in all). Varies
+ * with the runtime's ICU data, so the default and UTC are always among them.
+ */
+export const timezoneChoices = (): readonly string[] =>
+  (choices ??= [
+    ...new Set([DEFAULT_TIMEZONE, "UTC", ...Intl.supportedValuesOf("timeZone")].filter(isTimeZone)),
+  ].sort());
+
+let choices: readonly string[] | undefined;
 
 /** A stored zone off the list still has to be an option, or saving replaces it. */
-export const timeZoneOptions = (stored: string) =>
-  timeZoneNames.includes(stored)
-    ? timeZoneNames
-    : [...timeZoneNames, stored].sort();
+export const timeZoneOptions = (stored: string): readonly string[] =>
+  timezoneChoices().includes(stored) ? timezoneChoices() : [...timezoneChoices(), stored].sort();
 
 // Intl alone would also take `africa/harare`, `+02:00` and `CAT`.
 const timeZoneSpelling = /^(UTC|GMT|(US|[A-Z][a-z]+)(\/[A-Z][A-Za-z0-9_+-]*)+)$/;
@@ -143,6 +149,15 @@ export async function getRestaurantSettings(
   return settings;
 }
 
+/** Whether online booking is on, read before and after a save that may switch it off in Postgres. */
+export async function onlineBookingOn(tx: TenantTransaction, restaurantId: string) {
+  const [settings] = await tx
+    .select({ enabled: bookingSettings.enabled })
+    .from(bookingSettings)
+    .where(eq(bookingSettings.restaurantId, restaurantId));
+  return settings?.enabled === true;
+}
+
 /**
  * Saves the settings. A timezone that differs from the stored one has to work
  * in JavaScript and in Postgres, where `AT TIME ZONE` would otherwise fail on
@@ -157,8 +172,12 @@ export async function updateRestaurantSettings(
   settings: RestaurantSettings,
 ): Promise<"saved" | "saved_booking_off" | "invalid_timezone" | { above: SpecialAbove[] }> {
   const saving = withTenant(ctx, async (tx) => {
+    // One read for both: the stored zone, and whether booking is on before a clear of the phone could switch it off.
     const [stored] = await tx
-      .select({ timezone: restaurants.timezone })
+      .select({
+        timezone: restaurants.timezone,
+        bookingOn: sql<boolean>`coalesce((select b.enabled from booking_settings b where b.restaurant_id = restaurants.id), false)`,
+      })
       .from(restaurants)
       .where(eq(restaurants.id, ctx.restaurantId));
     if (stored.timezone !== settings.timezone) {
@@ -168,14 +187,6 @@ export async function updateRestaurantSettings(
       );
       if (rows.length === 0) return "invalid_timezone" as const;
     }
-    const bookingOn = async () =>
-      (
-        await tx
-          .select({ enabled: bookingSettings.enabled })
-          .from(bookingSettings)
-          .where(eq(bookingSettings.restaurantId, ctx.restaurantId))
-      )[0]?.enabled === true;
-    const wasOn = await bookingOn();
     await tx
       .update(restaurants)
       .set(settings)
@@ -185,8 +196,11 @@ export async function updateRestaurantSettings(
       entityType: "restaurant",
       entityId: ctx.restaurantId,
     });
-    // Clearing the contact phone switches online booking off in Postgres.
-    return wasOn && !(await bookingOn()) ? ("saved_booking_off" as const) : ("saved" as const);
+    // Only clearing the contact phone switches online booking off in Postgres (a trigger), so
+    // that is the only save that has to look again.
+    const switchedOff =
+      stored.bookingOn && settings.contactPhone === null && !(await onlineBookingOn(tx, ctx.restaurantId));
+    return switchedOff ? ("saved_booking_off" as const) : ("saved" as const);
   });
   const outcome = await saving.catch((error: unknown) => {
     const above = specialsAbove(error);

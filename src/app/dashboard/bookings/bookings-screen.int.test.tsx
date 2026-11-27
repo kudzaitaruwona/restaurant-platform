@@ -138,6 +138,12 @@ describe("the day view", () => {
     expect(html).toContain("That date wasn&#x27;t usable, so this is today.");
   });
 
+  it("never breaks the Today pill beside the date (#94)", async () => {
+    await dayWith([]);
+    const pill = /<span class="([^"]*)">Today<\/span>/.exec(await render())![1].split(" ");
+    expect(pill).toEqual(expect.arrayContaining(["shrink-0", "whitespace-nowrap"]));
+  });
+
   it("links the neighbouring days and a date picker that is a GET form", async () => {
     await dayWith([]);
     const html = await render(day);

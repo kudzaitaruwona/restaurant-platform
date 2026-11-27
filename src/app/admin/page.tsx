@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { devAuthBypassEnabled } from "@/lib/env";
 import { DevSwitcher } from "../dashboard/dev-switcher";
 import { SignOutButton } from "../dashboard/sign-out-button";
+import { PageRefresh } from "../page-refresh";
 import { AdminConsole } from "./admin-console";
 import { AdminEntryBanner } from "./admin-entry-banner";
 
@@ -39,9 +40,11 @@ export default function AdminPage() {
         </div>
       </header>
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col px-4 pt-5 pb-8 md:px-8 md:pt-8">
-        <Suspense fallback={<p className="text-body text-ink-2">Loading…</p>}>
-          <AdminConsole />
-        </Suspense>
+        <PageRefresh>
+          <Suspense fallback={<p className="text-body text-ink-2">Loading…</p>}>
+            <AdminConsole />
+          </Suspense>
+        </PageRefresh>
       </main>
     </div>
   );

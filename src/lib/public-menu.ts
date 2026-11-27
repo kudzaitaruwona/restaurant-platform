@@ -41,15 +41,17 @@ main{max-width:40rem;margin:0 auto;padding-bottom:40px}
 h1{margin:0;font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.01em;text-wrap:balance}
 .head p{margin:4px 0 0;font-size:15px;color:var(--ink-2)}
 .head .table{font-weight:600;color:var(--ink);overflow-wrap:anywhere}
-.wifi{display:flex;align-items:center;gap:6px}
+.wifi{display:flex;align-items:flex-start;gap:6px}
 .wifi .icon{width:16px;height:16px}
 .head .book-again{margin-top:8px}
 .book-again a{color:var(--ink);font-weight:600;text-underline-offset:3px}
-nav{position:sticky;top:0;z-index:2;display:flex;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
-nav::-webkit-scrollbar{display:none}
-nav a{display:inline-flex;align-items:center;flex:none;min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none;white-space:nowrap}
+nav{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;gap:8px;padding:8px 16px;overflow-x:auto;background:var(--bg);border-bottom:1px solid var(--line);scrollbar-width:none}
+@media not all and (min-width:640px){nav::-webkit-scrollbar{display:none}}
+nav a{display:inline-flex;align-items:center;justify-content:center;flex:none;max-width:100%;min-height:44px;padding:0 16px;text-align:center;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:15px;font-weight:500;text-decoration:none}
 nav a:active{background:var(--surface-2)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .sections section{padding:0 16px;scroll-margin-top:61px}
+@media (min-width:640px){nav{flex-wrap:wrap;max-height:113px;overflow-y:auto;scrollbar-width:thin}.sections section{scroll-margin-top:125px}}
 .sections h2{margin:28px 0 4px;font-size:20px;font-weight:600;line-height:1.3}
 .sections>p{padding:0 16px;color:var(--ink-2)}
 ul{margin:0;padding:0;list-style:none}
@@ -58,12 +60,13 @@ ul{margin:0;padding:0;list-style:none}
 .thumb{flex:none;width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surface-2)}
 .body{flex:1;min-width:0;display:flex;justify-content:space-between;gap:12px}
 .left{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
-.right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none;max-width:50%}
+.right{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex:none}
 .name{font-weight:600;line-height:1.35}
-.price{font-weight:600;line-height:1.35;text-align:right;font-variant-numeric:tabular-nums}
+.price{font-weight:600;line-height:1.35;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.price s{display:block}
 .sub{display:block;font-size:13px;font-weight:400;color:var(--ink-2)}
 .desc{margin:2px 0 0;font-size:15px;line-height:1.45;color:var(--ink-2)}
-.tag{display:inline-flex;align-items:center;height:22px;margin-left:8px;padding:0 8px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);font-size:13px;font-style:normal;font-weight:600;vertical-align:2px}
+.tag{display:inline-block;max-width:100%;margin-top:2px;padding:1px 8px;border-radius:12px;background:var(--surface-2);color:var(--ink-2);font-size:13px;font-style:normal;font-weight:600;line-height:20px;vertical-align:1px}
 .sold-out .name,.sold-out .price{color:var(--ink-2)}
 .sold-out .thumb{opacity:.5}
 s{font-weight:400;color:var(--ink-2)}
@@ -157,11 +160,12 @@ body:has(.order:not([hidden])){overflow:hidden}
 .grab{flex:none;width:36px;height:4px;margin:8px auto 0;border-radius:999px;background:var(--line)}
 .shead{display:flex;align-items:baseline;justify-content:space-between;padding:12px 16px 4px}
 .shead h2{margin:0;font-size:20px;font-weight:600}
+.order:focus{outline:none}
 .order .sheet-body{min-height:0;padding:0 16px 16px;overscroll-behavior:contain}
 .cl{padding:16px 0}
 .cl+.cl{border-top:1px solid var(--line)}
 .ctop{display:flex;justify-content:space-between;gap:12px}
-.cprice{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.cprice{flex:none;font-weight:600;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .crow{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
 .stepper{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
 .step{display:grid;place-items:center;width:44px;height:44px;border:0;background:none;color:var(--ink);font-size:20px;line-height:1;cursor:pointer;touch-action:manipulation}
@@ -243,13 +247,13 @@ export const ORDER_SCRIPT = `(() => {
     if (className) element.className = className;
     return element;
   };
-  // The sheet is a modal for keyboard users: opening it moves focus into it
-  // (the bar that opened it disappears), and closing it hands focus back.
+  // The sheet is a modal for keyboard users: opening it moves focus to the sheet
+  // itself, not to a control (the bar that opened it disappears), Tab stays inside
+  // it, and closing it hands focus back (#119).
   const openSheet = () => {
     if (!form.hidden) return;
     form.hidden = false;
-    const first = form.querySelector("#cart button, #cart input, #cart textarea") || fields.name;
-    if (first && first.focus) first.focus();
+    form.focus();
   };
   const closeSheet = () => {
     if (form.hidden) return;
@@ -371,6 +375,10 @@ export const ORDER_SCRIPT = `(() => {
       }
       button.mark.textContent = line ? line.quantity + " in your order" : "";
     }
+    // The rows are drawn again, so the control that had focus is found again (#119).
+    const had = list.contains(document.activeElement);
+    const kept = had && document.activeElement.dataset.f;
+    let again = form;
     list.replaceChildren(...cart.map((line) => {
       const row = make("li", undefined, "cl");
       const top = make("div", undefined, "ctop");
@@ -380,6 +388,8 @@ export const ORDER_SCRIPT = `(() => {
         const button = make("button", by < 0 ? "\\u2212" : "+", "step");
         button.type = "button";
         button.setAttribute("aria-label", label + line.name);
+        button.dataset.f = line.id + by;
+        if (button.dataset.f === kept) again = button;
         button.addEventListener("click", () => {
           line.quantity = Math.min(20, line.quantity + by);
           if (line.quantity < 1) cart = cart.filter((other) => other !== line);
@@ -392,6 +402,7 @@ export const ORDER_SCRIPT = `(() => {
       stepper.append(change(-1, "One fewer "), make("span", String(line.quantity), "q"), change(1, "One more "));
       const remove = make("button", "Remove", "rm ico");
       remove.type = "button";
+      remove.setAttribute("aria-label", "Remove " + line.name);
       remove.addEventListener("click", () => { cart = cart.filter((other) => other !== line); error.textContent = ""; draw(); });
       const controls = make("div", undefined, "crow");
       controls.append(stepper, remove);
@@ -421,6 +432,7 @@ export const ORDER_SCRIPT = `(() => {
       row.append(top, controls, label);
       return row;
     }));
+    if (had && !form.hidden) again.focus();
   };
 
   const words = { placed: "Placed", cooking: "Cooking", done: "Done", delivered: "Served", voided: "Voided" };
@@ -549,7 +561,17 @@ export const ORDER_SCRIPT = `(() => {
     draw();
     if (ended) await join().then(() => { last = ""; return poll(true); }, () => {});
   });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeSheet(); });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeSheet();
+    if (event.key !== "Tab" || form.hidden) return;
+    const reach = [...form.querySelectorAll("button:not(:disabled), input, textarea")];
+    const at = document.activeElement;
+    const back = event.shiftKey;
+    if (!form.contains(at) || at === reach[back ? 0 : reach.length - 1] || (back && at === form)) {
+      event.preventDefault();
+      reach[back ? reach.length - 1 : 0].focus();
+    }
+  });
   waiter.addEventListener("click", async () => {
     if (waiter.disabled) return;
     waiter.disabled = true;
@@ -577,6 +599,8 @@ export const ORDER_SCRIPT = `(() => {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (cart.length === 0) return;
+    // Disabling it drops focus from it: given back below if the sheet stays open (#119).
+    const held = form.contains(document.activeElement);
     fields.place.disabled = true;
     try {
       if (ended && !asked) await join();
@@ -633,7 +657,7 @@ export const ORDER_SCRIPT = `(() => {
         const named = cart.find((line) => line.id === answer.item) || (gone[0] && gone[0].dataset);
         cart = cart.filter((line) => line.id !== answer.item);
         draw();
-        for (const button of gone) { button.disabled = true; button.textContent = "Not available"; }
+        for (const button of gone) { button.disabled = true; button.textContent = "Not available"; button.append(make("span", " " + button.dataset.name, "sr")); }
         fail("Sorry, " + (named ? named.name : "that item") + " isn't available right now. It was taken out of your order.");
         // With the cart empty the message is on the page, not in the sheet: bring it into view.
         if (cart.length === 0 && waiterSaid.scrollIntoView) waiterSaid.scrollIntoView({ block: "center" });
@@ -644,6 +668,7 @@ export const ORDER_SCRIPT = `(() => {
       fail("That didn't go through. Check your connection and try again.");
     } finally {
       fields.place.disabled = false;
+      if (held && !form.hidden && !form.contains(document.activeElement)) fields.place.focus();
     }
   });
 })();`;
@@ -674,7 +699,7 @@ const waiterButton = trusted(
 const orderBlock = html`
 <style>${orderStyles}</style>
 <svg hidden><symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol></svg>
-<form id="order" class="sheet order" role="dialog" aria-modal="true" aria-label="Your order" hidden>
+<form id="order" class="sheet order" role="dialog" aria-modal="true" aria-label="Your order" tabindex="-1" hidden>
 <div class="grab"></div>
 <div class="shead"><h2>Your order</h2><span id="cart-items" class="muted"></span></div>
 <div class="sheet-body"><ul id="cart"></ul>
@@ -690,7 +715,8 @@ const orderBlock = html`
 type Item = Menu["categories"][number]["items"][number];
 
 /** The struck-through normal price, when this line has one, then the price now. */
-const slot = ({ was, now }: PromotionSlot) => html`${was !== undefined && html`<s>${was}</s> `}${now}`;
+const slot = ({ was, now }: PromotionSlot) =>
+  html`${was !== undefined && html`<span class="sr">was </span><s>${was}</s> <span class="sr">now </span>`}${now}`;
 
 /** What the cart shows beside a line: the price the menu shows, in the restaurant's currency mode. */
 const shownPrice = (item: Item, { currencyMode, pricing }: Menu) =>
@@ -726,11 +752,11 @@ const PLUS = trusted('<svg class="icon"><use href="#i-plus"/></svg>');
 const addButton = (item: Item, menu: Menu, ordering: boolean) =>
   ordering &&
   item.available &&
-  html`<button type="button" class="add" data-item="${item.id}" data-name="${item.name}" data-price="${shownPrice(item, menu)}" hidden>${PLUS}Add</button>`;
+  html`<button type="button" class="add" data-item="${item.id}" data-name="${item.name}" data-price="${shownPrice(item, menu)}" hidden>${PLUS}Add<span class="sr"> ${item.name}</span></button>`;
 
 /** Photo on the left; name and description, then price and Add on the right (S-41). */
 const itemRow = (item: Item, menu: Menu, ordering: boolean) => html`<li${!item.available && html` class="sold-out"`}>
-${thumbnail(item)}<div class="body"><div class="left"><span class="name">${item.name}${item.special && html`<em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html`<em class="tag">Sold out</em>`}</span>${item.description && html`<p class="desc">${item.description}</p>`}</div>
+${thumbnail(item)}<div class="body"><div class="left"><span class="name">${item.name}${item.special && html` <em class="tag">${item.special.title ?? "Special"}</em>`}${!item.available && html` <em class="tag">Sold out</em>`}</span>${item.description && html`<p class="desc">${item.description}</p>`}</div>
 <div class="right">${priceCell(item, menu)}${addButton(item, menu, ordering)}</div></div>
 </li>`;
 

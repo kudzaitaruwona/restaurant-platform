@@ -91,11 +91,25 @@ describe("the admin screen", () => {
       ["/dashboard/tables", "Open Tables"],
       ["/dashboard/bookings/settings", "Open Booking settings"],
     ]) {
-      expect(card).toContain(`<input type="hidden" name="next" value="${href}"/>`);
+      expect(card).toContain(`value="${href}"`);
       expect(card).toContain(label);
     }
     // Seven items, seven links.
     expect(card.match(/name="next"/g)).toHaveLength(7);
+  });
+
+  it("sends every way into a restaurant through the one form, not a form for each", async () => {
+    const { id } = devRestaurants[0];
+    const html = await render();
+    const card = cardIn(html, id);
+
+    expect(html.match(new RegExp(`<form[^>]*/${id}/enter"`, "g"))).toHaveLength(1);
+    // The seven links are buttons of that form, each saying where it goes.
+    const links = card.match(/<button[^>]*name="next"[^>]*>/g) ?? [];
+    expect(links).toHaveLength(7);
+    for (const link of links) expect(link).toContain(`form="enter-${id}"`);
+    // Beyond that one, only what a card does by itself: ticking the QR codes, and an owner's invite.
+    expect((card.match(/<form/g) ?? []).length).toBeLessThanOrEqual(3);
   });
 
   it("offers to enter every restaurant, as a plain post that can redirect", async () => {

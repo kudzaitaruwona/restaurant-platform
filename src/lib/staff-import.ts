@@ -8,7 +8,14 @@ import {
   reportRow,
 } from "@/lib/csv-import";
 import { deadlineIn, IMPORT_TIME_BUDGET_MS, type ImportTiming, notImportedInTime } from "@/lib/import-deadline";
-import { addStaff, listStaff, type NewStaff, parseNewStaff } from "@/lib/staff-management";
+import {
+  addStaff,
+  countOwnerLogins,
+  listStaff,
+  type NewStaff,
+  OWNER_LOGIN_SOFT_LIMIT,
+  parseNewStaff,
+} from "@/lib/staff-management";
 import type { Acting } from "@/lib/tenant/audit";
 
 /**
@@ -23,6 +30,10 @@ import type { Acting } from "@/lib/tenant/audit";
 type Row = ImportValues<"staff">;
 type Planned = { row: Row; problems: string[]; person?: NewStaff };
 
+/** Spec 01: a second owner goes over the plan's one owner login, and is never blocked. */
+export const secondOwnerNotice =
+  "The standard plan includes one owner login. Adding another owner goes over that, but isn't blocked.";
+
 const messages = {
   ownerFirst:
     "This restaurant has no owner yet, so add its owner first: put an owner row above this one.",
@@ -32,11 +43,12 @@ const messages = {
 
 async function plan(ctx: Acting, rows: Row[]) {
   const team = await listStaff(ctx);
+  const ownersNow = countOwnerLogins(team);
   const onStaff = new Set(team.flatMap((member) => (member.email ? [member.email.toLowerCase()] : [])));
   let hasOwner = team.some((member) => member.active && member.role === "owner");
   const inFile = new Map<string, number>();
 
-  return rows.map((row): Planned => {
+  const planned = rows.map((row): Planned => {
     const form = new FormData();
     form.set("email", row.values.email);
     form.set("displayName", row.values.name);
@@ -55,14 +67,19 @@ async function plan(ctx: Acting, rows: Row[]) {
     if (role === "owner") hasOwner = true;
     return { row, problems, person: person.data };
   });
+  const adding = planned.filter((entry) => entry.person?.role === "owner").length;
+  const overLimit = adding > 0 && ownersNow + adding > OWNER_LOGIN_SOFT_LIMIT;
+  return { planned, notice: overLimit ? secondOwnerNotice : undefined };
 }
 
-const toReport = (planned: Planned[], imported: number | null): ImportReport =>
-  reportOf(
+const toReport = (planned: Planned[], imported: number | null, notice?: string): ImportReport => ({
+  ...reportOf(
     "staff",
     planned.map(({ row, problems }) => reportRow("staff", row, problems)),
     imported,
-  );
+  ),
+  ...(notice && { notice }),
+});
 
 /**
  * Each person is emailed an invite during the import, one after another, so a
@@ -95,7 +112,8 @@ export async function previewStaffImport(
 ): Promise<ImportReport | { error: string }> {
   const table = read(csv);
   if (!table.ok) return { error: table.error };
-  return toReport(await plan(ctx, table.rows), null);
+  const { planned, notice } = await plan(ctx, table.rows);
+  return toReport(planned, null, notice);
 }
 
 /**
@@ -110,7 +128,7 @@ export async function importStaff(
   const table = read(csv);
   if (!table.ok) return { error: table.error };
 
-  const planned = await plan(ctx, table.rows);
+  const { planned } = await plan(ctx, table.rows);
   let imported = 0;
   let stopped = false;
   for (const entry of planned) {

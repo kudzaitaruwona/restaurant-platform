@@ -6,6 +6,7 @@ import { bookings, diningTables, restaurants } from "@/db/schema";
 import { dateLabel, localTime, localToday } from "@/lib/booking-engine";
 import { revalidateMenu } from "@/lib/menu-cache";
 import { mintQrToken } from "@/lib/qr-token";
+import { onlineBookingOn } from "@/lib/restaurant-settings";
 import { recordAdminAction, recordAudit } from "@/lib/tenant/audit";
 import { type TenantContext, type TenantTransaction, withTenant } from "@/lib/tenant/scope";
 
@@ -135,17 +136,34 @@ const live = (restaurantId: string, tableId: string) =>
     isNull(diningTables.archivedAt),
   );
 
+/** What a save of a table did, beyond saving it. */
+export type TableSaved = { capacityChanged: boolean; bookingSwitchedOff: boolean };
+
+/** Said only as far as it is true; undefined when there is nothing more than "Saved." */
+export const tableSavedMessage = ({ capacityChanged, bookingSwitchedOff }: TableSaved) =>
+  capacityChanged || bookingSwitchedOff
+    ? "Saved." +
+      (capacityChanged ? " The new number of seats applies to bookings made from now on." : "") +
+      (bookingSwitchedOff ? " No table can be booked now, so online booking has switched off." : "")
+    : undefined;
+
 /**
  * Edits a table's label, capacity and bookable flag. A capacity change reaches
- * bookings made from now on only: a booking keeps the table it has.
+ * bookings made from now on only: a booking keeps the table it has. Making the
+ * last bookable table walk-ins only switches online booking off in Postgres.
  */
 export async function updateTable(
   ctx: Writer,
   tableId: string,
   edit: TableEdit,
-): Promise<TableChange | "label_taken"> {
+): Promise<TableSaved | "not_found" | "label_taken"> {
   try {
     return await withTenant(ctx, async (tx) => {
+      const [before] = await tx
+        .select({ capacity: diningTables.capacity })
+        .from(diningTables)
+        .where(live(ctx.restaurantId, tableId));
+      const wasOn = !edit.bookable && (await onlineBookingOn(tx, ctx.restaurantId));
       const updated = await tx
         .update(diningTables)
         .set(edit)
@@ -157,7 +175,10 @@ export async function updateTable(
         entityType: "table",
         entityId: tableId,
       });
-      return "saved";
+      return {
+        capacityChanged: before.capacity !== edit.capacity,
+        bookingSwitchedOff: wasOn && !(await onlineBookingOn(tx, ctx.restaurantId)),
+      };
     });
   } catch (error) {
     if (constraintOf(error) === LABEL_INDEX) return "label_taken";
