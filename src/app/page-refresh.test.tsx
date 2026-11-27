@@ -13,6 +13,11 @@ vi.mock("next/navigation", async (original) => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// The admin page asks whether the dev sign-in bypass is on, which validates the
+// whole environment; the unit project runs with none (as in CI), and which
+// account control it picks is not what this file is about.
+vi.mock("@/lib/env", () => ({ devAuthBypassEnabled: () => false }));
+
 /** Whether an element's tree, as written, has a PageRefresh around something. */
 function hasPageRefresh(node: unknown): boolean {
   if (Array.isArray(node)) return node.some(hasPageRefresh);
